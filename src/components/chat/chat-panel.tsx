@@ -262,7 +262,15 @@ export function ChatPanel() {
 
   const [input, setInput] = useState("");
   const [confirming, setConfirming] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth < 768);
+    check();
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, []);
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -416,7 +424,7 @@ export function ChatPanel() {
   const nodeCount = useMindGrowStore.getState().nodes.length;
 
   return (
-    <div className="flex flex-col w-[380px] min-w-[320px] border-r border-[var(--border)] bg-[var(--card)] h-full">
+    <div className={`flex flex-col ${isMobile ? 'w-full !min-w-0 !max-w-full' : 'w-[380px] min-w-[320px]'} border-r border-[var(--border)] bg-[var(--card)] h-full`}>
       {/* Chat header */}
       <div className="px-4 py-3 border-b border-[var(--border)] flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2">

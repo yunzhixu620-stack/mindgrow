@@ -94,11 +94,9 @@ export default function Home() {
             🌿 导图
           </button>
         </div>
-        <div className="flex-1 overflow-hidden">
+        <div className="flex-1 overflow-hidden flex flex-col">
           {mobileTab === "chat" ? (
-            <div className="w-full h-full [&>div]:!w-full [&>div]:!min-w-0 [&>div]:!max-w-full">
-              <ChatPanel />
-            </div>
+            <ChatPanel />
           ) : (
             <MindMapPanel />
           )}
