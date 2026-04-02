@@ -253,7 +253,7 @@ function buildGraph(
   }
 
   const positions = layoutTree(dbNodes, dbEdges, {
-    direction, nodeWidth: 180, nodeHeight: 60, hGap: spacing.h, vGap: spacing.v, tree: spacing.tree,
+    direction, nodeWidth: 180, nodeHeight: 80, hGap: spacing.h, vGap: spacing.v, tree: spacing.tree,
   }, collapsed);
 
   // Collect all visible IDs (respecting collapse)
@@ -455,7 +455,7 @@ export function MindMapPanel() {
     return () => document.removeEventListener("click", handler);
   }, [setContextMenu]);
 
-  const sv = useMemo(() => ({ compact: { h: 12, v: 22, tree: 80 }, normal: { h: 30, v: 40, tree: 150 }, wide: { h: 55, v: 70, tree: 300 } }[spacing]), [spacing]);
+  const sv = useMemo(() => ({ compact: { h: 16, v: 30, tree: 100 }, normal: { h: 30, v: 50, tree: 200 }, wide: { h: 55, v: 80, tree: 400 } }[spacing]), [spacing]);
 
   const graph = useMemo(
     () => buildGraph(storeNodes, storeEdges, highlightedNodeId, searchResults, direction, sv, collapsedNodes),
@@ -636,34 +636,28 @@ export function MindMapPanel() {
 
   // Export PNG
   const handleExportPng = useCallback(() => {
-    const svgEl = document.querySelector('.react-flow__viewport');
-    if (!svgEl) return;
-    const canvas = document.createElement("canvas");
-    const rect = svgEl.getBoundingClientRect();
-    canvas.width = rect.width * 2;
-    canvas.height = rect.height * 2;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.scale(2, 2);
-    ctx.fillStyle = "#09090b";
-    ctx.fillRect(0, 0, rect.width, rect.height);
-    const svgData = new XMLSerializer().serializeToString(svgEl);
-    const svgBlob = new Blob([svgData], { type: "image/svg+xml;charset=utf-8" });
-    const url = URL.createObjectURL(svgBlob);
-    const img = new Image();
-    img.onload = () => {
-      ctx.drawImage(img, 0, 0, rect.width, rect.height);
-      URL.revokeObjectURL(url);
-      canvas.toBlob((blob) => {
-        if (!blob) return;
-        const a = document.createElement("a");
-        a.href = URL.createObjectURL(blob);
-        a.download = `mindgrow-${new Date().toISOString().slice(0, 10)}.png`;
-        a.click();
-        URL.revokeObjectURL(a.href);
-      }, "image/png");
-    };
-    img.src = url;
+    const viewportEl = document.querySelector('.react-flow__viewport') as HTMLElement;
+    if (!viewportEl) return;
+    const bgEl = document.querySelector('.react-flow');
+    // @ts-ignore
+    import('html-to-image').then(({ toPng }) => {
+      return toPng(viewportEl, {
+        backgroundColor: '#09090b',
+        pixelRatio: 2,
+        width: viewportEl.scrollWidth,
+        height: viewportEl.scrollHeight,
+        style: {
+          transform: 'none',
+        },
+      });
+    }).then((dataUrl: string) => {
+      const a = document.createElement('a');
+      a.href = dataUrl;
+      a.download = `mindgrow-${new Date().toISOString().slice(0, 10)}.png`;
+      a.click();
+    }).catch((err: Error) => {
+      console.error('Export PNG failed:', err);
+    });
   }, []);
 
   // Export Markdown
