@@ -411,8 +411,22 @@ export function MindMapPanel() {
   const [localSearch, setLocalSearch] = useState("");
   const [editingNode, setEditingNode] = useState<{ id: string; content: string } | null>(null);
   const [showSpacing, setShowSpacing] = useState(false);
+  const [showToolbar, setShowToolbar] = useState(true);
+  const [isMobile, setIsMobile] = useState(false);
   const reactFlowInstance = useRef<ReactFlowInstance | null>(null);
   const editInputRef = useRef<HTMLInputElement>(null);
+
+  // Detect mobile
+  useEffect(() => {
+    const check = () => {
+      const mobile = window.innerWidth < 768;
+      setIsMobile(mobile);
+      if (mobile) setDirection("horizontal");
+    };
+    check();
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, []);
 
   // Focus edit input
   useEffect(() => {
@@ -666,7 +680,7 @@ export function MindMapPanel() {
   if (storeNodes.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center bg-[var(--background)]">
-        <div className="text-center space-y-6 max-w-[360px]">
+        <div className="text-center space-y-6 max-w-[360px] px-4">
           <div className="text-6xl animate-pulse">🌱</div>
           <div>
             <h2 className="text-lg font-semibold text-[var(--foreground)] mb-1">知识树还是一片空地</h2>
@@ -690,57 +704,84 @@ export function MindMapPanel() {
   return (
     <div className="flex-1 bg-[var(--background)] relative">
       {/* Top toolbar */}
-      <div className="absolute top-3 left-3 z-50 flex gap-1.5">
-        <div className="flex gap-0 bg-[var(--card)] border border-[var(--border)] rounded-xl p-1">
+      <div className={`absolute top-3 ${isMobile ? 'right-3' : 'left-3'} z-50 flex gap-1.5`}>
+        {/* Mobile: toggle toolbar */}
+        {isMobile && (
           <button
-            onClick={() => setDirection("vertical")}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
-              isVertical ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-            }`}
-          >↓ 纵向</button>
-          <button
-            onClick={() => setDirection("horizontal")}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
-              !isVertical ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-            }`}
-          >→ 横向</button>
-        </div>
+            onClick={() => setShowToolbar(!showToolbar)}
+            className="w-9 h-9 rounded-xl flex items-center justify-center bg-[var(--card)] text-[var(--muted-foreground)] border border-[var(--border)] hover:text-[var(--foreground)] transition-all cursor-pointer"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" />
+            </svg>
+          </button>
+        )}
 
-        <div className="flex gap-0 bg-[var(--card)] border border-[var(--border)] rounded-xl p-1">
-          <button onClick={handleExportPng} className="px-3 py-1.5 rounded-lg text-xs font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-all cursor-pointer" title="导出 PNG">📷 PNG</button>
-          <button onClick={handleExportMarkdown} className="px-3 py-1.5 rounded-lg text-xs font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-all cursor-pointer" title="导出 Markdown">📝 MD</button>
-        </div>
+        {(!isMobile || showToolbar) && (
+          <>
+            <div className="flex gap-0 bg-[var(--card)] border border-[var(--border)] rounded-xl p-1">
+              <button
+                onClick={() => setDirection("vertical")}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+                  isVertical ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+                }`}
+              >↓ 纵向</button>
+              <button
+                onClick={() => setDirection("horizontal")}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+                  !isVertical ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+                }`}
+              >→ 横向</button>
+            </div>
 
-        <button
-          onClick={() => setShowSearch(!showSearch)}
-          className={`w-8 h-8 rounded-xl flex items-center justify-center transition-all cursor-pointer border ${
-            showSearch ? "bg-[var(--primary)] text-[var(--primary-foreground)] border-transparent" : "bg-[var(--card)] text-[var(--muted-foreground)] border-[var(--border)] hover:text-[var(--foreground)]"
-          }`}
-          title="搜索 (Ctrl+F)"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" /></svg>
-        </button>
+            {!isMobile && (
+              <div className="flex gap-0 bg-[var(--card)] border border-[var(--border)] rounded-xl p-1">
+                <button onClick={handleExportPng} className="px-3 py-1.5 rounded-lg text-xs font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-all cursor-pointer" title="导出 PNG">📷 PNG</button>
+                <button onClick={handleExportMarkdown} className="px-3 py-1.5 rounded-lg text-xs font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-all cursor-pointer" title="导出 Markdown">📝 MD</button>
+              </div>
+            )}
 
-        <button
-          onClick={() => setShowSpacing(!showSpacing)}
-          className={`w-8 h-8 rounded-xl flex items-center justify-center transition-all cursor-pointer border ${
-            showSpacing ? "bg-[var(--primary)] text-[var(--primary-foreground)] border-transparent" : "bg-[var(--card)] text-[var(--muted-foreground)] border-[var(--border)] hover:text-[var(--foreground)]"
-          }`}
-          title="间距调节"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-            <path d="M21 3H3" /><path d="M21 12H3" /><path d="M21 21H3" />
-            <circle cx="9" cy="3" r="2" fill="currentColor" /><circle cx="15" cy="12" r="2" fill="currentColor" /><circle cx="9" cy="21" r="2" fill="currentColor" />
-          </svg>
-        </button>
+            <button
+              onClick={() => setShowSearch(!showSearch)}
+              className={`w-8 h-8 rounded-xl flex items-center justify-center transition-all cursor-pointer border ${
+                showSearch ? "bg-[var(--primary)] text-[var(--primary-foreground)] border-transparent" : "bg-[var(--card)] text-[var(--muted-foreground)] border-[var(--border)] hover:text-[var(--foreground)]"
+              }`}
+              title="搜索 (Ctrl+F)"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" /></svg>
+            </button>
 
-        <button
-          onClick={() => setShowHelp(true)}
-          className="w-8 h-8 rounded-xl flex items-center justify-center bg-[var(--card)] text-[var(--muted-foreground)] border border-[var(--border)] hover:text-[var(--foreground)] transition-all cursor-pointer"
-          title="快捷键 (?)"
-        >
-          <span className="text-xs font-mono font-bold">?</span>
-        </button>
+            {!isMobile && (
+              <button
+                onClick={() => setShowSpacing(!showSpacing)}
+                className={`w-8 h-8 rounded-xl flex items-center justify-center transition-all cursor-pointer border ${
+                  showSpacing ? "bg-[var(--primary)] text-[var(--primary-foreground)] border-transparent" : "bg-[var(--card)] text-[var(--muted-foreground)] border-[var(--border)] hover:text-[var(--foreground)]"
+                }`}
+                title="间距调节"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <path d="M21 3H3" /><path d="M21 12H3" /><path d="M21 21H3" />
+                  <circle cx="9" cy="3" r="2" fill="currentColor" /><circle cx="15" cy="12" r="2" fill="currentColor" /><circle cx="9" cy="21" r="2" fill="currentColor" />
+                </svg>
+              </button>
+            )}
+
+            <button
+              onClick={() => setShowHelp(!showHelp)}
+              className="w-8 h-8 rounded-xl flex items-center justify-center bg-[var(--card)] text-[var(--muted-foreground)] border border-[var(--border)] hover:text-[var(--foreground)] transition-all cursor-pointer"
+              title="快捷键 (?)"
+            >
+              <span className="text-xs font-mono font-bold">?</span>
+            </button>
+
+            {isMobile && (
+              <div className="flex gap-0 bg-[var(--card)] border border-[var(--border)] rounded-xl p-1">
+                <button onClick={handleExportPng} className="px-3 py-1.5 rounded-lg text-xs font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-all cursor-pointer">📷</button>
+                <button onClick={handleExportMarkdown} className="px-3 py-1.5 rounded-lg text-xs font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-all cursor-pointer">📝</button>
+              </div>
+            )}
+          </>
+        )}
       </div>
 
       {/* Spacing control */}
@@ -851,34 +892,36 @@ export function MindMapPanel() {
         nodeTypes={nodeTypes}
         onInit={(instance) => { reactFlowInstance.current = instance; }}
         fitView
-        fitViewOptions={{ padding: 0.3 }}
-        minZoom={0.1}
+        fitViewOptions={{ padding: isMobile ? 0.1 : 0.3 }}
+        minZoom={isMobile ? 0.05 : 0.1}
         maxZoom={2}
         selectionKeyCode="Shift"
         selectNodesOnDrag={true}
         panOnDrag={[2]}
         defaultEdgeOptions={{ type: "default", style: { stroke: "#ffffff10" } }}
         proOptions={{ hideAttribution: true }}
-        className="!bg-[var(--background)]"
+        className={`!bg-[var(--background)] ${isMobile ? "!touch-none" : ""}`}
       >
         <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="#151520" />
         <Controls
           className="!bg-[var(--card)] !border !border-[var(--border)] !rounded-xl !shadow-lg !bottom-4 !left-auto !right-4"
           showInteractive={false}
         />
-        <MiniMap
-          className="!bg-[var(--card)] !border !border-[var(--border)] !rounded-xl"
-          nodeColor={(n) => {
-            const type = n.data?.nodeType as string;
-            const bi = n.data?.branchIndex as number;
-            if (bi && bi > 0) return BRANCH_COLORS[bi % BRANCH_COLORS.length];
-            const colorMap: Record<string, string> = {
-              topic: "#22d3a7", concept: "#38bdf8", detail: "#818cf8", question: "#f472b6",
-            };
-            return colorMap[type] || "#818cf8";
-          }}
-          maskColor="rgba(10, 10, 15, 0.85)"
-        />
+        {!isMobile && (
+          <MiniMap
+            className="!bg-[var(--card)] !border !border-[var(--border)] !rounded-xl"
+            nodeColor={(n) => {
+              const type = n.data?.nodeType as string;
+              const bi = n.data?.branchIndex as number;
+              if (bi && bi > 0) return BRANCH_COLORS[bi % BRANCH_COLORS.length];
+              const colorMap: Record<string, string> = {
+                topic: "#22d3a7", concept: "#38bdf8", detail: "#818cf8", question: "#f472b6",
+              };
+              return colorMap[type] || "#818cf8";
+            }}
+            maskColor="rgba(10, 10, 15, 0.85)"
+          />
+        )}
       </ReactFlow>
     </div>
   );

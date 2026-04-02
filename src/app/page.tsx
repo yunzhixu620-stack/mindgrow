@@ -55,7 +55,7 @@ export default function Home() {
         <div className="flex border-b border-[var(--border)] bg-[var(--card)] shrink-0">
           <button
             onClick={() => setMobileTab("chat")}
-            className={`flex-1 py-2.5 text-xs font-medium transition-all cursor-pointer ${
+            className={`flex-1 py-3 text-xs font-medium transition-all cursor-pointer ${
               mobileTab === "chat" ? "text-[var(--primary)] border-b-2 border-[var(--primary)]" : "text-[var(--muted-foreground)]"
             }`}
           >
@@ -63,18 +63,22 @@ export default function Home() {
           </button>
           <button
             onClick={() => setMobileTab("map")}
-            className={`flex-1 py-2.5 text-xs font-medium transition-all cursor-pointer ${
+            className={`flex-1 py-3 text-xs font-medium transition-all cursor-pointer ${
               mobileTab === "map" ? "text-[var(--primary)] border-b-2 border-[var(--primary)]" : "text-[var(--muted-foreground)]"
             }`}
           >
             🌿 导图
           </button>
         </div>
-        {mobileTab === "chat" ? (
-          <ChatPanel />
-        ) : (
-          <MindMapPanel />
-        )}
+        <div className="flex-1 overflow-hidden">
+          {mobileTab === "chat" ? (
+            <div className="w-full h-full [&>div]:!w-full [&>div]:!min-w-0 [&>div]:!max-w-full">
+              <ChatPanel />
+            </div>
+          ) : (
+            <MindMapPanel />
+          )}
+        </div>
       </main>
     );
   }
