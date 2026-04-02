@@ -68,7 +68,7 @@ export default function Home() {
   // Mobile layout
   if (isMobile) {
     return (
-      <main className="flex flex-col h-screen w-screen overflow-hidden bg-[var(--bg-base)]">
+      <main className="flex flex-col h-full w-full overflow-hidden bg-[var(--bg-base)]">
         {/* Mobile tab bar */}
         <div
           className="flex border-b border-[var(--border)] bg-[var(--card)] shrink-0"
@@ -109,7 +109,7 @@ export default function Home() {
 
   // Desktop layout
   return (
-    <main className="flex h-screen w-screen overflow-hidden">
+    <main className="flex h-full w-full overflow-hidden">
       <div className="flex h-full">
         <Sidebar />
         <ChatPanel />
