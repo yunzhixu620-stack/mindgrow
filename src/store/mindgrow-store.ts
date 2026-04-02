@@ -47,9 +47,12 @@ interface MindGrowState {
 
   // Chat
   messages: ChatMessage[];
+  chatHistory: Record<string, ChatMessage[]>;
   isProcessing: boolean;
   addMessage: (message: ChatMessage) => void;
   setMessages: (messages: ChatMessage[]) => void;
+  saveChatHistory: () => void;
+  loadChatHistory: (mapId: string) => void;
   setProcessing: (processing: boolean) => void;
 
   // Pending suggestion
@@ -165,9 +168,35 @@ export const useMindGrowStore = create<MindGrowState>((set, get) => ({
   canRedo: () => get().historyIndex < get().history.length - 1,
 
   messages: [],
+  chatHistory: {},
   isProcessing: false,
   addMessage: (message) => set((state) => ({ messages: [...state.messages, message] })),
   setMessages: (messages) => set({ messages }),
+  saveChatHistory: () => set((state) => {
+    const mapId = state.currentMapId;
+    if (state.messages.length > 0) {
+      return {
+        chatHistory: { ...state.chatHistory, [mapId]: [...state.messages] },
+      };
+    }
+    return {};
+  }),
+  loadChatHistory: (mapId) => set((state) => {
+    const saved = state.chatHistory[mapId];
+    if (saved && saved.length > 0) {
+      return { messages: [...saved] };
+    }
+    return {
+      messages: [
+        {
+          id: `welcome_${mapId}`,
+          role: "assistant" as const,
+          content: "🌱 欢迎！在下方输入你的碎片想法，我来帮你整理成思维导图。\n\n试试输入一个知识点，比如「深度学习」或「产品设计」",
+          timestamp: new Date().toISOString(),
+        },
+      ],
+    };
+  }),
   setProcessing: (processing) => set({ isProcessing: processing }),
 
   pendingSuggestion: null,

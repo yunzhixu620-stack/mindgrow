@@ -360,9 +360,10 @@ function HelpPanel({ onClose }: { onClose: () => void }) {
     { keys: "双击节点", desc: "编辑内容" },
     { keys: "右键节点", desc: "操作菜单" },
     { keys: "点击 +N", desc: "折叠/展开" },
+    { keys: "左键拖拽", desc: "平移画布" },
     { keys: "Shift+拖拽", desc: "框选节点" },
-    { keys: "右键拖拽", desc: "平移画布" },
     { keys: "滚轮", desc: "缩放" },
+    { keys: "右键拖拽", desc: "平移画布(备选)" },
   ];
   return (
     <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
@@ -704,7 +705,7 @@ export function MindMapPanel() {
   return (
     <div className="flex-1 bg-[var(--background)] relative">
       {/* Top toolbar */}
-      <div className={`absolute top-3 ${isMobile ? 'right-3' : 'left-3'} z-50 flex gap-1.5`}>
+      <div className={`absolute z-50 flex gap-1.5 ${isMobile ? 'right-3' : 'left-3'}`} style={{ top: isMobile ? "max(calc(env(safe-area-inset-top) + 12px), 32px)" : "12px" }}>
         {/* Mobile: toggle toolbar */}
         {isMobile && (
           <button
@@ -895,9 +896,12 @@ export function MindMapPanel() {
         fitViewOptions={{ padding: isMobile ? 0.1 : 0.3 }}
         minZoom={isMobile ? 0.05 : 0.1}
         maxZoom={2}
-        selectionKeyCode="Shift"
-        selectNodesOnDrag={true}
-        panOnDrag={[2]}
+        selectionOnDrag={false}
+        panOnDrag={[0, 2]}
+        panOnScroll={false}
+        zoomOnScroll={true}
+        zoomOnPinch={true}
+        zoomOnDoubleClick={false}
         defaultEdgeOptions={{ type: "default", style: { stroke: "#ffffff10" } }}
         proOptions={{ hideAttribution: true }}
         className={`!bg-[var(--background)] ${isMobile ? "!touch-none" : ""}`}

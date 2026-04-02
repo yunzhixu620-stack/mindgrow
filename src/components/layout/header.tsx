@@ -30,8 +30,8 @@ export function Header() {
         background: "var(--bg-surface)",
         borderColor: "var(--border-subtle)",
         height: 48,
-        paddingTop: "env(safe-area-inset-top)",
-        minHeight: "calc(48px + env(safe-area-inset-top))",
+        paddingTop: "max(env(safe-area-inset-top), 0px)",
+        minHeight: "calc(48px + max(env(safe-area-inset-top), 0px))",
       }}
     >
       {/* Left: Logo + Mode Tabs */}
