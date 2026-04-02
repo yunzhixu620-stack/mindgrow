@@ -16,10 +16,13 @@ export function Header() {
 
   return (
     <header
-      className="flex items-center justify-between px-4 h-12 border-b shrink-0 z-[100]"
+      className="flex items-center justify-between px-4 border-b shrink-0 z-[100]"
       style={{
         background: "var(--bg-surface)",
         borderColor: "var(--border-subtle)",
+        height: 48,
+        paddingTop: "env(safe-area-inset-top)",
+        minHeight: "calc(48px + env(safe-area-inset-top))",
       }}
     >
       {/* Left: Logo + Mode Tabs */}

@@ -19,6 +19,24 @@ export default function Home() {
     return () => window.removeEventListener("resize", check);
   }, []);
 
+  // Fix iOS virtual keyboard not restoring viewport
+  useEffect(() => {
+    if (!isMobile) return;
+    const visualViewport = window.visualViewport;
+    if (!visualViewport) return;
+    let prevHeight = visualViewport.height;
+    const onResize = () => {
+      if (visualViewport.height > prevHeight) {
+        // Keyboard closed - scroll to top to restore layout
+        window.scrollTo(0, 0);
+        document.documentElement.style.setProperty("--vh", `${visualViewport.height}px`);
+      }
+      prevHeight = visualViewport.height;
+    };
+    visualViewport.addEventListener("resize", onResize);
+    return () => visualViewport.removeEventListener("resize", onResize);
+  }, [isMobile]);
+
   // Load maps on mount
   useEffect(() => {
     fetch("/api/knowledge?action=maps")
@@ -52,7 +70,10 @@ export default function Home() {
     return (
       <main className="flex flex-col h-screen w-screen overflow-hidden bg-[var(--bg-base)]">
         {/* Mobile tab bar */}
-        <div className="flex border-b border-[var(--border)] bg-[var(--card)] shrink-0">
+        <div
+          className="flex border-b border-[var(--border)] bg-[var(--card)] shrink-0"
+          style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+        >
           <button
             onClick={() => setMobileTab("chat")}
             className={`flex-1 py-3 text-xs font-medium transition-all cursor-pointer ${
