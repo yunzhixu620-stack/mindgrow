@@ -72,7 +72,10 @@ export default function Home() {
         {/* Mobile tab bar */}
         <div
           className="flex border-b border-[var(--border)] bg-[var(--card)] shrink-0"
-          style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+          style={{
+            paddingTop: "env(safe-area-inset-top)",
+            paddingBottom: "env(safe-area-inset-bottom)",
+          }}
         >
           <button
             onClick={() => setMobileTab("chat")}

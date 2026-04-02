@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import { useMindGrowStore, type AppMode } from "@/store/mindgrow-store";
 import Link from "next/link";
 
@@ -13,6 +14,14 @@ const MODE_ICONS: Record<AppMode, string> = { meeting: "🎯", knowledge: "💡"
 
 export function Header() {
   const { currentMode, setCurrentMode, layoutDirection, setLayoutDirection, nodes } = useMindGrowStore();
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth < 768);
+    check();
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, []);
 
   return (
     <header
@@ -47,82 +56,86 @@ export function Header() {
           </span>
         </Link>
 
-        {/* Mode Tabs */}
-        <div
-          className="flex gap-0.5 rounded-[var(--radius-md)] p-0.5"
-          style={{
-            background: "var(--bg-elevated)",
-            border: "1px solid var(--border-subtle)",
-          }}
-        >
-          {MODES.map((mode) => (
-            <button
-              key={mode.key}
-              onClick={() => setCurrentMode(mode.key)}
-              className="relative flex items-center gap-1.5 px-3 py-1 rounded-[var(--radius-sm)] text-xs font-medium border-none bg-transparent cursor-pointer whitespace-nowrap group"
-              style={{
-                color: currentMode === mode.key ? "#fff" : "var(--text-tertiary)",
-                background: currentMode === mode.key ? "var(--primary)" : "transparent",
-                boxShadow: currentMode === mode.key ? "0 1px 3px rgba(34,211,167,0.3)" : "none",
-              }}
-              onMouseEnter={(e) => {
-                if (currentMode !== mode.key) {
-                  (e.currentTarget as HTMLElement).style.background = "var(--bg-hover)";
-                  (e.currentTarget as HTMLElement).style.color = "var(--text-secondary)";
-                }
-              }}
-              onMouseLeave={(e) => {
-                if (currentMode !== mode.key) {
-                  (e.currentTarget as HTMLElement).style.background = "transparent";
-                  (e.currentTarget as HTMLElement).style.color = "var(--text-tertiary)";
-                }
-              }}
-            >
-              <span style={{ fontSize: 10, opacity: 0.7 }}>{mode.emoji}</span>
-              {mode.label}
-              {mode.comingSoon && (
-                <span
-                  className="text-[9px] px-1 py-0 rounded-full ml-0.5 font-normal"
-                  style={{
-                    background: currentMode === mode.key ? "rgba(255,255,255,0.2)" : "var(--bg-hover)",
-                    color: currentMode === mode.key ? "rgba(255,255,255,0.8)" : "var(--text-muted)",
-                  }}
-                >
-                  即将推出
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
+        {/* Mode Tabs - desktop only */}
+        {!isMobile && (
+          <div
+            className="flex gap-0.5 rounded-[var(--radius-md)] p-0.5"
+            style={{
+              background: "var(--bg-elevated)",
+              border: "1px solid var(--border-subtle)",
+            }}
+          >
+            {MODES.map((mode) => (
+              <button
+                key={mode.key}
+                onClick={() => setCurrentMode(mode.key)}
+                className="relative flex items-center gap-1.5 px-3 py-1 rounded-[var(--radius-sm)] text-xs font-medium border-none bg-transparent cursor-pointer whitespace-nowrap group"
+                style={{
+                  color: currentMode === mode.key ? "#fff" : "var(--text-tertiary)",
+                  background: currentMode === mode.key ? "var(--primary)" : "transparent",
+                  boxShadow: currentMode === mode.key ? "0 1px 3px rgba(34,211,167,0.3)" : "none",
+                }}
+                onMouseEnter={(e) => {
+                  if (currentMode !== mode.key) {
+                    (e.currentTarget as HTMLElement).style.background = "var(--bg-hover)";
+                    (e.currentTarget as HTMLElement).style.color = "var(--text-secondary)";
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (currentMode !== mode.key) {
+                    (e.currentTarget as HTMLElement).style.background = "transparent";
+                    (e.currentTarget as HTMLElement).style.color = "var(--text-tertiary)";
+                  }
+                }}
+              >
+                <span style={{ fontSize: 10, opacity: 0.7 }}>{mode.emoji}</span>
+                {mode.label}
+                {mode.comingSoon && (
+                  <span
+                    className="text-[9px] px-1 py-0 rounded-full ml-0.5 font-normal"
+                    style={{
+                      background: currentMode === mode.key ? "rgba(255,255,255,0.2)" : "var(--bg-hover)",
+                      color: currentMode === mode.key ? "rgba(255,255,255,0.8)" : "var(--text-muted)",
+                    }}
+                  >
+                    即将推出
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Right: Actions */}
       <div className="flex items-center gap-1">
-        {/* Layout direction toggle */}
-        <button
-          onClick={() => setLayoutDirection(layoutDirection === "vertical" ? "horizontal" : "vertical")}
-          className="w-8 h-8 rounded-[var(--radius-sm)] border-none bg-transparent flex items-center justify-center cursor-pointer"
-          style={{ color: "var(--text-tertiary)" }}
-          title={layoutDirection === "vertical" ? "切换为横向布局" : "切换为纵向布局"}
-          onMouseEnter={(e) => {
-            (e.currentTarget as HTMLElement).style.background = "var(--bg-hover)";
-            (e.currentTarget as HTMLElement).style.color = "var(--text-secondary)";
-          }}
-          onMouseLeave={(e) => {
-            (e.currentTarget as HTMLElement).style.background = "transparent";
-            (e.currentTarget as HTMLElement).style.color = "var(--text-tertiary)";
-          }}
-        >
-          {layoutDirection === "vertical" ? (
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="5" y1="12" x2="19" y2="12" /><polyline points="12 5 19 12 12 19" />
-            </svg>
-          ) : (
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="12" y1="5" x2="12" y2="19" /><polyline points="19 12 12 19 5 12" />
-            </svg>
-          )}
-        </button>
+        {/* Layout direction toggle - desktop only */}
+        {!isMobile && (
+          <button
+            onClick={() => setLayoutDirection(layoutDirection === "vertical" ? "horizontal" : "vertical")}
+            className="w-8 h-8 rounded-[var(--radius-sm)] border-none bg-transparent flex items-center justify-center cursor-pointer"
+            style={{ color: "var(--text-tertiary)" }}
+            title={layoutDirection === "vertical" ? "切换为横向布局" : "切换为纵向布局"}
+            onMouseEnter={(e) => {
+              (e.currentTarget as HTMLElement).style.background = "var(--bg-hover)";
+              (e.currentTarget as HTMLElement).style.color = "var(--text-secondary)";
+            }}
+            onMouseLeave={(e) => {
+              (e.currentTarget as HTMLElement).style.background = "transparent";
+              (e.currentTarget as HTMLElement).style.color = "var(--text-tertiary)";
+            }}
+          >
+            {layoutDirection === "vertical" ? (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="5" y1="12" x2="19" y2="12" /><polyline points="12 5 19 12 12 19" />
+              </svg>
+            ) : (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="12" y1="5" x2="12" y2="19" /><polyline points="19 12 12 19 5 12" />
+              </svg>
+            )}
+          </button>
+        )}
 
         {/* Node count indicator */}
         <div
@@ -136,10 +149,12 @@ export function Header() {
           {nodes.length} 节点
         </div>
 
-        <div
-          className="mx-1"
-          style={{ width: 1, height: 20, background: "var(--border-default)" }}
-        />
+        {!isMobile && (
+          <div
+            className="mx-1"
+            style={{ width: 1, height: 20, background: "var(--border-default)" }}
+          />
+        )}
 
         {/* Universe link */}
         <Link
@@ -159,7 +174,7 @@ export function Header() {
             (e.currentTarget as HTMLElement).style.color = "var(--text-tertiary)";
           }}
         >
-          🌌 知识宇宙
+          {!isMobile && "🌌 "}知识宇宙
         </Link>
       </div>
     </header>
