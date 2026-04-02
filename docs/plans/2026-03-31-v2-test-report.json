@@ -1,0 +1,158 @@
+{
+  "timestamp": "2026-03-31T10:04:48.379Z",
+  "total": 30,
+  "passed": 30,
+  "failed": 0,
+  "tests": [
+    {
+      "test": "A1-页面加载",
+      "passed": true,
+      "detail": "Status 200"
+    },
+    {
+      "test": "A2-空白导图",
+      "passed": true,
+      "detail": "0 nodes"
+    },
+    {
+      "test": "A3-输入知识点",
+      "passed": true,
+      "detail": "type=knowledge"
+    },
+    {
+      "test": "A4-AI生成结构化导图",
+      "passed": true,
+      "detail": "root=深度学习, children=4"
+    },
+    {
+      "test": "A5-无垃圾补全",
+      "passed": true,
+      "detail": "items=[基本概念,神经网络结构,反向传播算法,激活函数,核心模型,卷积神经网络]"
+    },
+    {
+      "test": "A6-创建根节点",
+      "passed": true,
+      "detail": "id=node_1774951"
+    },
+    {
+      "test": "A7-补全节点(不超过2个)",
+      "passed": true,
+      "detail": "count=2"
+    },
+    {
+      "test": "A8-添加子节点",
+      "passed": true,
+      "detail": "edge node_1->node_1"
+    },
+    {
+      "test": "A9-数据完整性",
+      "passed": true,
+      "detail": "5 nodes, 4 edges"
+    },
+    {
+      "test": "A9b-AI导图批量创建",
+      "passed": true,
+      "detail": "nodes=6, edges=5"
+    },
+    {
+      "test": "A10-导图列表",
+      "passed": true,
+      "detail": "1 maps"
+    },
+    {
+      "test": "B1-创建新知识库",
+      "passed": true,
+      "detail": "map_id=map_17749514, name=竞品分析"
+    },
+    {
+      "test": "B2-在新知识库添加节点",
+      "passed": true,
+      "detail": "id=node_1774951"
+    },
+    {
+      "test": "B3-数据隔离",
+      "passed": true,
+      "detail": "default=11, map2=3"
+    },
+    {
+      "test": "B4-清空知识库",
+      "passed": true,
+      "detail": "success=true"
+    },
+    {
+      "test": "B5-清空后为空",
+      "passed": true,
+      "detail": "0 nodes"
+    },
+    {
+      "test": "B6-禁止删除默认库",
+      "passed": true,
+      "detail": "success=undefined"
+    },
+    {
+      "test": "B7-禁止清空默认库",
+      "passed": true,
+      "detail": "status=400"
+    },
+    {
+      "test": "B8-删除知识库",
+      "passed": true,
+      "detail": "success=true"
+    },
+    {
+      "test": "B9-删除后列表更新",
+      "passed": true,
+      "detail": "maps=1"
+    },
+    {
+      "test": "B10-归属推荐",
+      "passed": true,
+      "detail": "target=深度学习"
+    },
+    {
+      "test": "C1-批量创建知识库",
+      "passed": true,
+      "detail": "created 3 maps"
+    },
+    {
+      "test": "C2-多知识库独立添加",
+      "passed": true,
+      "detail": "3 nodes added to 3 separate maps"
+    },
+    {
+      "test": "C3-数据完全隔离",
+      "passed": true,
+      "detail": "each map has exactly 1 node"
+    },
+    {
+      "test": "C4-20次快速切换请求",
+      "passed": true,
+      "detail": "all 200"
+    },
+    {
+      "test": "C5-20个并发请求",
+      "passed": true,
+      "detail": "20/200"
+    },
+    {
+      "test": "C6-无意义词不污染",
+      "passed": true,
+      "detail": "mindMap=null"
+    },
+    {
+      "test": "C7-删除节点",
+      "passed": true,
+      "detail": "deleted=node_17749"
+    },
+    {
+      "test": "C8-删除后边也移除",
+      "passed": true,
+      "detail": "no orphan edges"
+    },
+    {
+      "test": "C9-服务器仍然稳定",
+      "passed": true,
+      "detail": "status=200"
+    }
+  ]
+}
