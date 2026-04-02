@@ -671,6 +671,42 @@ export function MindMapPanel() {
     URL.revokeObjectURL(a.href);
   }, [storeNodes, storeEdges]);
 
+  // Export PDF
+  const handleExportPdf = useCallback(() => {
+    const viewportEl = document.querySelector('.react-flow__viewport') as HTMLElement;
+    if (!viewportEl) return;
+    // @ts-ignore
+    import('html-to-image').then(({ toPng }) => {
+      return toPng(viewportEl, {
+        backgroundColor: '#09090b',
+        pixelRatio: 2,
+        width: viewportEl.scrollWidth,
+        height: viewportEl.scrollHeight,
+        style: { transform: 'none' },
+      });
+    }).then((dataUrl: string) => {
+      // @ts-ignore
+      import('jspdf').then(({ default: jsPDF }) => {
+        const imgW = viewportEl.scrollWidth;
+        const imgH = viewportEl.scrollHeight;
+        // A4 landscape: 297 x 210 mm
+        const pdf = new jsPDF({ orientation: imgW > imgH ? 'l' : 'p', unit: 'mm', format: 'a4' });
+        const pageW = pdf.internal.pageSize.getWidth();
+        const pageH = pdf.internal.pageSize.getHeight();
+        const margin = 10;
+        const usableW = pageW - margin * 2;
+        const usableH = pageH - margin * 2;
+        const scale = Math.min(usableW / imgW, usableH / imgH);
+        const scaledW = imgW * scale;
+        const scaledH = imgH * scale;
+        pdf.addImage(dataUrl, 'PNG', margin, margin, scaledW, scaledH);
+        pdf.save(`mindgrow-${new Date().toISOString().slice(0, 10)}.pdf`);
+      });
+    }).catch((err: Error) => {
+      console.error('Export PDF failed:', err);
+    });
+  }, []);
+
   // Empty state
   if (storeNodes.length === 0) {
     return (
@@ -732,6 +768,7 @@ export function MindMapPanel() {
             {!isMobile && (
               <div className="flex gap-0 bg-[var(--card)] border border-[var(--border)] rounded-xl p-1">
                 <button onClick={handleExportPng} className="px-3 py-1.5 rounded-lg text-xs font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-all cursor-pointer" title="导出 PNG">📷 PNG</button>
+                <button onClick={handleExportPdf} className="px-3 py-1.5 rounded-lg text-xs font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-all cursor-pointer" title="导出 PDF">📄 PDF</button>
                 <button onClick={handleExportMarkdown} className="px-3 py-1.5 rounded-lg text-xs font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-all cursor-pointer" title="导出 Markdown">📝 MD</button>
               </div>
             )}
@@ -772,6 +809,7 @@ export function MindMapPanel() {
             {isMobile && (
               <div className="flex gap-0 bg-[var(--card)] border border-[var(--border)] rounded-xl p-1">
                 <button onClick={handleExportPng} className="px-3 py-1.5 rounded-lg text-xs font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-all cursor-pointer">📷</button>
+                <button onClick={handleExportPdf} className="px-3 py-1.5 rounded-lg text-xs font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-all cursor-pointer">📄</button>
                 <button onClick={handleExportMarkdown} className="px-3 py-1.5 rounded-lg text-xs font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-all cursor-pointer">📝</button>
               </div>
             )}
