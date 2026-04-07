@@ -3,6 +3,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useMindGrowStore } from "@/store/mindgrow-store";
 import type { MindMap } from "@/lib/db/database";
+import { API_BASE_URL } from "@/lib/config";
 
 export function Sidebar() {
   const {
@@ -54,7 +55,7 @@ export function Sidebar() {
       return;
     }
     try {
-      const res = await fetch("/api/knowledge", {
+      const res = await fetch(API_BASE_URL + "/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "createMap", name: newName.trim() }),
@@ -65,13 +66,13 @@ export function Sidebar() {
         setNewName("");
         setIsCreating(false);
         // Reload maps
-        const mapsRes = await fetch("/api/knowledge?action=maps");
+        const mapsRes = await fetch(API_BASE_URL + "/api/knowledge?action=maps");
         if (mapsRes.ok) {
           const { maps: allMaps } = await mapsRes.json();
           useMindGrowStore.getState().setMaps(allMaps);
         }
         // Switch to the new map
-        const dataRes = await fetch(`/api/knowledge?mapId=${map.id}`);
+        const dataRes = await fetch(API_BASE_URL + `/api/knowledge?mapId=${map.id}`);
         if (dataRes.ok) {
           const { nodes, edges } = await dataRes.json();
           useMindGrowStore.getState().setNodes(nodes);
@@ -87,7 +88,7 @@ export function Sidebar() {
     setCurrentMapId(mapId);
     setContextMenu(null);
     try {
-      const res = await fetch(`/api/knowledge?mapId=${mapId}`);
+      const res = await fetch(API_BASE_URL + `/api/knowledge?mapId=${mapId}`);
       if (res.ok) {
         const { nodes, edges } = await res.json();
         useMindGrowStore.getState().setNodes(nodes);
@@ -103,13 +104,13 @@ export function Sidebar() {
     const { map } = contextMenu;
     if (map.isDefault) return;
     try {
-      await fetch("/api/knowledge", {
+      await fetch(API_BASE_URL + "/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "deleteMap", mapId: map.id }),
       });
       // Reload maps
-      const mapsRes = await fetch("/api/knowledge?action=maps");
+      const mapsRes = await fetch(API_BASE_URL + "/api/knowledge?action=maps");
       if (mapsRes.ok) {
         const { maps: allMaps } = await mapsRes.json();
         useMindGrowStore.getState().setMaps(allMaps);
@@ -129,7 +130,7 @@ export function Sidebar() {
     const { map } = contextMenu;
     if (map.isDefault) return;
     try {
-      await fetch("/api/knowledge", {
+      await fetch(API_BASE_URL + "/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "clearMap", mapId: map.id }),
@@ -150,13 +151,13 @@ export function Sidebar() {
       return;
     }
     try {
-      await fetch("/api/knowledge", {
+      await fetch(API_BASE_URL + "/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "renameMap", mapId: editingId, name: editName.trim() }),
       });
       // Reload maps
-      const mapsRes = await fetch("/api/knowledge?action=maps");
+      const mapsRes = await fetch(API_BASE_URL + "/api/knowledge?action=maps");
       if (mapsRes.ok) {
         const { maps: allMaps } = await mapsRes.json();
         useMindGrowStore.getState().setMaps(allMaps);

@@ -21,6 +21,7 @@ import ReactFlow, {
 import "reactflow/dist/style.css";
 import { useMindGrowStore } from "@/store/mindgrow-store";
 import { KnowledgeNode, KnowledgeEdge } from "@/types";
+import { API_BASE_URL } from "@/lib/config";
 
 // ============================================================
 // Branch color palette
@@ -485,10 +486,10 @@ export function MindMapPanel() {
       onNodesChange(changes);
       for (const change of changes) {
         if (change.type === "remove") {
-          try { await fetch("/api/knowledge?nodeId=" + change.id, { method: "DELETE" }); }
+          try { await fetch(API_BASE_URL + "/api/knowledge?nodeId=" + change.id, { method: "DELETE" }); }
           catch (e) { console.error("Failed to delete node:", e); }
         } else if (change.type === "position" && change.position && !change.dragging) {
-          fetch("/api/knowledge", {
+          fetch(API_BASE_URL + "/api/knowledge", {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ nodeId: change.id, positionX: change.position.x, positionY: change.position.y }),
@@ -511,11 +512,11 @@ export function MindMapPanel() {
         pushHistory();
         for (const node of selected) {
           removeNode(node.id);
-          fetch("/api/knowledge?nodeId=" + node.id, { method: "DELETE" })
+          fetch(API_BASE_URL + "/api/knowledge?nodeId=" + node.id, { method: "DELETE" })
             .then((r) => r.json())
             .then((d) => {
               if (d.success) {
-                fetch(`/api/knowledge?mapId=${currentMapId}`)
+                fetch(API_BASE_URL + `/api/knowledge?mapId=${currentMapId}`)
                   .then((r) => r.json())
                   .then((d) => { setStoreNodes(d.nodes); setStoreEdges(d.edges); })
                   .catch(console.error);
@@ -546,7 +547,7 @@ export function MindMapPanel() {
 
   // Reload after edit/delete from context menu
   const reloadMap = useCallback(() => {
-    fetch(`/api/knowledge?mapId=${currentMapId}`)
+    fetch(API_BASE_URL + `/api/knowledge?mapId=${currentMapId}`)
       .then((r) => r.json())
       .then((d) => { setStoreNodes(d.nodes); setStoreEdges(d.edges); })
       .catch(console.error);
@@ -578,7 +579,7 @@ export function MindMapPanel() {
     }
     pushHistory();
     try {
-      await fetch("/api/knowledge", {
+      await fetch(API_BASE_URL + "/api/knowledge", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ nodeId: editingNode.id, content: editingNode.content.trim() }),
@@ -627,7 +628,7 @@ export function MindMapPanel() {
     if (!contextMenu) return;
     pushHistory();
     removeNode(contextMenu.nodeId);
-    fetch("/api/knowledge?nodeId=" + contextMenu.nodeId, { method: "DELETE" })
+    fetch(API_BASE_URL + "/api/knowledge?nodeId=" + contextMenu.nodeId, { method: "DELETE" })
       .then((r) => r.json())
       .then((d) => { if (d.success) reloadMap(); })
       .catch(console.error);

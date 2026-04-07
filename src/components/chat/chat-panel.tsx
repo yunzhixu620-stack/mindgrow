@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useMindGrowStore } from "@/store/mindgrow-store";
 import { ChatMessage, AIMindMap } from "@/types";
+import { API_BASE_URL } from "@/lib/config";
 
 // ============================================================
 // Simple Markdown renderer
@@ -280,7 +281,7 @@ export function ChatPanel() {
 
   // Load initial data
   useEffect(() => {
-    fetch("/api/knowledge")
+    fetch(API_BASE_URL + "/api/knowledge")
       .then((res) => res.json())
       .then(({ nodes, edges }) => {
         if (nodes.length > 0) {
@@ -304,7 +305,7 @@ export function ChatPanel() {
     setProcessing(true);
 
     try {
-      const res = await fetch("/api/chat", {
+      const res = await fetch(API_BASE_URL + "/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ input: userMessage.content, mapId: currentMapId }),
@@ -362,7 +363,7 @@ export function ChatPanel() {
     }
 
     try {
-      const res = await fetch("/api/knowledge", {
+      const res = await fetch(API_BASE_URL + "/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -381,7 +382,7 @@ export function ChatPanel() {
           timestamp: new Date().toISOString(),
         });
       } else {
-        const reloadRes = await fetch("/api/knowledge");
+        const reloadRes = await fetch(API_BASE_URL + "/api/knowledge");
         if (reloadRes.ok) {
           const { nodes, edges } = await reloadRes.json();
           setNodes(nodes);
