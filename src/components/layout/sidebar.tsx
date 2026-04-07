@@ -254,7 +254,7 @@ export function Sidebar() {
 
         {/* Create new map */}
         {isCreating ? (
-          <div className="px-3 py-2">
+          <div className="px-3 py-2 space-y-2">
             <input
               ref={createRef}
               value={newName}
@@ -263,10 +263,24 @@ export function Sidebar() {
                 if (e.key === "Enter") handleCreate();
                 if (e.key === "Escape") { setIsCreating(false); setNewName(""); }
               }}
-              onBlur={() => { if (!newName.trim()) { setIsCreating(false); setNewName(""); } }}
               placeholder="输入知识库名称..."
               className="w-full bg-[var(--background)] border border-[var(--border)] rounded-lg px-2 py-1.5 text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] outline-none focus:border-[var(--primary)]"
             />
+            <div className="flex gap-2">
+              <button
+                onClick={handleCreate}
+                disabled={!newName.trim()}
+                className="flex-1 py-1.5 bg-[var(--primary)] text-[var(--primary-foreground)] rounded-lg text-xs font-medium hover:opacity-90 transition-opacity cursor-pointer disabled:opacity-40"
+              >
+                创建
+              </button>
+              <button
+                onClick={() => { setIsCreating(false); setNewName(""); }}
+                className="flex-1 py-1.5 bg-[var(--border)] text-[var(--foreground)] rounded-lg text-xs hover:opacity-80 transition-opacity cursor-pointer"
+              >
+                取消
+              </button>
+            </div>
           </div>
         ) : (
           <button
