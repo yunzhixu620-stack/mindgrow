@@ -8,6 +8,7 @@ import { useMindGrowStore } from "@/store/mindgrow-store";
 import type { MindMap } from "@/lib/db/database";
 import { Category } from "@/types";
 import { API_BASE_URL } from "@/lib/config";
+import { TemplateBrowser } from "@/components/template/template-browser";
 
 export default function Home() {
   const {
@@ -32,6 +33,7 @@ export default function Home() {
   const [newCategoryName, setNewCategoryName] = useState("");
   const [newCategoryIcon, setNewCategoryIcon] = useState("📁");
   const [showIconPicker, setShowIconPicker] = useState(false);
+  const [showTemplates, setShowTemplates] = useState(false);
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
   const [showUncategorized, setShowUncategorized] = useState(true);
   const [contextMenu, setContextMenu] = useState<{ map: MindMap } | null>(null);
@@ -291,6 +293,15 @@ export default function Home() {
                   >
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                       <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /><line x1="12" y1="11" x2="12" y2="17" /><line x1="9" y1="14" x2="15" y2="14" />
+                    </svg>
+                  </button>
+                  <button
+                    onClick={() => setShowTemplates(true)}
+                    className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--bg-hover)] text-[var(--muted-foreground)] cursor-pointer"
+                    title="模板中心"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                      <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
                     </svg>
                   </button>
                   <button
@@ -588,6 +599,42 @@ export default function Home() {
             <MindMapPanel />
           )}
         </div>
+        {/* Mobile Template Browser */}
+        {showTemplates && (
+          <TemplateBrowser
+            onSelect={async (template) => {
+              setShowTemplates(false);
+              setDrawerOpen(false);
+              try {
+                const res = await fetch(API_BASE_URL + "/api/knowledge", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    action: "createFromTemplate",
+                    name: template.mindMap.root,
+                    description: template.mindMap.rootDesc || template.description,
+                    color: "#22d3a7",
+                    template: template.mindMap,
+                  }),
+                });
+                if (res.ok) {
+                  const { map } = await res.json();
+                  saveChatHistory();
+                  setCurrentMapId(map.id);
+                  const dataRes = await fetch(API_BASE_URL + `/api/knowledge?mapId=${map.id}`);
+                  if (dataRes.ok) {
+                    const { nodes, edges } = await dataRes.json();
+                    setNodes(nodes || []);
+                    setEdges(edges || []);
+                  }
+                  loadChatHistory(map.id);
+                  await reloadAll();
+                }
+              } catch (e) { console.error(e); }
+            }}
+            onClose={() => setShowTemplates(false)}
+          />
+        )}
       </main>
     );
   }

@@ -5,6 +5,7 @@ import { useMindGrowStore } from "@/store/mindgrow-store";
 import type { MindMap } from "@/lib/db/database";
 import { API_BASE_URL } from "@/lib/config";
 import { Category } from "@/types";
+import { TemplateBrowser } from "@/components/template/template-browser";
 
 // ============================================================
 // Category header (collapsible folder)
@@ -232,6 +233,7 @@ export function Sidebar() {
   const [newCategoryName, setNewCategoryName] = useState("");
   const [newCategoryIcon, setNewCategoryIcon] = useState("📁");
   const [showIconPicker, setShowIconPicker] = useState(false);
+  const [showTemplates, setShowTemplates] = useState(false);
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const createRef = useRef<HTMLInputElement>(null);
@@ -542,6 +544,16 @@ export function Sidebar() {
               <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /><line x1="12" y1="11" x2="12" y2="17" /><line x1="9" y1="14" x2="15" y2="14" />
             </svg>
           </button>
+          {/* Template Center button */}
+          <button
+            onClick={() => setShowTemplates(true)}
+            className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--muted)] text-[var(--muted-foreground)] transition-colors cursor-pointer"
+            title="模板中心"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
+            </svg>
+          </button>
           <button
             onClick={() => setSidebarOpen(false)}
             className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--muted)] text-[var(--muted-foreground)] transition-colors cursor-pointer"
@@ -771,6 +783,50 @@ export function Sidebar() {
             </div>
           </div>
         </div>
+      )}
+      {/* Template Browser */}
+      {showTemplates && (
+        <TemplateBrowser
+          onSelect={async (template) => {
+            setShowTemplates(false);
+            try {
+              const res = await fetch(API_BASE_URL + "/api/knowledge", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  action: "createFromTemplate",
+                  name: template.mindMap.root,
+                  description: template.mindMap.rootDesc || template.description,
+                  color: "#22d3a7",
+                  template: template.mindMap,
+                }),
+              });
+              if (res.ok) {
+                const { map } = await res.json();
+                setCurrentMapId(map.id);
+                const [mapsRes, catsRes] = await Promise.all([
+                  fetch(API_BASE_URL + "/api/knowledge?action=maps"),
+                  fetch(API_BASE_URL + "/api/knowledge?action=categories"),
+                ]);
+                if (mapsRes.ok) {
+                  const { maps: allMaps } = await mapsRes.json();
+                  useMindGrowStore.getState().setMaps(allMaps);
+                }
+                if (catsRes.ok) {
+                  const { categories: allCats } = await catsRes.json();
+                  useMindGrowStore.getState().setCategories(allCats);
+                }
+                const dataRes = await fetch(API_BASE_URL + `/api/knowledge?mapId=${map.id}`);
+                if (dataRes.ok) {
+                  const { nodes, edges } = await dataRes.json();
+                  useMindGrowStore.getState().setNodes(nodes || []);
+                  useMindGrowStore.getState().setEdges(edges || []);
+                }
+              }
+            } catch (e) { console.error("Failed to create from template:", e); }
+          }}
+          onClose={() => setShowTemplates(false)}
+        />
       )}
     </div>
   );

@@ -291,6 +291,71 @@ async function handleKnowledge(req) {
     return { status: res.status, data: { map: convertMap(res.body && res.body[0] ? res.body[0] : res.body) } };
   }
 
+  // Create map from template: creates map + nodes + edges from mindMap structure
+  if (body.action === 'createFromTemplate') {
+    const id = 'map_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+    const now = new Date().toISOString();
+    const template = body.template;
+    if (!template || !template.root) return { status: 400, data: { error: 'Invalid template data' } };
+
+    // Create map
+    const mapData = {
+      id, name: body.name || template.root, description: body.description || (template.rootDesc || '从模板创建'),
+      color: body.color || '#22d3a7', is_default: false, node_count: 0,
+      created_at: now, updated_at: now,
+    };
+    if (body.categoryId) mapData.category_id = body.categoryId;
+
+    const mapRes = await fetchJSON('POST', `${SUPABASE_URL}/rest/v1/maps`, {
+      'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Prefer': 'return=representation',
+    }, mapData);
+
+    // Create nodes and edges from template structure
+    const createdNodes = [];
+    const createdEdges = [];
+    const rootId = 'node_' + Date.now() + '_r';
+
+    await fetchJSON('POST', `${SUPABASE_URL}/rest/v1/nodes`, {
+      'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY,
+    }, { id: rootId, content: template.root, desc: template.rootDesc || '', type: 'topic', status: 'active', source: 'template', confidence: 1.0, map_id: id, created_at: now, updated_at: now });
+    createdNodes.push({ id: rootId, content: template.root });
+
+    for (const child of (template.children || [])) {
+      const childId = 'node_' + Date.now() + '_c' + createdNodes.length;
+      await fetchJSON('POST', `${SUPABASE_URL}/rest/v1/nodes`, {
+        'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY,
+      }, { id: childId, content: child.topic, desc: child.desc || '', type: 'concept', status: 'active', source: 'template', confidence: 0.9, map_id: id, created_at: now, updated_at: now });
+      createdNodes.push({ id: childId, content: child.topic });
+
+      const edgeId = 'edge_' + Date.now() + '_' + createdEdges.length;
+      await fetchJSON('POST', `${SUPABASE_URL}/rest/v1/edges`, {
+        'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY,
+      }, { id: edgeId, source_id: rootId, target_id: childId, relation: 'contains', weight: 1.0, map_id: id, created_at: now });
+      createdEdges.push(edgeId);
+
+      for (const item of (child.items || [])) {
+        const itemId = 'node_' + Date.now() + '_i' + createdNodes.length;
+        await fetchJSON('POST', `${SUPABASE_URL}/rest/v1/nodes`, {
+          'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY,
+        }, { id: itemId, content: item, type: 'detail', status: 'active', source: 'template', confidence: 0.8, map_id: id, created_at: now, updated_at: now });
+        createdNodes.push({ id: itemId, content: item });
+
+        const itemEdgeId = 'edge_' + Date.now() + '_' + createdEdges.length;
+        await fetchJSON('POST', `${SUPABASE_URL}/rest/v1/edges`, {
+          'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY,
+        }, { id: itemEdgeId, source_id: childId, target_id: itemId, relation: 'contains', weight: 0.8, map_id: id, created_at: now });
+        createdEdges.push(itemEdgeId);
+      }
+    }
+
+    // Update node count
+    await fetchJSON('PATCH', `${SUPABASE_URL}/rest/v1/maps?id=eq.${id}`, {
+      'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Prefer': 'return=minimal',
+    }, { node_count: createdNodes.length, updated_at: now });
+
+    return { status: 200, data: { map: convertMap(mapRes.body && mapRes.body[0] ? mapRes.body[0] : mapRes.body), nodeCount: createdNodes.length } };
+  }
+
   if (body.action === 'deleteMap') {
     const mapId = body.mapId;
     if (!mapId || mapId === 'map_default') return { status: 400, data: { error: 'Cannot delete default map' } };
