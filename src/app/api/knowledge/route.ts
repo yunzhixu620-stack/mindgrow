@@ -12,6 +12,11 @@ import {
   deleteMap as dbDeleteMap,
   renameMap as dbRenameMap,
   clearMap as dbClearMap,
+  getAllCategories,
+  createCategory as dbCreateCategory,
+  deleteCategory as dbDeleteCategory,
+  renameCategory as dbRenameCategory,
+  moveMapToCategory as dbMoveMapToCategory,
 } from "@/lib/db/database";
 import { evaluateRestructure } from "@/lib/ai/pipeline";
 import { KnowledgeNode } from "@/types";
@@ -26,6 +31,11 @@ export async function GET(request: NextRequest) {
     if (action === "maps") {
       const maps = await getAllMaps();
       return NextResponse.json({ maps });
+    }
+
+    if (action === "categories") {
+      const categories = await getAllCategories();
+      return NextResponse.json({ categories });
     }
 
     // Default: return nodes and edges for a specific map
@@ -73,6 +83,30 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: "Cannot delete default map" }, { status: 400 });
       }
       const success = await dbDeleteMap(mapId);
+      return NextResponse.json({ success });
+    }
+
+    // Create category
+    if (action === "createCategory") {
+      const category = await dbCreateCategory(body.name || "新文件夹", body.icon || "📁", body.color || "#22d3a7");
+      return NextResponse.json({ category });
+    }
+
+    // Delete category
+    if (action === "deleteCategory") {
+      const success = await dbDeleteCategory(body.categoryId);
+      return NextResponse.json({ success });
+    }
+
+    // Rename category
+    if (action === "renameCategory") {
+      const success = await dbRenameCategory(body.categoryId, body.name);
+      return NextResponse.json({ success });
+    }
+
+    // Move map to category
+    if (action === "moveMapToCategory") {
+      const success = await dbMoveMapToCategory(body.mapId, body.categoryId || null);
       return NextResponse.json({ success });
     }
 
