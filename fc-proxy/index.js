@@ -191,16 +191,32 @@ async function handleKnowledge(req) {
     const mapId = query.mapId || 'map_default';
 
     if (action === 'maps') {
-      const mapsRes = await fetchJSON('GET', `${SUPABASE_URL}/rest/v1/maps?select=*&order=created_at.asc`, {
+      const mapsRes = await fetchJSON('GET', `${SUPABASE_URL}/rest/v1/maps?select=*&order=is_default.desc,updated_at.desc`, {
         'apikey': SUPABASE_KEY,
         'Authorization': 'Bearer ' + SUPABASE_KEY,
       });
-      return { status: mapsRes.status, data: { maps: mapsRes.body || [] } };
+      return { status: mapsRes.status, data: { maps: (mapsRes.body || []).map(convertMap) } };
     }
 
-    // Return nodes and edges
+    if (action === 'categories') {
+      const catsRes = await fetchJSON('GET', `${SUPABASE_URL}/rest/v1/categories?select=*&order=sort_order.asc`, {
+        'apikey': SUPABASE_KEY,
+        'Authorization': 'Bearer ' + SUPABASE_KEY,
+      });
+      const categories = (catsRes.body || []).map(c => ({
+        id: c.id,
+        name: c.name,
+        icon: c.icon || '📁',
+        color: c.color || '#22d3a7',
+        sortOrder: c.sort_order || 0,
+        createdAt: c.created_at,
+      }));
+      return { status: catsRes.status, data: { categories } };
+    }
+
+    // Return nodes, edges (with camelCase conversion)
     const [nodesRes, edgesRes] = await Promise.all([
-      fetchJSON('GET', `${SUPABASE_URL}/rest/v1/nodes?map_id=eq.${mapId}&select=*`, {
+      fetchJSON('GET', `${SUPABASE_URL}/rest/v1/nodes?map_id=eq.${mapId}&status=eq.active&select=*`, {
         'apikey': SUPABASE_KEY,
         'Authorization': 'Bearer ' + SUPABASE_KEY,
       }),
@@ -209,7 +225,29 @@ async function handleKnowledge(req) {
         'Authorization': 'Bearer ' + SUPABASE_KEY,
       }),
     ]);
-    return { status: 200, data: { nodes: nodesRes.body || [], edges: edgesRes.body || [] } };
+
+    // Convert snake_case to camelCase
+    const nodes = (nodesRes.body || []).map(n => ({
+      id: n.id,
+      content: n.content,
+      desc: n.desc || '',
+      type: n.type,
+      status: n.status,
+      source: n.source,
+      confidence: n.confidence,
+      createdAt: n.created_at,
+      updatedAt: n.updated_at,
+    }));
+    const edges = (edgesRes.body || []).map(e => ({
+      id: e.id,
+      sourceId: e.source_id,
+      targetId: e.target_id,
+      relation: e.relation,
+      weight: e.weight,
+      createdAt: e.created_at,
+    }));
+
+    return { status: 200, data: { nodes, edges } };
   }
 
   // DELETE
@@ -239,16 +277,18 @@ async function handleKnowledge(req) {
   if (body.action === 'createMap') {
     const id = 'map_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
     const now = new Date().toISOString();
+    const mapData = {
+      id, name: body.name || '新知识库', description: body.description || '',
+      color: body.color || '#22d3a7', is_default: false, node_count: 0,
+      created_at: now, updated_at: now,
+    };
+    if (body.categoryId) mapData.category_id = body.categoryId;
     const res = await fetchJSON('POST', `${SUPABASE_URL}/rest/v1/maps`, {
       'apikey': SUPABASE_KEY,
       'Authorization': 'Bearer ' + SUPABASE_KEY,
       'Prefer': 'return=representation',
-    }, {
-      id, name: body.name || '新知识库', description: body.description || '',
-      color: body.color || '#22d3a7', is_default: false, node_count: 0,
-      created_at: now, updated_at: now,
-    });
-    return { status: res.status, data: { map: (res.body && res.body[0]) || res.body } };
+    }, mapData);
+    return { status: res.status, data: { map: convertMap(res.body && res.body[0] ? res.body[0] : res.body) } };
   }
 
   if (body.action === 'deleteMap') {
@@ -262,6 +302,9 @@ async function handleKnowledge(req) {
         'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY,
       }),
       fetchJSON('DELETE', `${SUPABASE_URL}/rest/v1/edges?map_id=eq.${mapId}`, {
+        'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY,
+      }),
+      fetchJSON('DELETE', `${SUPABASE_URL}/rest/v1/node_layouts?map_id=eq.${mapId}`, {
         'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY,
       }),
     ]);
@@ -286,6 +329,51 @@ async function handleKnowledge(req) {
     const res = await fetchJSON('PATCH', `${SUPABASE_URL}/rest/v1/maps?id=eq.${body.mapId}`, {
       'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Prefer': 'return=minimal',
     }, { name: body.name, updated_at: new Date().toISOString() });
+    return { status: res.status, data: { success: true } };
+  }
+
+  // ---- Category operations ----
+  if (body.action === 'createCategory') {
+    const id = 'cat_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+    const now = new Date().toISOString();
+    const res = await fetchJSON('GET', `${SUPABASE_URL}/rest/v1/categories?select=sort_order&order=sort_order.desc&limit=1`, {
+      'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY,
+    });
+    const nextOrder = (res.body && res.body.length > 0) ? ((res.body[0].sort_order || 0) + 1) : 0;
+
+    const catRes = await fetchJSON('POST', `${SUPABASE_URL}/rest/v1/categories`, {
+      'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Prefer': 'return=representation',
+    }, {
+      id, name: body.name || '新文件夹', icon: body.icon || '📁',
+      color: body.color || '#22d3a7', sort_order: nextOrder, created_at: now,
+    });
+    const cat = catRes.body && catRes.body[0] ? catRes.body[0] : catRes.body;
+    return { status: catRes.status, data: { category: { id: cat.id, name: cat.name, icon: cat.icon, color: cat.color, sortOrder: cat.sort_order, createdAt: cat.created_at } } };
+  }
+
+  if (body.action === 'deleteCategory') {
+    const catId = body.categoryId;
+    // Move maps out first
+    await fetchJSON('PATCH', `${SUPABASE_URL}/rest/v1/maps?category_id=eq.${catId}`, {
+      'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Prefer': 'return=minimal',
+    }, { category_id: null });
+    const res = await fetchJSON('DELETE', `${SUPABASE_URL}/rest/v1/categories?id=eq.${catId}`, {
+      'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY,
+    });
+    return { status: res.status, data: { success: true } };
+  }
+
+  if (body.action === 'renameCategory') {
+    const res = await fetchJSON('PATCH', `${SUPABASE_URL}/rest/v1/categories?id=eq.${body.categoryId}`, {
+      'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Prefer': 'return=minimal',
+    }, { name: body.name });
+    return { status: res.status, data: { success: true } };
+  }
+
+  if (body.action === 'moveMapToCategory') {
+    const res = await fetchJSON('PATCH', `${SUPABASE_URL}/rest/v1/maps?id=eq.${body.mapId}`, {
+      'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Prefer': 'return=minimal',
+    }, { category_id: body.categoryId || null, updated_at: new Date().toISOString() });
     return { status: res.status, data: { success: true } };
   }
 
@@ -358,6 +446,21 @@ function readBody(req) {
     });
     req.on('error', reject);
   });
+}
+
+function convertMap(row) {
+  if (!row) return row;
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description || '',
+    color: row.color || '#22d3a7',
+    isDefault: row.is_default,
+    categoryId: row.category_id || null,
+    nodeCount: row.node_count || 0,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
 }
 
 // ============================================================
