@@ -26,6 +26,16 @@ export interface NodeLayout {
   zoomLevel: number;
 }
 
+// Category / Folder for organizing knowledge maps
+export interface Category {
+  id: string;
+  name: string;
+  icon: string;       // emoji icon
+  color: string;
+  sortOrder: number;
+  createdAt: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";
