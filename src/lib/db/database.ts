@@ -12,7 +12,6 @@ export interface MindMap {
   description: string;
   color: string;
   isDefault: boolean;
-  categoryId: string | null;
   nodeCount: number;
   createdAt: string;
   updatedAt: string;
@@ -26,105 +25,6 @@ function getDB(): SupabaseClient {
     supabase = createClient(supabaseUrl, supabaseAnonKey);
   }
   return supabase;
-}
-
-// ============================================================
-// Category / Folder operations
-// ============================================================
-
-export interface Category {
-  id: string;
-  name: string;
-  icon: string;
-  color: string;
-  sortOrder: number;
-  createdAt: string;
-}
-
-export async function createCategory(name: string, icon = "📁", color = "#22d3a7"): Promise<Category> {
-  const db = getDB();
-  const id = `cat_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-  const now = new Date().toISOString();
-
-  // Get current max sort_order
-  const { data: existing } = await db.from("categories").select("sort_order").order("sort_order", { ascending: false }).limit(1);
-  const nextOrder = existing && existing.length > 0 ? (existing[0].sort_order || 0) + 1 : 0;
-
-  const { data, error } = await db
-    .from("categories")
-    .insert({
-      id,
-      name,
-      icon,
-      color,
-      sort_order: nextOrder,
-      created_at: now,
-    })
-    .select()
-    .single();
-
-  if (error) throw error;
-  return {
-    id: data.id,
-    name: data.name,
-    icon: data.icon,
-    color: data.color,
-    sortOrder: data.sort_order,
-    createdAt: data.created_at,
-  };
-}
-
-export async function getAllCategories(): Promise<Category[]> {
-  const db = getDB();
-  const { data, error } = await db
-    .from("categories")
-    .select("*")
-    .order("sort_order", { ascending: true });
-
-  if (error) throw error;
-  return (data || []).map(row => ({
-    id: row.id,
-    name: row.name,
-    icon: row.icon,
-    color: row.color,
-    sortOrder: row.sort_order,
-    createdAt: row.created_at,
-  }));
-}
-
-export async function deleteCategory(categoryId: string): Promise<boolean> {
-  const db = getDB();
-  // Move all maps in this category to uncategorized
-  await db.from("maps").update({ category_id: null }).eq("category_id", categoryId);
-  const { error } = await db.from("categories").delete().eq("id", categoryId);
-  return !error;
-}
-
-export async function renameCategory(categoryId: string, name: string): Promise<boolean> {
-  const db = getDB();
-  const { error } = await db
-    .from("categories")
-    .update({ name })
-    .eq("id", categoryId);
-  return !error;
-}
-
-export async function updateCategoryIcon(categoryId: string, icon: string): Promise<boolean> {
-  const db = getDB();
-  const { error } = await db
-    .from("categories")
-    .update({ icon })
-    .eq("id", categoryId);
-  return !error;
-}
-
-export async function moveMapToCategory(mapId: string, categoryId: string | null): Promise<boolean> {
-  const db = getDB();
-  const { error } = await db
-    .from("maps")
-    .update({ category_id: categoryId, updated_at: new Date().toISOString() })
-    .eq("id", mapId);
-  return !error;
 }
 
 // ============================================================
@@ -454,7 +354,6 @@ function rowToMap(row: any): MindMap {
     description: row.description,
     color: row.color,
     isDefault: row.is_default,
-    categoryId: row.category_id || null,
     nodeCount: row.node_count,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

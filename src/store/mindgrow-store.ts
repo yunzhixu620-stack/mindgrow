@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { KnowledgeNode, KnowledgeEdge, ChatMessage, AISuggestion, AIMindMap, Category } from "@/types";
+import { KnowledgeNode, KnowledgeEdge, ChatMessage, AISuggestion, AIMindMap } from "@/types";
 import type { MindMap as DBMindMap } from "@/lib/db/database";
 
 export type AppMode = "knowledge" | "meeting" | "article";
@@ -26,11 +26,6 @@ interface MindGrowState {
   maps: DBMindMap[];
   setMaps: (maps: DBMindMap[]) => void;
   addMap: (map: DBMindMap) => void;
-
-  // Categories
-  categories: Category[];
-  setCategories: (cats: Category[]) => void;
-  addCategory: (cat: Category) => void;
 
   // Nodes & Edges
   nodes: KnowledgeNode[];
@@ -120,10 +115,6 @@ export const useMindGrowStore = create<MindGrowState>((set, get) => ({
   maps: [],
   setMaps: (maps) => set({ maps }),
   addMap: (map) => set((state) => ({ maps: [map, ...state.maps] })),
-
-  categories: [],
-  setCategories: (cats) => set({ categories: cats }),
-  addCategory: (cat) => set((state) => ({ categories: [...state.categories, cat] })),
 
   nodes: [],
   edges: [],
