@@ -1,12 +1,12 @@
 /** @type {import('next').NextConfig} */
+const isProduction = process.env.NODE_ENV === 'production';
 const nextConfig = {
-  output: 'export',
-  basePath: '/mindgrow',
+  output: isProduction ? 'export' : undefined,
+  basePath: isProduction ? '/mindgrow' : '',
   images: {
     unoptimized: true,
   },
-  // Trailing slash for GitHub Pages compatibility
-  trailingSlash: true,
+  trailingSlash: isProduction ? true : false,
   allowedDevOrigins: ["*"],
 };
 module.exports = nextConfig;
