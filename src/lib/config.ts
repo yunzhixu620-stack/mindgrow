@@ -1,5 +1,7 @@
-// API Base URL configuration
-// For local dev: leave empty (uses relative paths to Next.js dev server)
-// For production (GitHub Pages): set to your Alibaba Cloud FC proxy URL
-// e.g. export const API_BASE_URL = 'https://your-fc-url.cn-shanghai.fcapp.run';
-export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || '';
+// API Base URL configuration.
+// Local development keeps the offline adapter unless an explicit URL is set.
+// The exported GitHub Pages app connects to the production FC backend by default.
+const PRODUCTION_API_BASE_URL = 'https://mindgrow-api-eyippxdkkh.cn-hangzhou.fcapp.run';
+
+export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL
+  || (process.env.NODE_ENV === 'production' ? PRODUCTION_API_BASE_URL : '');

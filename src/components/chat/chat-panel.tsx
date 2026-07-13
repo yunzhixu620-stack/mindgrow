@@ -310,6 +310,9 @@ export function ChatPanel() {
   const [input, setInput] = useState("");
   const [confirming, setConfirming] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
+  const [cloudStatus, setCloudStatus] = useState<"checking" | "connected" | "offline">(
+    IS_LOCAL_MODE ? "connected" : "checking"
+  );
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -317,6 +320,29 @@ export function ChatPanel() {
     check();
     window.addEventListener("resize", check);
     return () => window.removeEventListener("resize", check);
+  }, []);
+
+  useEffect(() => {
+    if (IS_LOCAL_MODE) return;
+
+    let active = true;
+    const checkCloud = async () => {
+      try {
+        const response = await apiFetch("/health", { cache: "no-store" });
+        if (!response.ok) throw new Error(`Health check failed: ${response.status}`);
+        const data = await response.json();
+        if (active) setCloudStatus(data.status === "ok" ? "connected" : "offline");
+      } catch {
+        if (active) setCloudStatus("offline");
+      }
+    };
+
+    void checkCloud();
+    const timer = window.setInterval(checkCloud, 30_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
   }, []);
 
   const scrollToBottom = useCallback(() => {
@@ -475,11 +501,19 @@ export function ChatPanel() {
       {/* Chat header */}
       <div className="px-4 py-3 border-b border-[var(--border)] flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full bg-[var(--primary)] animate-pulse-glow" />
+          <div
+            className={`w-2 h-2 rounded-full ${cloudStatus === "offline" ? "bg-amber-400" : "bg-[var(--primary)] animate-pulse-glow"}`}
+          />
           <div>
             <div className="text-xs font-semibold text-[var(--foreground)]">知识对话</div>
             <div className="text-[9px] text-[var(--text-tertiary)] mt-0.5">
-              {IS_LOCAL_MODE ? "本地知识库 · 自动保存" : "云端知识库 · 已连接"}
+              {IS_LOCAL_MODE
+                ? "本地知识库 · 自动保存"
+                : cloudStatus === "checking"
+                  ? "正在连接云端 API…"
+                  : cloudStatus === "connected"
+                    ? "云端知识库 · API 已连接"
+                    : "云端 API 暂不可用 · 自动重试"}
             </div>
           </div>
         </div>
