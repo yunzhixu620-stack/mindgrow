@@ -3,6 +3,7 @@ const path = require("path");
 const fs = require("fs");
 
 const BASE_URL = process.env.MINDGROW_BASE_URL || "http://127.0.0.1:3000";
+const BASE_PATH = new URL(BASE_URL).pathname.replace(/\/$/, "");
 const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 const artifactDir = path.join(__dirname, "..", "artifacts");
 fs.mkdirSync(artifactDir, { recursive: true });
@@ -111,13 +112,13 @@ const clickByText = async (page, selector, text) => {
   });
 
   await check("robots and sitemap endpoints render", async () => {
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (basePath) => {
       const [robots, sitemap] = await Promise.all([
-        fetch("/robots.txt").then((response) => response.text()),
-        fetch("/sitemap.xml").then((response) => response.text()),
+        fetch(`${basePath}/robots.txt`).then((response) => response.text()),
+        fetch(`${basePath}/sitemap.xml`).then((response) => response.text()),
       ]);
       return { robots, sitemap };
-    });
+    }, BASE_PATH);
     if (!result.robots.includes("sitemap.xml")) throw new Error("robots.txt has no sitemap");
     if (!result.sitemap.includes("/guide/")) throw new Error("sitemap has no guide URL");
   });
