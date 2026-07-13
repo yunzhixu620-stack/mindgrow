@@ -1,7 +1,6 @@
 import {
   IntentResult,
   PlacementSuggestion,
-  AutoCompleteResult,
   KnowledgeNode,
 } from "@/types";
 
@@ -98,7 +97,7 @@ export async function suggestPlacement(
   const suggestions: PlacementSuggestion[] = [];
   for (const { node, score } of scores.slice(0, 3)) {
     if (score > 0) {
-      const path = getNodePath(node, nodes);
+      const path = getNodePath(node);
       suggestions.push({
         targetNodeId: node.id,
         targetPath: path,
@@ -210,7 +209,7 @@ function calculateSimilarity(a: string, b: string): number {
   return union.size === 0 ? 0 : intersection.size / union.size;
 }
 
-function getNodePath(node: KnowledgeNode, allNodes: KnowledgeNode[]): string[] {
+function getNodePath(node: KnowledgeNode): string[] {
   // For now, just return the node itself and its direct content
   // In a full implementation, traverse edges to build the full path
   return [node.content];

@@ -55,7 +55,7 @@ function chat(messages: ChatMessage[], model = 'qwen-turbo', maxTokens = 500, te
             model: json.model,
             usage: json.usage || {},
           });
-        } catch (e) {
+  } catch {
           reject(new Error('Failed to parse API response'));
         }
       });

@@ -36,6 +36,18 @@ export interface Category {
   createdAt: string;
 }
 
+export interface MindMap {
+  id: string;
+  name: string;
+  description: string;
+  color: string;
+  isDefault: boolean;
+  categoryId: string | null;
+  nodeCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";

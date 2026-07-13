@@ -2,8 +2,8 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useMindGrowStore } from "@/store/mindgrow-store";
-import type { MindMap } from "@/lib/db/database";
-import { API_BASE_URL } from "@/lib/config";
+import type { MindMap } from "@/types";
+import { apiFetch } from "@/lib/client-api";
 import { Category } from "@/types";
 import { TemplateBrowser } from "@/components/template/template-browser";
 
@@ -188,7 +188,7 @@ function MapItem({
 // ============================================================
 const FOLDER_ICONS = ["📁", "📂", "📚", "🎯", "💡", "🔬", "🎨", "💼", "🏠", "🧪", "📖", "🌍", "💻", "🧠", "🎮", "📝"];
 
-function IconPicker({ onSelect, onClose }: { onSelect: (icon: string) => void; onClose: () => void }) {
+function IconPicker({ onSelect }: { onSelect: (icon: string) => void }) {
   return (
     <div className="absolute top-full left-0 mt-1 z-[300] bg-[var(--card)] border border-[var(--border)] rounded-xl shadow-xl p-2 grid grid-cols-4 gap-1 min-w-[140px]">
       {FOLDER_ICONS.map((icon) => (
@@ -234,7 +234,6 @@ export function Sidebar() {
   const [newCategoryIcon, setNewCategoryIcon] = useState("📁");
   const [showIconPicker, setShowIconPicker] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
-  const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const createRef = useRef<HTMLInputElement>(null);
   const catCreateRef = useRef<HTMLInputElement>(null);
@@ -261,7 +260,7 @@ export function Sidebar() {
 
   // Load categories on mount
   useEffect(() => {
-    fetch(API_BASE_URL + "/api/knowledge?action=categories")
+    apiFetch("/api/knowledge?action=categories")
       .then((r) => r.json())
       .then((data) => setCategories(data.categories || []))
       .catch(() => {});
@@ -278,7 +277,7 @@ export function Sidebar() {
       return;
     }
     try {
-      const res = await fetch(API_BASE_URL + "/api/knowledge", {
+      const res = await apiFetch("/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -296,8 +295,8 @@ export function Sidebar() {
         setNewCategoryId(null);
         // Reload maps and categories
         const [mapsRes, catsRes] = await Promise.all([
-          fetch(API_BASE_URL + "/api/knowledge?action=maps"),
-          fetch(API_BASE_URL + "/api/knowledge?action=categories"),
+          apiFetch("/api/knowledge?action=maps"),
+          apiFetch("/api/knowledge?action=categories"),
         ]);
         if (mapsRes.ok) {
           const { maps: allMaps } = await mapsRes.json();
@@ -308,7 +307,7 @@ export function Sidebar() {
           useMindGrowStore.getState().setCategories(allCats);
         }
         // Switch to the new map
-        const dataRes = await fetch(API_BASE_URL + `/api/knowledge?mapId=${map.id}`);
+        const dataRes = await apiFetch(`/api/knowledge?mapId=${map.id}`);
         if (dataRes.ok) {
           const { nodes, edges } = await dataRes.json();
           useMindGrowStore.getState().setNodes(nodes);
@@ -324,7 +323,7 @@ export function Sidebar() {
     setCurrentMapId(mapId);
     setContextMenu(null);
     try {
-      const res = await fetch(API_BASE_URL + `/api/knowledge?mapId=${mapId}`);
+      const res = await apiFetch(`/api/knowledge?mapId=${mapId}`);
       if (res.ok) {
         const { nodes, edges } = await res.json();
         useMindGrowStore.getState().setNodes(nodes);
@@ -340,12 +339,12 @@ export function Sidebar() {
     const { map } = contextMenu;
     if (map.isDefault) return;
     try {
-      await fetch(API_BASE_URL + "/api/knowledge", {
+      await apiFetch("/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "deleteMap", mapId: map.id }),
       });
-      const mapsRes = await fetch(API_BASE_URL + "/api/knowledge?action=maps");
+      const mapsRes = await apiFetch("/api/knowledge?action=maps");
       if (mapsRes.ok) {
         const { maps: allMaps } = await mapsRes.json();
         useMindGrowStore.getState().setMaps(allMaps);
@@ -364,7 +363,7 @@ export function Sidebar() {
     const { map } = contextMenu;
     if (map.isDefault) return;
     try {
-      await fetch(API_BASE_URL + "/api/knowledge", {
+      await apiFetch("/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "clearMap", mapId: map.id }),
@@ -385,12 +384,12 @@ export function Sidebar() {
       return;
     }
     try {
-      await fetch(API_BASE_URL + "/api/knowledge", {
+      await apiFetch("/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "renameMap", mapId: editingId, name: editName.trim() }),
       });
-      const mapsRes = await fetch(API_BASE_URL + "/api/knowledge?action=maps");
+      const mapsRes = await apiFetch("/api/knowledge?action=maps");
       if (mapsRes.ok) {
         const { maps: allMaps } = await mapsRes.json();
         useMindGrowStore.getState().setMaps(allMaps);
@@ -407,7 +406,7 @@ export function Sidebar() {
       return;
     }
     try {
-      await fetch(API_BASE_URL + "/api/knowledge", {
+      await apiFetch("/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -416,7 +415,7 @@ export function Sidebar() {
           icon: newCategoryIcon,
         }),
       });
-      const catsRes = await fetch(API_BASE_URL + "/api/knowledge?action=categories");
+      const catsRes = await apiFetch("/api/knowledge?action=categories");
       if (catsRes.ok) {
         const { categories: allCats } = await catsRes.json();
         setCategories(allCats);
@@ -431,14 +430,14 @@ export function Sidebar() {
 
   const handleDeleteCategory = useCallback(async (catId: string) => {
     try {
-      await fetch(API_BASE_URL + "/api/knowledge", {
+      await apiFetch("/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "deleteCategory", categoryId: catId }),
       });
       const [mapsRes, catsRes] = await Promise.all([
-        fetch(API_BASE_URL + "/api/knowledge?action=maps"),
-        fetch(API_BASE_URL + "/api/knowledge?action=categories"),
+        apiFetch("/api/knowledge?action=maps"),
+        apiFetch("/api/knowledge?action=categories"),
       ]);
       if (mapsRes.ok) {
         const { maps: allMaps } = await mapsRes.json();
@@ -455,12 +454,12 @@ export function Sidebar() {
 
   const handleRenameCategory = useCallback(async (catId: string, name: string) => {
     try {
-      await fetch(API_BASE_URL + "/api/knowledge", {
+      await apiFetch("/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "renameCategory", categoryId: catId, name }),
       });
-      const catsRes = await fetch(API_BASE_URL + "/api/knowledge?action=categories");
+      const catsRes = await apiFetch("/api/knowledge?action=categories");
       if (catsRes.ok) {
         const { categories: allCats } = await catsRes.json();
         setCategories(allCats);
@@ -472,14 +471,14 @@ export function Sidebar() {
 
   const handleMoveMapToCategory = useCallback(async (mapId: string, categoryId: string | null) => {
     try {
-      await fetch(API_BASE_URL + "/api/knowledge", {
+      await apiFetch("/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "moveMapToCategory", mapId, categoryId }),
       });
       const [mapsRes, catsRes] = await Promise.all([
-        fetch(API_BASE_URL + "/api/knowledge?action=maps"),
-        fetch(API_BASE_URL + "/api/knowledge?action=categories"),
+        apiFetch("/api/knowledge?action=maps"),
+        apiFetch("/api/knowledge?action=categories"),
       ]);
       if (mapsRes.ok) {
         const { maps: allMaps } = await mapsRes.json();
@@ -659,7 +658,6 @@ export function Sidebar() {
                 {showIconPicker && (
                   <IconPicker
                     onSelect={(icon) => { setNewCategoryIcon(icon); setShowIconPicker(false); }}
-                    onClose={() => setShowIconPicker(false)}
                   />
                 )}
               </div>
@@ -790,7 +788,7 @@ export function Sidebar() {
           onSelect={async (template) => {
             setShowTemplates(false);
             try {
-              const res = await fetch(API_BASE_URL + "/api/knowledge", {
+              const res = await apiFetch("/api/knowledge", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -805,8 +803,8 @@ export function Sidebar() {
                 const { map } = await res.json();
                 setCurrentMapId(map.id);
                 const [mapsRes, catsRes] = await Promise.all([
-                  fetch(API_BASE_URL + "/api/knowledge?action=maps"),
-                  fetch(API_BASE_URL + "/api/knowledge?action=categories"),
+                  apiFetch("/api/knowledge?action=maps"),
+                  apiFetch("/api/knowledge?action=categories"),
                 ]);
                 if (mapsRes.ok) {
                   const { maps: allMaps } = await mapsRes.json();
@@ -816,7 +814,7 @@ export function Sidebar() {
                   const { categories: allCats } = await catsRes.json();
                   useMindGrowStore.getState().setCategories(allCats);
                 }
-                const dataRes = await fetch(API_BASE_URL + `/api/knowledge?mapId=${map.id}`);
+                const dataRes = await apiFetch(`/api/knowledge?mapId=${map.id}`);
                 if (dataRes.ok) {
                   const { nodes, edges } = await dataRes.json();
                   useMindGrowStore.getState().setNodes(nodes || []);

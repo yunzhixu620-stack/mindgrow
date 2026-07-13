@@ -21,7 +21,7 @@ import ReactFlow, {
 import "reactflow/dist/style.css";
 import { useMindGrowStore } from "@/store/mindgrow-store";
 import { KnowledgeNode, KnowledgeEdge } from "@/types";
-import { API_BASE_URL } from "@/lib/config";
+import { apiFetch } from "@/lib/client-api";
 
 // ============================================================
 // Branch color palette
@@ -34,9 +34,7 @@ const BRANCH_COLORS = [
 // ============================================================
 // Custom Node Component
 // ============================================================
-function MindGrowNode({ data, selected, id }: NodeProps) {
-  const collapsed = useMindGrowStore((s) => s.collapsedNodes.has(id));
-  const doToggle = useMindGrowStore((s) => s.toggleCollapse);
+function MindGrowNode({ data, selected }: NodeProps) {
   const nodeType = data.nodeType as string;
   const source = data.source as string;
   const desc = data.nodeDesc as string;
@@ -413,7 +411,7 @@ export function MindMapPanel() {
   const [localSearch, setLocalSearch] = useState("");
   const [editingNode, setEditingNode] = useState<{ id: string; content: string } | null>(null);
   const [showSpacing, setShowSpacing] = useState(false);
-  const [showToolbar, setShowToolbar] = useState(true);
+  const [showToolbar, setShowToolbar] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const reactFlowInstance = useRef<ReactFlowInstance | null>(null);
   const editInputRef = useRef<HTMLInputElement>(null);
@@ -486,10 +484,10 @@ export function MindMapPanel() {
       onNodesChange(changes);
       for (const change of changes) {
         if (change.type === "remove") {
-          try { await fetch(API_BASE_URL + "/api/knowledge?nodeId=" + change.id, { method: "DELETE" }); }
+          try { await apiFetch("/api/knowledge?nodeId=" + change.id, { method: "DELETE" }); }
           catch (e) { console.error("Failed to delete node:", e); }
         } else if (change.type === "position" && change.position && !change.dragging) {
-          fetch(API_BASE_URL + "/api/knowledge", {
+          apiFetch("/api/knowledge", {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ nodeId: change.id, positionX: change.position.x, positionY: change.position.y }),
@@ -512,11 +510,11 @@ export function MindMapPanel() {
         pushHistory();
         for (const node of selected) {
           removeNode(node.id);
-          fetch(API_BASE_URL + "/api/knowledge?nodeId=" + node.id, { method: "DELETE" })
+          apiFetch("/api/knowledge?nodeId=" + node.id, { method: "DELETE" })
             .then((r) => r.json())
             .then((d) => {
               if (d.success) {
-                fetch(API_BASE_URL + `/api/knowledge?mapId=${currentMapId}`)
+                apiFetch(`/api/knowledge?mapId=${currentMapId}`)
                   .then((r) => r.json())
                   .then((d) => { setStoreNodes(d.nodes); setStoreEdges(d.edges); })
                   .catch(console.error);
@@ -543,11 +541,11 @@ export function MindMapPanel() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [flowNodes, removeNode, currentMapId, setStoreNodes, setStoreEdges, setSearchResults, editingNode, pushHistory, undo, redo, setContextMenu]);
+  }, [flowNodes, removeNode, currentMapId, setStoreNodes, setStoreEdges, setSearchResults, editingNode, pushHistory, undo, redo, setContextMenu, setShowHelp]);
 
   // Reload after edit/delete from context menu
   const reloadMap = useCallback(() => {
-    fetch(API_BASE_URL + `/api/knowledge?mapId=${currentMapId}`)
+    apiFetch(`/api/knowledge?mapId=${currentMapId}`)
       .then((r) => r.json())
       .then((d) => { setStoreNodes(d.nodes); setStoreEdges(d.edges); })
       .catch(console.error);
@@ -579,7 +577,7 @@ export function MindMapPanel() {
     }
     pushHistory();
     try {
-      await fetch(API_BASE_URL + "/api/knowledge", {
+      await apiFetch("/api/knowledge", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ nodeId: editingNode.id, content: editingNode.content.trim() }),
@@ -621,14 +619,14 @@ export function MindMapPanel() {
     const node = storeNodes.find((n) => n.id === contextMenu.nodeId);
     if (node) setEditingNode({ id: node.id, content: node.content });
     setContextMenu(null);
-  }, [contextMenu, storeNodes]);
+  }, [contextMenu, storeNodes, setContextMenu]);
 
   // Context menu: delete
   const handleCtxDelete = useCallback(() => {
     if (!contextMenu) return;
     pushHistory();
     removeNode(contextMenu.nodeId);
-    fetch(API_BASE_URL + "/api/knowledge?nodeId=" + contextMenu.nodeId, { method: "DELETE" })
+    apiFetch("/api/knowledge?nodeId=" + contextMenu.nodeId, { method: "DELETE" })
       .then((r) => r.json())
       .then((d) => { if (d.success) reloadMap(); })
       .catch(console.error);
@@ -639,8 +637,6 @@ export function MindMapPanel() {
   const handleExportPng = useCallback(() => {
     const viewportEl = document.querySelector('.react-flow__viewport') as HTMLElement;
     if (!viewportEl) return;
-    const bgEl = document.querySelector('.react-flow');
-    // @ts-ignore
     import('html-to-image').then(({ toPng }) => {
       return toPng(viewportEl, {
         backgroundColor: '#09090b',
@@ -676,7 +672,6 @@ export function MindMapPanel() {
   const handleExportPdf = useCallback(() => {
     const viewportEl = document.querySelector('.react-flow__viewport') as HTMLElement;
     if (!viewportEl) return;
-    // @ts-ignore
     import('html-to-image').then(({ toPng }) => {
       return toPng(viewportEl, {
         backgroundColor: '#09090b',
@@ -686,7 +681,6 @@ export function MindMapPanel() {
         style: { transform: 'none' },
       });
     }).then((dataUrl: string) => {
-      // @ts-ignore
       import('jspdf').then(({ default: jsPDF }) => {
         const imgW = viewportEl.scrollWidth;
         const imgH = viewportEl.scrollHeight;
@@ -736,7 +730,7 @@ export function MindMapPanel() {
   return (
     <div className="flex-1 bg-[var(--background)] relative">
       {/* Top toolbar */}
-      <div className={`absolute z-50 flex gap-1.5 ${isMobile ? 'right-3' : 'left-3'}`} style={{ top: isMobile ? "max(calc(env(safe-area-inset-top) + 12px), 32px)" : "12px" }}>
+      <div className={`absolute z-50 flex gap-1.5 ${isMobile ? 'right-3 flex-col items-end' : 'left-3'}`} style={{ top: isMobile ? "max(calc(env(safe-area-inset-top) + 12px), 32px)" : "12px" }}>
         {/* Mobile: toggle toolbar */}
         {isMobile && (
           <button
@@ -820,7 +814,7 @@ export function MindMapPanel() {
 
       {/* Spacing control */}
       {showSpacing && (
-        <div className="absolute top-12 left-3 z-50 animate-fade-in-up">
+        <div className={`absolute top-12 z-50 animate-fade-in-up ${isMobile ? "right-3" : "left-3"}`}>
           <div className="bg-[var(--card)] border border-[var(--border)] rounded-xl p-3 shadow-lg">
             <div className="text-[10px] text-[var(--muted-foreground)] mb-2">间距调节</div>
             <div className="flex gap-1">

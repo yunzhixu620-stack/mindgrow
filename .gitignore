@@ -35,6 +35,7 @@ next-env.d.ts
 .mindgrow.db-shm
 
 # temp files
+artifacts/
 *.png
 clipboard-temp.png
 download-cf.js

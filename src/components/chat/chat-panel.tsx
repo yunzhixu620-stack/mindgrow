@@ -3,16 +3,60 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useMindGrowStore } from "@/store/mindgrow-store";
 import { ChatMessage, AIMindMap } from "@/types";
-import { API_BASE_URL } from "@/lib/config";
+import { apiFetch, IS_LOCAL_MODE } from "@/lib/client-api";
 
 // ============================================================
 // Simple Markdown renderer
 // ============================================================
 function renderMarkdown(text: string): string {
   return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
     .replace(/\*\*(.*?)\*\*/g, '<strong style="color:var(--text-primary)">$1</strong>')
     .replace(/_(.*?)_/g, '<em style="color:var(--muted-foreground)">$1</em>')
     .replace(/\n/g, '<br/>');
+}
+
+function AnswerFeedback({ messageId }: { messageId: string }) {
+  const [rating, setRating] = useState<"up" | "down" | null>(null);
+
+  useEffect(() => {
+    const saved = window.localStorage.getItem(`mindgrow.feedback.${messageId}`);
+    if (saved === "up" || saved === "down") setRating(saved);
+  }, [messageId]);
+
+  const rate = (value: "up" | "down") => {
+    const next = rating === value ? null : value;
+    setRating(next);
+    if (next) window.localStorage.setItem(`mindgrow.feedback.${messageId}`, next);
+    else window.localStorage.removeItem(`mindgrow.feedback.${messageId}`);
+  };
+
+  return (
+    <div className="mt-2 pt-2 border-t border-white/5 flex items-center gap-1" aria-label="回答反馈">
+      <span className="text-[10px] text-[var(--text-muted)] mr-1">这条回答有帮助吗？</span>
+      <button
+        type="button"
+        onClick={() => rate("up")}
+        aria-label="回答有帮助"
+        aria-pressed={rating === "up"}
+        className={`w-6 h-6 rounded-md text-[11px] cursor-pointer ${rating === "up" ? "bg-[var(--primary-subtle)] text-[var(--primary)]" : "text-[var(--text-tertiary)] hover:bg-white/5"}`}
+      >
+        👍
+      </button>
+      <button
+        type="button"
+        onClick={() => rate("down")}
+        aria-label="回答需要改进"
+        aria-pressed={rating === "down"}
+        className={`w-6 h-6 rounded-md text-[11px] cursor-pointer ${rating === "down" ? "bg-red-500/10 text-red-300" : "text-[var(--text-tertiary)] hover:bg-white/5"}`}
+      >
+        👎
+      </button>
+      {rating && <span className="text-[10px] text-[var(--text-tertiary)] ml-1">已记录</span>}
+    </div>
+  );
 }
 
 // ============================================================
@@ -30,8 +74,10 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
             : "bg-[var(--muted)] text-[var(--foreground)] rounded-bl-sm"
         }`}
         style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}
-        dangerouslySetInnerHTML={{ __html: isUser ? msg.content : renderMarkdown(msg.content) }}
-      />
+      >
+        <div dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }} />
+        {!isUser && !msg.id.startsWith("welcome_") && <AnswerFeedback messageId={msg.id} />}
+      </div>
     </div>
   );
 }
@@ -281,7 +327,7 @@ export function ChatPanel() {
 
   // Load initial data
   useEffect(() => {
-    fetch(API_BASE_URL + "/api/knowledge")
+    apiFetch(`/api/knowledge?mapId=${currentMapId}`)
       .then((res) => res.json())
       .then(({ nodes, edges }) => {
         if (nodes.length > 0) {
@@ -290,7 +336,7 @@ export function ChatPanel() {
         }
       })
       .catch(console.error);
-  }, []);
+  }, [currentMapId]);
 
   const handleSend = useCallback(async () => {
     if (!input.trim() || isProcessing) return;
@@ -305,7 +351,7 @@ export function ChatPanel() {
     setProcessing(true);
 
     try {
-      const res = await fetch(API_BASE_URL + "/api/chat", {
+      const res = await apiFetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ input: userMessage.content, mapId: currentMapId }),
@@ -363,7 +409,7 @@ export function ChatPanel() {
     }
 
     try {
-      const res = await fetch(API_BASE_URL + "/api/knowledge", {
+      const res = await apiFetch("/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -382,7 +428,7 @@ export function ChatPanel() {
           timestamp: new Date().toISOString(),
         });
       } else {
-        const reloadRes = await fetch(API_BASE_URL + "/api/knowledge");
+        const reloadRes = await apiFetch(`/api/knowledge?mapId=${currentMapId}`);
         if (reloadRes.ok) {
           const { nodes, edges } = await reloadRes.json();
           setNodes(nodes);
@@ -422,7 +468,7 @@ export function ChatPanel() {
     }
   };
 
-  const nodeCount = useMindGrowStore.getState().nodes.length;
+  const nodeCount = useMindGrowStore((state) => state.nodes.length);
 
   return (
     <div className={`flex flex-col ${isMobile ? 'w-full !min-w-0 !max-w-full' : 'w-[380px] min-w-[320px]'} border-r border-[var(--border)] bg-[var(--card)] h-full`}>
@@ -430,7 +476,12 @@ export function ChatPanel() {
       <div className="px-4 py-3 border-b border-[var(--border)] flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 rounded-full bg-[var(--primary)] animate-pulse-glow" />
-          <span className="text-xs font-semibold text-[var(--foreground)]">知识对话</span>
+          <div>
+            <div className="text-xs font-semibold text-[var(--foreground)]">知识对话</div>
+            <div className="text-[9px] text-[var(--text-tertiary)] mt-0.5">
+              {IS_LOCAL_MODE ? "本地知识库 · 自动保存" : "云端知识库 · 已连接"}
+            </div>
+          </div>
         </div>
         <span className="text-[10px] text-[var(--muted-foreground)]">{nodeCount} 个节点</span>
       </div>
@@ -440,6 +491,21 @@ export function ChatPanel() {
         {messages.map((msg) => (
           <MessageBubble key={msg.id} msg={msg} />
         ))}
+
+        {messages.length <= 1 && !pendingMindMap && (
+          <div className="flex flex-wrap gap-2 animate-fade-in">
+            {["AI 知识助手包含哪些能力？", "记录：RAG 回答需要引用可追溯来源", "如何发现当前知识库的缺口？"].map((prompt) => (
+              <button
+                type="button"
+                key={prompt}
+                onClick={() => setInput(prompt)}
+                className="text-left text-[11px] leading-relaxed text-[var(--text-secondary)] bg-[var(--bg-elevated)] hover:text-[var(--primary)] border border-[var(--border)] rounded-xl px-3 py-2 cursor-pointer"
+              >
+                {prompt}
+              </button>
+            ))}
+          </div>
+        )}
 
         {pendingMindMap && (
           <MindMapPreview
@@ -463,6 +529,7 @@ export function ChatPanel() {
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="输入知识点、粘贴文章片段..."
+            aria-label="输入知识或向知识库提问"
             rows={1}
             className="flex-1 bg-transparent text-sm resize-none outline-none max-h-[120px] text-[var(--foreground)] placeholder:text-[var(--muted-foreground)]"
             style={{ height: "auto", minHeight: "24px", lineHeight: "24px" }}
@@ -475,6 +542,7 @@ export function ChatPanel() {
           <button
             onClick={handleSend}
             disabled={!input.trim() || isProcessing}
+            aria-label="发送"
             className="flex-shrink-0 w-8 h-8 bg-[var(--primary)] text-[var(--primary-foreground)] rounded-xl flex items-center justify-center hover:opacity-90 transition-opacity disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

@@ -5,9 +5,8 @@ import { MindMapPanel } from "@/components/mindmap/mind-map-panel";
 import { ChatPanel } from "@/components/chat/chat-panel";
 import { Sidebar } from "@/components/layout/sidebar";
 import { useMindGrowStore } from "@/store/mindgrow-store";
-import type { MindMap } from "@/lib/db/database";
-import { Category } from "@/types";
-import { API_BASE_URL } from "@/lib/config";
+import type { MindMap } from "@/types";
+import { apiFetch } from "@/lib/client-api";
 import { TemplateBrowser } from "@/components/template/template-browser";
 
 export default function Home() {
@@ -87,8 +86,8 @@ export default function Home() {
   // Load maps & categories on mount
   useEffect(() => {
     Promise.all([
-      fetch(API_BASE_URL + "/api/knowledge?action=maps").then((r) => r.json()),
-      fetch(API_BASE_URL + "/api/knowledge?action=categories").then((r) => r.json()),
+      apiFetch("/api/knowledge?action=maps").then((r) => r.json()),
+      apiFetch("/api/knowledge?action=categories").then((r) => r.json()),
     ])
       .then(([{ maps }, { categories }]) => {
         setMaps(maps || []);
@@ -100,8 +99,8 @@ export default function Home() {
   const reloadAll = useCallback(async () => {
     try {
       const [mapsRes, catsRes] = await Promise.all([
-        fetch(API_BASE_URL + "/api/knowledge?action=maps"),
-        fetch(API_BASE_URL + "/api/knowledge?action=categories"),
+        apiFetch("/api/knowledge?action=maps"),
+        apiFetch("/api/knowledge?action=categories"),
       ]);
       if (mapsRes.ok) {
         const { maps: allMaps } = await mapsRes.json();
@@ -120,7 +119,7 @@ export default function Home() {
     setCurrentMapId(mapId);
     setDrawerOpen(false);
     try {
-      const res = await fetch(API_BASE_URL + `/api/knowledge?mapId=${mapId}`);
+      const res = await apiFetch(`/api/knowledge?mapId=${mapId}`);
       if (res.ok) {
         const { nodes, edges } = await res.json();
         setNodes(nodes || []);
@@ -133,7 +132,7 @@ export default function Home() {
   const handleCreateMap = useCallback(async () => {
     if (!newName.trim()) { setIsCreating(false); setNewName(""); return; }
     try {
-      const res = await fetch(API_BASE_URL + "/api/knowledge", {
+      const res = await apiFetch("/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "createMap", name: newName.trim(), categoryId: newCategoryId }),
@@ -142,7 +141,7 @@ export default function Home() {
         const { map } = await res.json();
         saveChatHistory();
         setCurrentMapId(map.id);
-        const dataRes = await fetch(API_BASE_URL + `/api/knowledge?mapId=${map.id}`);
+        const dataRes = await apiFetch(`/api/knowledge?mapId=${map.id}`);
         if (dataRes.ok) {
           const { nodes, edges } = await dataRes.json();
           setNodes(nodes || []);
@@ -156,12 +155,12 @@ export default function Home() {
     setNewName("");
     setNewCategoryId(null);
     setDrawerOpen(false);
-  }, [newName, newCategoryId, setCurrentMapId, setMaps, setNodes, setEdges, saveChatHistory, loadChatHistory, reloadAll]);
+  }, [newName, newCategoryId, setCurrentMapId, setNodes, setEdges, saveChatHistory, loadChatHistory, reloadAll]);
 
   const handleDeleteMap = useCallback(async (map: MindMap) => {
     if (map.isDefault) return;
     try {
-      await fetch(API_BASE_URL + "/api/knowledge", {
+      await apiFetch("/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "deleteMap", mapId: map.id }),
@@ -176,7 +175,7 @@ export default function Home() {
   const handleCreateCategory = useCallback(async () => {
     if (!newCategoryName.trim()) { setIsCreatingCategory(false); return; }
     try {
-      await fetch(API_BASE_URL + "/api/knowledge", {
+      await apiFetch("/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "createCategory", name: newCategoryName.trim(), icon: newCategoryIcon }),
@@ -190,7 +189,7 @@ export default function Home() {
 
   const handleMoveMap = useCallback(async (mapId: string, categoryId: string | null) => {
     try {
-      await fetch(API_BASE_URL + "/api/knowledge", {
+      await apiFetch("/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "moveMapToCategory", mapId, categoryId }),
@@ -204,7 +203,7 @@ export default function Home() {
   // Load data when map changes (desktop only, mobile handles in handleSwitchMap)
   useEffect(() => {
     if (isMobile) return;
-    fetch(API_BASE_URL + `/api/knowledge?mapId=${currentMapId}`)
+    apiFetch(`/api/knowledge?mapId=${currentMapId}`)
       .then((r) => r.json())
       .then((data) => {
         setNodes(data.nodes || []);
@@ -606,7 +605,7 @@ export default function Home() {
               setShowTemplates(false);
               setDrawerOpen(false);
               try {
-                const res = await fetch(API_BASE_URL + "/api/knowledge", {
+                const res = await apiFetch("/api/knowledge", {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({
@@ -621,7 +620,7 @@ export default function Home() {
                   const { map } = await res.json();
                   saveChatHistory();
                   setCurrentMapId(map.id);
-                  const dataRes = await fetch(API_BASE_URL + `/api/knowledge?mapId=${map.id}`);
+                  const dataRes = await apiFetch(`/api/knowledge?mapId=${map.id}`);
                   if (dataRes.ok) {
                     const { nodes, edges } = await dataRes.json();
                     setNodes(nodes || []);

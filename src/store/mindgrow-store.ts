@@ -1,6 +1,5 @@
 import { create } from "zustand";
-import { KnowledgeNode, KnowledgeEdge, ChatMessage, AISuggestion, AIMindMap, Category } from "@/types";
-import type { MindMap as DBMindMap } from "@/lib/db/database";
+import { KnowledgeNode, KnowledgeEdge, ChatMessage, AISuggestion, AIMindMap, Category, MindMap } from "@/types";
 
 export type AppMode = "knowledge" | "meeting" | "article";
 export type LayoutDirection = "vertical" | "horizontal";
@@ -23,9 +22,9 @@ interface MindGrowState {
   setCurrentMapId: (id: string) => void;
 
   // Maps list
-  maps: DBMindMap[];
-  setMaps: (maps: DBMindMap[]) => void;
-  addMap: (map: DBMindMap) => void;
+  maps: MindMap[];
+  setMaps: (maps: MindMap[]) => void;
+  addMap: (map: MindMap) => void;
 
   // Categories
   categories: Category[];

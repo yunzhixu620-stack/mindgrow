@@ -10,8 +10,6 @@ const MODES: { key: AppMode; label: string; emoji: string; tooltip: string; comi
   { key: "article", label: "文章解析", emoji: "📄", tooltip: "解析文章内容，提炼核心观点", comingSoon: true },
 ];
 
-const MODE_ICONS: Record<AppMode, string> = { meeting: "🎯", knowledge: "💡", article: "📄" };
-
 export function Header() {
   const { currentMode, setCurrentMode, layoutDirection, setLayoutDirection, nodes } = useMindGrowStore();
   const [isMobile, setIsMobile] = useState(false);
@@ -68,7 +66,9 @@ export function Header() {
             {MODES.map((mode) => (
               <button
                 key={mode.key}
-                onClick={() => setCurrentMode(mode.key)}
+                onClick={() => { if (!mode.comingSoon) setCurrentMode(mode.key); }}
+                disabled={mode.comingSoon}
+                aria-disabled={mode.comingSoon}
                 className="relative flex items-center gap-1.5 px-3 py-1 rounded-[var(--radius-sm)] text-xs font-medium border-none bg-transparent cursor-pointer whitespace-nowrap group"
                 style={{
                   color: currentMode === mode.key ? "#fff" : "var(--text-tertiary)",
@@ -155,6 +155,14 @@ export function Header() {
             style={{ width: 1, height: 20, background: "var(--border-default)" }}
           />
         )}
+
+        <Link
+          href="/guide"
+          className="flex items-center gap-1 px-2 py-1.5 rounded-[var(--radius-sm)] text-xs no-underline hover:bg-[var(--bg-hover)]"
+          style={{ color: "var(--text-tertiary)" }}
+        >
+          使用指南
+        </Link>
 
         {/* Universe link */}
         <Link

@@ -6,13 +6,14 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "eslint . --ext .js,.ts,.tsx --max-warnings=0",
+    "test:e2e:local": "node scripts/e2e-local.js",
+    "test:backend": "node scripts/backend-smoke.js"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.101.1",
     "html-to-image": "^1.11.13",
     "jspdf": "^4.2.1",
-    "next": "^14.2.0",
+    "next": "^15.5.16",
     "puppeteer": "^24.40.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
@@ -20,15 +21,17 @@
     "zustand": "^4.5.0"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.0",
     "@types/node": "^20.0.0",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "autoprefixer": "^10.4.0",
     "eslint": "^8.57.0",
-    "eslint-config-next": "^14.2.0",
-    "postcss": "^8.4.0",
+    "eslint-config-next": "^15.5.16",
+    "postcss": "^8.5.10",
     "tailwindcss": "^3.4.0",
     "typescript": "^5.5.0"
+  },
+  "overrides": {
+    "postcss": "$postcss"
   }
 }
