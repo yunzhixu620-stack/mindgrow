@@ -311,7 +311,10 @@ async function updateMapNodeCount(mapId) {
 
 async function handleKnowledge(req) {
   const parsed = new URL(req.url, 'http://localhost');
-  const query = Object.fromEntries(parsed.searchParams.entries());
+  // Function Compute may still run an older Node.js runtime where
+  // Object.fromEntries is unavailable. URLSearchParams#forEach works there.
+  const query = {};
+  parsed.searchParams.forEach((value, key) => { query[key] = value; });
 
   if (req.method === 'GET') {
     if (query.action === 'maps') {
