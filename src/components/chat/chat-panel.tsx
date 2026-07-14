@@ -77,6 +77,15 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
         style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}
       >
         <div dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }} />
+        {!isUser && msg.sources && msg.sources.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1.5 border-t border-white/5 pt-2" aria-label="回答来源">
+            {msg.sources.map((source) => (
+              source.sourceUrl
+                ? <a key={`${source.id}-${source.index}`} href={source.sourceUrl} target="_blank" rel="noreferrer" title={source.quote || source.title} className="rounded-md bg-[var(--primary-subtle)] px-2 py-1 text-[10px] text-[var(--primary-hover)] hover:ring-1 hover:ring-[var(--primary)]">[{source.index}] {source.title}</a>
+                : <span key={`${source.id}-${source.index}`} title={source.quote || source.title} className="rounded-md bg-[var(--primary-subtle)] px-2 py-1 text-[10px] text-[var(--primary-hover)]">[{source.index}] {source.title}</span>
+            ))}
+          </div>
+        )}
         {!isUser && !msg.id.startsWith("welcome_") && <AnswerFeedback messageId={msg.id} />}
       </div>
     </div>
@@ -393,6 +402,7 @@ export function ChatPanel() {
         role: "assistant",
         content: data.reply || "😅 出了点问题，请重试",
         timestamp: new Date().toISOString(),
+        sources: Array.isArray(data.sources) ? data.sources : undefined,
       };
       addMessage(aiMessage);
       if (data.type === "knowledge" && data.mindMap) {

@@ -1,12 +1,21 @@
 const puppeteer = require("puppeteer");
 const path = require("path");
 const fs = require("fs");
+const { jsPDF } = require("jspdf");
 
 const BASE_URL = process.env.MINDGROW_BASE_URL || "http://127.0.0.1:3000";
 const BASE_PATH = new URL(BASE_URL).pathname.replace(/\/$/, "");
 const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 const artifactDir = path.join(__dirname, "..", "artifacts");
 fs.mkdirSync(artifactDir, { recursive: true });
+const pdfPath = path.join(artifactDir, "mindgrow-citation-sample.pdf");
+const pdf = new jsPDF();
+pdf.text("Retrieval augmented generation must find relevant evidence before producing an answer.", 12, 20, { maxWidth: 180 });
+pdf.text("Every conclusion should keep a source citation so users can verify the original material.", 12, 40, { maxWidth: 180 });
+pdf.addPage();
+pdf.text("When evidence is missing, the assistant should clearly abstain instead of inventing details.", 12, 20, { maxWidth: 180 });
+pdf.text("A fixed evaluation set should measure retrieval recall and citation accuracy as data grows.", 12, 40, { maxWidth: 180 });
+fs.writeFileSync(pdfPath, Buffer.from(pdf.output("arraybuffer")));
 
 const results = [];
 const check = async (name, task) => {
@@ -31,7 +40,7 @@ const clickByText = async (page, selector, text) => {
 };
 
 (async () => {
-  const browser = await puppeteer.launch({ headless: "new", executablePath, args: ["--no-sandbox"] });
+  const browser = await puppeteer.launch({ headless: "new", pipe: true, executablePath, args: ["--no-sandbox"] });
   const page = await browser.newPage();
   await page.evaluateOnNewDocument(() => {
     if (!sessionStorage.getItem("mindgrow.e2e.initialized")) {
@@ -103,10 +112,14 @@ const clickByText = async (page, selector, text) => {
 
   await check("article parser extracts and saves a knowledge map", async () => {
     await clickByText(page, "button", "文章解析");
-    await page.waitForSelector('textarea[placeholder*="文章正文"]');
-    await page.type('textarea[placeholder*="文章正文"]', "检索增强生成需要先从知识库中找到相关证据，再让模型组织答案。系统必须保留来源引用，并在证据不足时明确拒答。随着知识规模增长，应使用分层摘要、混合检索和图邻居扩展，避免把整个知识库一次性放进上下文。最后还要通过固定评测集验证召回率与引用准确率。");
+    const fileInput = await page.waitForSelector('input[type="file"][accept*="pdf"]');
+    await fileInput.uploadFile(pdfPath);
+    await page.waitForFunction(() => document.body.innerText.includes("已读取 2 页"));
     await clickByText(page, "button", "解析文章");
     await page.waitForFunction(() => document.body.innerText.includes("核心要点"));
+    await page.waitForFunction(() => document.body.innerText.includes("[1]"));
+    await clickByText(page, "button", "生成 Audio Overview");
+    await page.waitForFunction(() => document.body.innerText.includes("Audio Overview ·"));
     await clickByText(page, "button", "保存到当前思维导图");
     await page.waitForFunction(() => document.body.innerText.includes("文章知识节点"));
   });

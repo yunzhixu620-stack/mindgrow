@@ -15,49 +15,44 @@ async function check(name, task) {
   }
 }
 
-async function clickByText(page, selector, text) {
-  const clicked = await page.$$eval(selector, (elements, label) => {
-    const target = elements.find((element) => element.textContent.trim().includes(label));
-    if (!target) return false;
-    target.click();
-    return true;
-  }, text);
-  if (!clicked) throw new Error(`Cannot find ${selector} containing ${text}`);
-}
-
 (async () => {
-  const browser = await puppeteer.launch({ headless: "new", executablePath, args: ["--no-sandbox"] });
+  const browser = await puppeteer.launch({ headless: "new", pipe: true, executablePath, args: ["--no-sandbox"] });
   const page = await browser.newPage();
 
   await page.setViewport({ width: 1440, height: 900 });
   await page.goto(`${baseUrl}/`, { waitUntil: "networkidle2", timeout: 60000 });
 
-  await check("production API reports connected", async () => {
-    await page.waitForFunction(() => document.body.innerText.includes("云端知识库 · API 已连接"), { timeout: 30000 });
+  await check("secure login screen renders", async () => {
+    await page.waitForFunction(() => document.body.innerText.includes("你的私有 AI 知识工作区"), { timeout: 30000 });
+    const email = await page.$('input[type="email"]');
+    const password = await page.$('input[type="password"]');
+    if (!email || !password) throw new Error("Login form fields are missing");
   });
 
-  await check("cloud knowledge graph renders", async () => {
-    await page.waitForFunction(() => document.querySelectorAll(".react-flow__node").length > 0, { timeout: 30000 });
-    const count = await page.$$eval(".react-flow__node", (nodes) => nodes.length);
-    if (count < 1) throw new Error("No cloud knowledge nodes rendered");
+  await check("registration option is available", async () => {
+    const labels = await page.$$eval("button", (buttons) => buttons.map((button) => button.textContent.trim()));
+    if (!labels.includes("登录") || !labels.includes("注册")) throw new Error("Login or registration tab is missing");
   });
 
-  await check("greeting reaches cloud chat API", async () => {
-    const input = await page.$('textarea[aria-label="输入知识或向知识库提问"]');
-    if (!input) throw new Error("Chat input is missing");
-    await input.type("你好");
-    await page.click('button[aria-label="发送"]');
-    await page.waitForFunction(() => document.body.innerText.includes("我可以帮你整理知识"), { timeout: 30000 });
+  await check("production API is healthy and anonymous data is denied", async () => {
+    const result = await page.evaluate(async () => {
+      const base = "https://mindgrow-api-eyippxdkkh.cn-hangzhou.fcapp.run";
+      const [health, knowledge] = await Promise.all([
+        fetch(`${base}/health`, { cache: "no-store" }),
+        fetch(`${base}/api/knowledge?action=maps`, { cache: "no-store" }),
+      ]);
+      return { health: health.status, knowledge: knowledge.status, healthBody: await health.json() };
+    });
+    if (result.health !== 200 || result.healthBody.status !== "ok") throw new Error(`Health check returned ${result.health}`);
+    if (result.knowledge !== 401) throw new Error(`Anonymous knowledge request returned ${result.knowledge}, expected 401`);
   });
 
-  await check("mobile chat and map have no horizontal overflow", async () => {
+  await check("mobile login has no horizontal overflow", async () => {
     await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true });
     await page.reload({ waitUntil: "networkidle2", timeout: 60000 });
-    await page.waitForFunction(() => document.body.innerText.includes("API 已连接"), { timeout: 30000 });
-    await clickByText(page, "button", "导图");
-    await page.waitForSelector(".react-flow", { timeout: 30000 });
+    await page.waitForFunction(() => document.body.innerText.includes("你的私有 AI 知识工作区"), { timeout: 30000 });
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
-    if (overflow) throw new Error("Mobile layout overflows horizontally");
+    if (overflow) throw new Error("Mobile login overflows horizontally");
   });
 
   await check("SEO guide renders", async () => {

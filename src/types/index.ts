@@ -8,6 +8,7 @@ export interface KnowledgeNode {
   confidence: number;
   createdAt: string;
   updatedAt: string;
+  citations?: Citation[];
 }
 
 export interface KnowledgeEdge {
@@ -48,12 +49,33 @@ export interface MindMap {
   updatedAt: string;
 }
 
+export interface Citation {
+  index: number;
+  quote: string;
+  locator?: string;
+  documentId?: string;
+  title?: string;
+  sourceUrl?: string;
+  fileName?: string;
+  sourceType?: "url" | "pdf" | "text" | "meeting";
+}
+
+export interface AnswerSource {
+  id: string;
+  title: string;
+  index: number;
+  quote?: string;
+  locator?: string;
+  sourceUrl?: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
   timestamp: string;
   suggestions?: AISuggestion[];
+  sources?: AnswerSource[];
 }
 
 export interface AISuggestion {
@@ -75,11 +97,14 @@ export interface AIMindMap {
   root: string;
   rootDesc?: string;
   rootType?: string;
+  rootCitationIndexes?: number[];
   children: {
     topic: string;
     desc?: string;
     type?: string;
     items: string[];
+    citationIndexes?: number[];
+    itemCitationIndexes?: number[][];
   }[];
   relatedTopics?: string[];
 }

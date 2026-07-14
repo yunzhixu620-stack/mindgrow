@@ -6,6 +6,7 @@ const http = require('http');
 const https = require('https');
 const dns = require('dns').promises;
 const net = require('net');
+const crypto = require('crypto');
 
 const DASHSCOPE_KEY = process.env.MINDGROW_API_KEY || '';
 const SUPABASE_URL = (process.env.SUPABASE_URL || '').replace(/\/$/, '');
@@ -13,6 +14,8 @@ const SUPABASE_KEY = process.env.SUPABASE_KEY || '';
 const PORT = Number.parseInt(process.env.FC_SERVER_PORT || process.env.PORT || '9000', 10);
 const UPSTREAM_TIMEOUT_MS = Number.parseInt(process.env.UPSTREAM_TIMEOUT_MS || '12000', 10);
 const AUTH_REQUIRED = process.env.AUTH_REQUIRED !== 'false';
+const API_VERSION = '8.0.0';
+const DASHSCOPE_AUDIO_ENDPOINT = process.env.DASHSCOPE_AUDIO_ENDPOINT || 'https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer';
 const ALLOWED_ORIGINS = new Set(
   (process.env.ALLOWED_ORIGINS || 'https://yunzhixu620-stack.github.io')
     .split(',')
@@ -339,7 +342,10 @@ function deterministicEvidenceAnswer(evidence, intent) {
       intent,
       type: 'answer',
       reply: `根据当前知识库，找到以下直接相关证据：\n\n${lines.join('\n')}\n\n以上结论仅基于已保存内容；如需更完整结论，请继续补充资料。`,
-      sources: evidence.slice(0, 12).map((node, index) => ({ id: node.id, title: node.content, index: index + 1 })),
+      sources: evidence.slice(0, 12).map((node, index) => {
+        const citation = Array.isArray(node.citations) ? node.citations[0] : null;
+        return { id: node.id, title: node.content, index: index + 1, quote: citation ? citation.quote : '', locator: citation ? citation.locator : '', sourceUrl: citation ? citation.sourceUrl : '' };
+      }),
       grounded: true,
       abstained: false,
       coverage: evidence.some((node) => node.expanded) ? 'partial' : 'direct',
@@ -363,6 +369,12 @@ async function answerQuestion(input, mapId, intent, workspaceId) {
       },
     };
   }
+  try {
+    const citationsByNode = await loadNodeCitations(workspaceId, mapId, evidence.map((node) => node.id));
+    evidence.forEach((node) => { node.citations = citationsByNode.get(node.id) || []; });
+  } catch (error) {
+    console.warn('Source-document citations unavailable for answer', { code: error.publicCode || 'CITATION_LOOKUP_FAILED' });
+  }
   if (!DASHSCOPE_KEY) return deterministicEvidenceAnswer(evidence, intent);
 
   const allowedIds = new Set(evidence.map((node) => node.id));
@@ -374,7 +386,7 @@ async function answerQuestion(input, mapId, intent, workspaceId) {
       },
       {
         role: 'user',
-        content: `问题：${input}\n证据：${JSON.stringify(evidence.map((node) => ({ id: node.id, content: node.content, description: node.desc || '' })))}`,
+        content: `问题：${input}\n证据：${JSON.stringify(evidence.map((node) => ({ id: node.id, content: node.content, description: node.desc || '', citations: node.citations || [] })))}`,
       },
     ], 'qwen-plus', 900, 0.1);
     const parsed = JSON.parse(stripJsonFence(raw));
@@ -388,7 +400,10 @@ async function answerQuestion(input, mapId, intent, workspaceId) {
         intent,
         type: 'answer',
         reply: parsed.answer,
-        sources: used.map((node, index) => ({ id: node.id, title: node.content, index: index + 1 })),
+        sources: used.map((node, index) => {
+          const citation = Array.isArray(node.citations) ? node.citations[0] : null;
+          return { id: node.id, title: node.content, index: index + 1, quote: citation ? citation.quote : '', locator: citation ? citation.locator : '', sourceUrl: citation ? citation.sourceUrl : '' };
+        }),
         grounded: true,
         abstained: false,
         coverage: parsed.coverage === 'complete' ? 'complete' : 'partial',
@@ -496,7 +511,9 @@ async function assertPublicUrl(targetUrl) {
   if (parsed.username || parsed.password) throw requestError(400, 'INVALID_URL', '网址不能包含账号信息');
   const hostname = parsed.hostname.toLowerCase();
   if (hostname === 'localhost' || hostname.endsWith('.local')) throw requestError(400, 'URL_NOT_ALLOWED', '不允许访问内网地址');
-  const records = await dns.lookup(hostname, { all: true });
+  let records;
+  try { records = await dns.lookup(hostname, { all: true }); }
+  catch (_) { throw requestError(422, 'URL_RESOLUTION_FAILED', '无法解析该文章网址'); }
   if (!records.length || records.some((record) => isPrivateAddress(record.address))) {
     throw requestError(400, 'URL_NOT_ALLOWED', '不允许访问内网地址');
   }
@@ -576,16 +593,35 @@ function htmlToReadableText(html) {
     .slice(0, 120000);
 }
 
-function normalizedMindMap(value, fallbackTitle) {
+function normalizeCitationIndexes(value, allowedIndexes) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((item) => Number.parseInt(item, 10)).filter((item) => Number.isFinite(item) && item > 0))]
+    .filter((item) => !allowedIndexes || allowedIndexes.has(item))
+    .slice(0, 12);
+}
+
+function normalizedMindMap(value, fallbackTitle, allowedIndexes) {
   if (!value || typeof value !== 'object') return null;
   const root = String(value.root || fallbackTitle || '').trim().slice(0, 200);
   if (!root) return null;
-  const children = (Array.isArray(value.children) ? value.children : []).slice(0, 16).map((child) => ({
-    topic: String((child && child.topic) || '要点').trim().slice(0, 200),
-    desc: String((child && child.desc) || '').trim().slice(0, 1000),
-    items: (Array.isArray(child && child.items) ? child.items : []).map(String).map((item) => item.trim()).filter(Boolean).slice(0, 20),
-  })).filter((child) => child.topic);
-  return { root, rootDesc: String(value.rootDesc || '').trim().slice(0, 1000), children, relatedTopics: [] };
+  const children = (Array.isArray(value.children) ? value.children : []).slice(0, 16).map((child) => {
+    const items = (Array.isArray(child && child.items) ? child.items : []).map(String).map((item) => item.trim()).filter(Boolean).slice(0, 20);
+    const rawItemCitations = Array.isArray(child && child.itemCitationIndexes) ? child.itemCitationIndexes : [];
+    return {
+      topic: String((child && child.topic) || '要点').trim().slice(0, 200),
+      desc: String((child && child.desc) || '').trim().slice(0, 1000),
+      items,
+      citationIndexes: normalizeCitationIndexes(child && child.citationIndexes, allowedIndexes),
+      itemCitationIndexes: items.map((_, index) => normalizeCitationIndexes(rawItemCitations[index], allowedIndexes)),
+    };
+  }).filter((child) => child.topic);
+  return {
+    root,
+    rootDesc: String(value.rootDesc || '').trim().slice(0, 1000),
+    rootCitationIndexes: normalizeCitationIndexes(value.rootCitationIndexes, allowedIndexes),
+    children,
+    relatedTopics: [],
+  };
 }
 
 function fallbackMindMap(title, text) {
@@ -596,6 +632,54 @@ function fallbackMindMap(title, text) {
     children: items.slice(1).map((item, index) => ({ topic: `要点 ${index + 1}`, desc: item.slice(0, 500), items: [] })),
     relatedTopics: [],
   };
+}
+
+function normalizeSpaces(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function fallbackCitations(content, sourceType, fileName) {
+  const citations = [];
+  let page = '';
+  let paragraph = 0;
+  String(content || '').split(/\n+/).forEach((line) => {
+    const pageMatch = line.match(/^\[第\s*(\d+)\s*页\]$/);
+    if (pageMatch) { page = `第 ${pageMatch[1]} 页`; return; }
+    const cleaned = normalizeSpaces(line);
+    if (!cleaned) return;
+    paragraph += 1;
+    cleaned.split(/(?<=[。！？!?])/).map((item) => item.trim()).filter((item) => item.length >= 12).forEach((quote) => {
+      if (citations.length >= 16) return;
+      citations.push({
+        index: citations.length + 1,
+        quote: quote.slice(0, 220),
+        locator: page || `第 ${paragraph} 段`,
+        sourceType,
+        fileName: fileName || '',
+      });
+    });
+  });
+  return citations;
+}
+
+function normalizedCitations(value, content, sourceType, fileName) {
+  const source = normalizeSpaces(content);
+  const seen = new Set();
+  const rows = (Array.isArray(value) ? value : []).slice(0, 80).map((item) => ({
+    index: Number.parseInt(item && item.index, 10),
+    quote: normalizeSpaces(item && item.quote).slice(0, 260),
+    locator: String((item && item.locator) || '').trim().slice(0, 100),
+    sourceType,
+    fileName: fileName || '',
+  })).filter((item) => Number.isFinite(item.index) && item.index > 0 && item.quote.length >= 8 && source.includes(item.quote) && !seen.has(item.index) && seen.add(item.index));
+  return rows.length ? rows : fallbackCitations(content, sourceType, fileName);
+}
+
+function normalizedCitedTexts(value, allowedIndexes) {
+  return (Array.isArray(value) ? value : []).slice(0, 40).map((item) => ({
+    text: String(typeof item === 'string' ? item : (item && item.text) || '').trim().slice(0, 1000),
+    citationIndexes: normalizeCitationIndexes(item && item.citationIndexes, allowedIndexes),
+  })).filter((item) => item.text);
 }
 
 async function handleMeetingTool(body) {
@@ -632,34 +716,156 @@ async function handleMeetingTool(body) {
 async function handleArticleTool(body) {
   let content = String(body.content || '').trim();
   let sourceUrl = '';
+  let sourceType = ['url', 'pdf', 'text'].includes(body.sourceType) ? body.sourceType : (body.url ? 'url' : 'text');
+  const fileName = String(body.fileName || '').trim().slice(0, 300);
+  const mimeType = String(body.mimeType || '').trim().slice(0, 100);
   if (!content && body.url) {
     const fetched = await fetchArticleText(String(body.url), 0);
     content = htmlToReadableText(fetched.html);
     sourceUrl = fetched.finalUrl;
+    sourceType = 'url';
   }
   if (content.length < 50) return { status: 400, data: { error: '请粘贴至少 50 个字的文章，或输入可公开访问的网址', code: 'INVALID_INPUT' } };
   if (content.length > 120000) content = content.slice(0, 120000);
   const raw = await dashscopeChat([
     {
       role: 'system',
-      content: '你是忠于原文的文章解析助手。只返回 JSON：{"title":"","summary":"","keyPoints":[""],"arguments":[{"claim":"","evidence":""}],"questions":[""],"mindMap":{"root":"","rootDesc":"","children":[{"topic":"","desc":"","items":[""]}]}}。不得补充原文没有的事实；每个论点要保留原文证据或明确写“原文未给出”。',
+      content: '你是忠于原文的文章解析助手。只返回严格 JSON：{"title":"","summary":"","summaryCitationIndexes":[1],"keyPoints":[{"text":"","citationIndexes":[1]}],"arguments":[{"claim":"","evidence":"","citationIndexes":[1]}],"questions":[""],"citations":[{"index":1,"quote":"原文逐字短引，8-220字","locator":"第N段或第N页"}],"mindMap":{"root":"","rootDesc":"","rootCitationIndexes":[1],"children":[{"topic":"","desc":"","citationIndexes":[1],"items":[""],"itemCitationIndexes":[[1]]}]}}。每个结论和导图分支必须引用 citations；quote 必须逐字存在于原文，不得改写；不得补充原文没有的事实。',
     },
     { role: 'user', content: `文章来源：${sourceUrl || '用户粘贴'}\n文章正文：\n${content}` },
-  ], 'qwen-plus', 2600, 0.1);
+  ], 'qwen-plus', 3600, 0.1);
   let parsed;
   try { parsed = JSON.parse(stripJsonFence(raw)); } catch (_) { parsed = {}; }
   const inferredTitle = String(parsed.title || content.split('\n')[0] || '文章解析').slice(0, 200);
-  const mindMap = normalizedMindMap(parsed.mindMap, inferredTitle) || fallbackMindMap(inferredTitle, content);
+  const citations = normalizedCitations(parsed.citations, content, sourceType, fileName);
+  const allowedIndexes = new Set(citations.map((item) => item.index));
+  const citationIndexes = citations.map((item) => item.index);
+  let mindMap = normalizedMindMap(parsed.mindMap, inferredTitle, allowedIndexes) || fallbackMindMap(inferredTitle, content);
+  if (!mindMap.rootCitationIndexes || mindMap.rootCitationIndexes.length === 0) mindMap.rootCitationIndexes = citationIndexes.slice(0, 2);
+  mindMap.children = (mindMap.children || []).map((child, index) => {
+    const childIndexes = child.citationIndexes && child.citationIndexes.length ? child.citationIndexes : citationIndexes.slice(index % Math.max(citationIndexes.length, 1), (index % Math.max(citationIndexes.length, 1)) + 1);
+    return {
+      ...child,
+      citationIndexes: childIndexes,
+      itemCitationIndexes: (child.items || []).map((_, itemIndex) => {
+        const existing = child.itemCitationIndexes && child.itemCitationIndexes[itemIndex];
+        return existing && existing.length ? existing : (childIndexes.length ? childIndexes : citationIndexes.slice((index + itemIndex) % Math.max(citationIndexes.length, 1), ((index + itemIndex) % Math.max(citationIndexes.length, 1)) + 1));
+      }),
+    };
+  });
+  const keyPoints = normalizedCitedTexts(parsed.keyPoints, allowedIndexes).map((item, index) => ({
+    ...item,
+    citationIndexes: item.citationIndexes.length ? item.citationIndexes : citationIndexes.slice(index % Math.max(citationIndexes.length, 1), (index % Math.max(citationIndexes.length, 1)) + 1),
+  }));
+  const argumentsList = (Array.isArray(parsed.arguments) ? parsed.arguments : []).slice(0, 40).map((item) => ({
+    claim: String((item && item.claim) || '').trim().slice(0, 1000),
+    evidence: String((item && item.evidence) || '').trim().slice(0, 1200),
+    citationIndexes: normalizeCitationIndexes(item && item.citationIndexes, allowedIndexes),
+  })).filter((item) => item.claim).map((item, index) => ({
+    ...item,
+    citationIndexes: item.citationIndexes.length ? item.citationIndexes : citationIndexes.slice(index % Math.max(citationIndexes.length, 1), (index % Math.max(citationIndexes.length, 1)) + 1),
+  }));
   return {
     status: 200,
     data: {
       title: inferredTitle,
       summary: String(parsed.summary || mindMap.rootDesc || ''),
-      keyPoints: Array.isArray(parsed.keyPoints) ? parsed.keyPoints.map(String).slice(0, 40) : [],
-      arguments: Array.isArray(parsed.arguments) ? parsed.arguments.slice(0, 40) : [],
+      summaryCitationIndexes: normalizeCitationIndexes(parsed.summaryCitationIndexes, allowedIndexes).length ? normalizeCitationIndexes(parsed.summaryCitationIndexes, allowedIndexes) : citationIndexes.slice(0, 2),
+      keyPoints,
+      arguments: argumentsList,
       questions: Array.isArray(parsed.questions) ? parsed.questions.map(String).slice(0, 30) : [],
       mindMap,
+      citations,
       sourceUrl,
+      sourceType,
+      fileName,
+      mimeType,
+    },
+  };
+}
+
+async function synthesizeOverviewAudio(text) {
+  if (!DASHSCOPE_KEY || !text) return null;
+  try {
+    const response = await fetchJSON('POST', DASHSCOPE_AUDIO_ENDPOINT, {
+      Authorization: `Bearer ${DASHSCOPE_KEY}`,
+    }, {
+      model: 'cosyvoice-v3-flash',
+      input: {
+        text: String(text).slice(0, 3200),
+        voice: 'longanyang',
+        format: 'mp3',
+        sample_rate: 24000,
+        rate: 1.05,
+        language_hints: ['zh'],
+      },
+    });
+    if (response.status < 200 || response.status >= 300) throw new Error(`TTS returned ${response.status}`);
+    const output = response.body && response.body.output ? response.body.output : {};
+    const audio = output.audio || {};
+    const url = audio.url || output.url || '';
+    if (!url) throw new Error('TTS returned no audio URL');
+    return { url, expiresAt: audio.expires_at || output.expires_at || null };
+  } catch (error) {
+    console.warn('Audio synthesis unavailable; using browser speech fallback', { message: error.message });
+    return null;
+  }
+}
+
+async function handleAudioOverview(body) {
+  const title = String(body.title || '文章音频概览').trim().slice(0, 200);
+  const summary = String(body.summary || '').trim().slice(0, 3000);
+  const citations = (Array.isArray(body.citations) ? body.citations : []).slice(0, 40).map((item) => ({
+    index: Number.parseInt(item && item.index, 10), quote: String((item && item.quote) || '').slice(0, 260), locator: String((item && item.locator) || '').slice(0, 100),
+  })).filter((item) => Number.isFinite(item.index) && item.index > 0 && item.quote);
+  const allowedIndexes = new Set(citations.map((item) => item.index));
+  const source = {
+    title,
+    summary,
+    keyPoints: Array.isArray(body.keyPoints) ? body.keyPoints.slice(0, 20) : [],
+    arguments: Array.isArray(body.arguments) ? body.arguments.slice(0, 15) : [],
+    citations,
+  };
+  if (!summary && source.keyPoints.length === 0) return { status: 400, data: { error: '请先解析文章再生成音频概览', code: 'INVALID_INPUT' } };
+
+  let parsed = {};
+  try {
+    const raw = await dashscopeChat([
+      { role: 'system', content: '你是 NotebookLM 风格的中文音频概览编导。只返回 JSON：{"title":"","intro":"","segments":[{"speaker":"主持人|分析师","text":"自然口语","citationIndexes":[1]}]}。生成 6-12 段双人对话，每段 1-3 句；只讨论给定材料，关键结论必须带有效引用，不得编造。' },
+      { role: 'user', content: JSON.stringify(source) },
+    ], 'qwen-plus', 2600, 0.3);
+    parsed = JSON.parse(stripJsonFence(raw));
+  } catch (error) {
+    console.warn('Audio script generation fallback', { message: error.message });
+  }
+  let segments = (Array.isArray(parsed.segments) ? parsed.segments : []).slice(0, 14).map((item, index) => ({
+    speaker: item && item.speaker === '分析师' ? '分析师' : (index % 2 === 0 ? '主持人' : '分析师'),
+    text: String((item && item.text) || '').trim().slice(0, 800),
+    citationIndexes: normalizeCitationIndexes(item && item.citationIndexes, allowedIndexes),
+  })).filter((item) => item.text);
+  if (segments.length < 2) {
+    const points = Array.isArray(source.keyPoints) ? source.keyPoints : [];
+    segments = points.slice(0, 8).map((item, index) => ({
+      speaker: index % 2 === 0 ? '主持人' : '分析师',
+      text: `${index === 0 ? '先看核心结论：' : '接着来看：'}${String((item && item.text) || item || summary).slice(0, 500)}`,
+      citationIndexes: normalizeCitationIndexes(item && item.citationIndexes, allowedIndexes),
+    }));
+  }
+  if (segments.length < 2) segments = [
+    { speaker: '主持人', text: `今天我们概览《${title}》的核心内容。`, citationIndexes: [] },
+    { speaker: '分析师', text: summary.slice(0, 800), citationIndexes: citations.slice(0, 2).map((item) => item.index) },
+  ];
+  const scriptText = segments.map((item) => `${item.speaker}：${item.text}`).join('\n');
+  const audio = await synthesizeOverviewAudio(scriptText);
+  return {
+    status: 200,
+    data: {
+      title: String(parsed.title || title).slice(0, 200),
+      intro: String(parsed.intro || '根据文章证据生成的双角色音频概览。').slice(0, 500),
+      segments,
+      audioUrl: audio ? audio.url : '',
+      audioExpiresAt: audio ? audio.expiresAt : null,
+      synthesis: audio ? 'cosyvoice' : 'browser',
     },
   };
 }
@@ -667,6 +873,7 @@ async function handleArticleTool(body) {
 async function handleTool(pathname, body) {
   if (pathname.endsWith('/meeting')) return handleMeetingTool(body);
   if (pathname.endsWith('/article')) return handleArticleTool(body);
+  if (pathname.endsWith('/audio-overview')) return handleAudioOverview(body);
   return { status: 404, data: { error: 'Tool not found', code: 'NOT_FOUND' } };
 }
 
@@ -685,7 +892,7 @@ function convertMap(row) {
   };
 }
 
-function convertNode(node) {
+function convertNode(node, citations) {
   return {
     id: node.id,
     content: node.content,
@@ -696,6 +903,7 @@ function convertNode(node) {
     confidence: node.confidence,
     createdAt: node.created_at,
     updatedAt: node.updated_at,
+    citations: Array.isArray(citations) ? citations : [],
   };
 }
 
@@ -710,27 +918,127 @@ function convertEdge(edge) {
   };
 }
 
-async function createGraph(workspaceId, mapId, mindMap, source) {
+async function loadNodeCitations(workspaceId, mapId, nodeIds) {
+  if (Array.isArray(nodeIds) && nodeIds.length === 0) return new Map();
+  const workspace = encodeURIComponent(workspaceId);
+  const map = encodeURIComponent(mapId);
+  const nodeFilter = Array.isArray(nodeIds) ? `&node_id=in.${inFilter(nodeIds)}` : '';
+  const rows = await supabaseRequest('GET', `node_citations?workspace_id=eq.${workspace}&map_id=eq.${map}${nodeFilter}&select=node_id,document_id,citation_index,quote,locator&order=citation_index.asc&limit=8000`);
+  const citations = Array.isArray(rows) ? rows : [];
+  const documentIds = [...new Set(citations.map((item) => item.document_id).filter(Boolean))];
+  let documents = [];
+  if (documentIds.length) {
+    const result = await supabaseRequest('GET', `source_documents?workspace_id=eq.${workspace}&map_id=eq.${map}&id=in.${inFilter(documentIds)}&select=id,title,source_type,source_url,file_name`);
+    documents = Array.isArray(result) ? result : [];
+  }
+  const documentMap = new Map(documents.map((item) => [item.id, item]));
+  const byNode = new Map();
+  citations.forEach((item) => {
+    const document = documentMap.get(item.document_id) || {};
+    const converted = {
+      index: item.citation_index,
+      quote: item.quote,
+      locator: item.locator || '',
+      documentId: item.document_id,
+      title: document.title || '来源文档',
+      sourceUrl: document.source_url || '',
+      fileName: document.file_name || '',
+      sourceType: document.source_type || 'text',
+    };
+    const current = byNode.get(item.node_id) || [];
+    current.push(converted);
+    byNode.set(item.node_id, current);
+  });
+  return byNode;
+}
+
+async function assertOwnedMap(workspaceId, mapId) {
+  const rows = await supabaseRequest('GET', `maps?workspace_id=eq.${encodeURIComponent(workspaceId)}&id=eq.${encodeURIComponent(mapId)}&select=id&limit=1`);
+  if (!Array.isArray(rows) || !rows[0]) throw requestError(404, 'MAP_NOT_FOUND', 'Knowledge map not found');
+}
+
+async function assertOwnedCategory(workspaceId, categoryId) {
+  if (!categoryId) return;
+  const rows = await supabaseRequest('GET', `categories?workspace_id=eq.${encodeURIComponent(workspaceId)}&id=eq.${encodeURIComponent(categoryId)}&select=id&limit=1`);
+  if (!Array.isArray(rows) || !rows[0]) throw requestError(404, 'CATEGORY_NOT_FOUND', 'Category not found');
+}
+
+async function createGraph(workspaceId, mapId, mindMap, source, document, sourceCitations) {
+  await assertOwnedMap(workspaceId, mapId);
   const now = new Date().toISOString();
   const seed = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
   const nodes = [];
   const edges = [];
+  const citationPlan = new Map();
   const rootId = `node_${seed}_r`;
   nodes.push({ id: rootId, workspace_id: workspaceId, content: mindMap.root, desc: mindMap.rootDesc || '', type: 'topic', status: 'active', source, confidence: 1, map_id: mapId, created_at: now, updated_at: now });
+  citationPlan.set(rootId, normalizeCitationIndexes(mindMap.rootCitationIndexes));
 
   (mindMap.children || []).forEach((child, childIndex) => {
     const childId = `node_${seed}_c${childIndex}`;
     nodes.push({ id: childId, workspace_id: workspaceId, content: child.topic, desc: child.desc || '', type: 'concept', status: 'active', source, confidence: 0.9, map_id: mapId, created_at: now, updated_at: now });
+    citationPlan.set(childId, normalizeCitationIndexes(child.citationIndexes));
     edges.push({ id: `edge_${seed}_c${childIndex}`, workspace_id: workspaceId, source_id: rootId, target_id: childId, relation: 'contains', weight: 1, map_id: mapId, created_at: now });
     (child.items || []).forEach((item, itemIndex) => {
       const itemId = `node_${seed}_c${childIndex}i${itemIndex}`;
       nodes.push({ id: itemId, workspace_id: workspaceId, content: item, desc: '', type: 'detail', status: 'active', source, confidence: 0.8, map_id: mapId, created_at: now, updated_at: now });
       edges.push({ id: `edge_${seed}_c${childIndex}i${itemIndex}`, workspace_id: workspaceId, source_id: childId, target_id: itemId, relation: 'contains', weight: 0.8, map_id: mapId, created_at: now });
+      const itemIndexes = child.itemCitationIndexes && child.itemCitationIndexes[itemIndex];
+      citationPlan.set(itemId, normalizeCitationIndexes(itemIndexes && itemIndexes.length ? itemIndexes : child.citationIndexes));
     });
   });
   await supabaseRequest('POST', 'nodes', nodes);
   if (edges.length) await supabaseRequest('POST', 'edges', edges);
-  return { nodes, edges };
+  let citationRows = [];
+  let sourceDocument = null;
+  if (document && Array.isArray(sourceCitations) && sourceCitations.length > 0) {
+    const allowedTypes = new Set(['url', 'pdf', 'text', 'meeting']);
+    const documentId = `doc_${seed}`;
+    const documentType = allowedTypes.has(document.sourceType) ? document.sourceType : 'text';
+    const citationByIndex = new Map(sourceCitations.slice(0, 80).map((item) => [Number.parseInt(item.index, 10), item]));
+    sourceDocument = {
+      id: documentId,
+      workspace_id: workspaceId,
+      map_id: mapId,
+      title: String(document.title || mindMap.root || '来源文档').slice(0, 300),
+      source_type: documentType,
+      source_url: String(document.sourceUrl || '').slice(0, 2000),
+      file_name: String(document.fileName || '').slice(0, 300),
+      mime_type: String(document.mimeType || '').slice(0, 100),
+      content_hash: crypto.createHash('sha256').update(sourceCitations.map((item) => `${item.index}:${item.quote}`).join('\n')).digest('hex'),
+      created_at: now,
+    };
+    citationPlan.forEach((indexes, nodeId) => {
+      indexes.forEach((index) => {
+        const citation = citationByIndex.get(index);
+        const quote = String((citation && citation.quote) || '').trim().slice(0, 1000);
+        if (!citation || !quote) return;
+        citationRows.push({
+          id: `cite_${seed}_${nodeId.split('_').pop()}_${index}`,
+          workspace_id: workspaceId,
+          map_id: mapId,
+          node_id: nodeId,
+          document_id: documentId,
+          citation_index: index,
+          quote,
+          locator: String(citation.locator || '').slice(0, 200),
+          created_at: now,
+        });
+      });
+    });
+    try {
+      await supabaseRequest('POST', 'source_documents', sourceDocument);
+      if (citationRows.length) await supabaseRequest('POST', 'node_citations', citationRows);
+    } catch (error) {
+      try {
+        await supabaseRequest('DELETE', `edges?workspace_id=eq.${encodeURIComponent(workspaceId)}&map_id=eq.${encodeURIComponent(mapId)}&id=in.${inFilter(edges.map((item) => item.id))}`);
+        await supabaseRequest('DELETE', `nodes?workspace_id=eq.${encodeURIComponent(workspaceId)}&map_id=eq.${encodeURIComponent(mapId)}&id=in.${inFilter(nodes.map((item) => item.id))}`);
+        await supabaseRequest('DELETE', `source_documents?workspace_id=eq.${encodeURIComponent(workspaceId)}&id=eq.${encodeURIComponent(documentId)}`);
+      } catch (_) { /* best-effort rollback */ }
+      throw error;
+    }
+  }
+  return { nodes, edges, citations: citationRows, document: sourceDocument };
 }
 
 async function updateMapNodeCount(workspaceId, mapId) {
@@ -771,7 +1079,8 @@ async function handleKnowledge(req, context) {
       supabaseRequest('GET', `edges?workspace_id=eq.${workspace}&map_id=eq.${mapId}&select=*&limit=4000`),
     ]);
     if (!Array.isArray(nodeRows) || !Array.isArray(edgeRows)) throw dependencyError('knowledge_store');
-    return { status: 200, data: { nodes: nodeRows.map(convertNode), edges: edgeRows.map(convertEdge) } };
+    const citationsByNode = await loadNodeCitations(workspaceId, String(query.mapId || context.defaultMapId), nodeRows.map((node) => node.id));
+    return { status: 200, data: { nodes: nodeRows.map((node) => convertNode(node, citationsByNode.get(node.id))), edges: edgeRows.map(convertEdge) } };
   }
 
   if (req.method === 'DELETE') {
@@ -800,8 +1109,8 @@ async function handleKnowledge(req, context) {
       position_y: Number(body.positionY || 0),
       zoom_level: Number(body.zoomLevel || 1),
     };
-    const nodeRows = await supabaseRequest('GET', `nodes?workspace_id=eq.${workspace}&id=eq.${encodeURIComponent(layout.node_id)}&select=id&limit=1`);
-    if (!Array.isArray(nodeRows) || !nodeRows[0]) return { status: 404, data: { error: 'Node not found', code: 'NOT_FOUND' } };
+    const nodeRows = await supabaseRequest('GET', `nodes?workspace_id=eq.${workspace}&id=eq.${encodeURIComponent(layout.node_id)}&select=id,map_id&limit=1`);
+    if (!Array.isArray(nodeRows) || !nodeRows[0] || nodeRows[0].map_id !== layout.map_id) return { status: 404, data: { error: 'Node not found in this map', code: 'NOT_FOUND' } };
     await supabaseRequest('POST', 'node_layouts?on_conflict=node_id,map_id', layout, 'resolution=merge-duplicates,return=minimal');
     return { status: 200, data: { success: true } };
   }
@@ -832,6 +1141,7 @@ async function handleKnowledge(req, context) {
     if (template && (!template.root || !Array.isArray(template.children))) {
       return { status: 400, data: { error: 'Invalid template data', code: 'INVALID_INPUT' } };
     }
+    await assertOwnedCategory(workspaceId, body.categoryId || null);
     const map = {
       id,
       workspace_id: workspaceId,
@@ -868,6 +1178,7 @@ async function handleKnowledge(req, context) {
     const mapId = String(body.mapId || '');
     if (!mapId || mapId === context.defaultMapId) return { status: 400, data: { error: 'Cannot delete the default map', code: 'INVALID_INPUT' } };
     const id = encodeURIComponent(mapId);
+    await assertOwnedMap(workspaceId, mapId);
     await supabaseRequest('DELETE', `node_layouts?workspace_id=eq.${workspace}&map_id=eq.${id}`);
     await supabaseRequest('DELETE', `edges?workspace_id=eq.${workspace}&map_id=eq.${id}`);
     await supabaseRequest('DELETE', `nodes?workspace_id=eq.${workspace}&map_id=eq.${id}`);
@@ -879,15 +1190,19 @@ async function handleKnowledge(req, context) {
     const mapId = String(body.mapId || '');
     if (!mapId || mapId === context.defaultMapId) return { status: 400, data: { error: 'Cannot clear the default map', code: 'INVALID_INPUT' } };
     const id = encodeURIComponent(mapId);
+    await assertOwnedMap(workspaceId, mapId);
     await supabaseRequest('DELETE', `node_layouts?workspace_id=eq.${workspace}&map_id=eq.${id}`);
     await supabaseRequest('DELETE', `edges?workspace_id=eq.${workspace}&map_id=eq.${id}`);
     await supabaseRequest('DELETE', `nodes?workspace_id=eq.${workspace}&map_id=eq.${id}`);
+    await supabaseRequest('DELETE', `source_documents?workspace_id=eq.${workspace}&map_id=eq.${id}`);
     await supabaseRequest('PATCH', `maps?workspace_id=eq.${workspace}&id=eq.${id}`, { node_count: 0, updated_at: new Date().toISOString() }, 'return=minimal');
     return { status: 200, data: { success: true } };
   }
 
   if (action === 'renameMap' || action === 'moveMapToCategory') {
     if (!body.mapId) return { status: 400, data: { error: 'mapId is required', code: 'INVALID_INPUT' } };
+    await assertOwnedMap(workspaceId, String(body.mapId));
+    if (action === 'moveMapToCategory') await assertOwnedCategory(workspaceId, body.categoryId || null);
     const changes = action === 'renameMap'
       ? { name: String(body.name || '').trim(), updated_at: new Date().toISOString() }
       : { category_id: body.categoryId || null, updated_at: new Date().toISOString() };
@@ -923,7 +1238,7 @@ async function handleKnowledge(req, context) {
 
   if (body.mindMap && body.mindMap.root) {
     const mapId = String(body.mapId || context.defaultMapId);
-    const graph = await createGraph(workspaceId, mapId, body.mindMap, body.source || 'ai_generated');
+    const graph = await createGraph(workspaceId, mapId, body.mindMap, body.source || 'ai_generated', body.document || null, body.citations || []);
     await updateMapNodeCount(workspaceId, mapId);
     return {
       status: 201,
@@ -933,6 +1248,7 @@ async function handleKnowledge(req, context) {
         additionalEdges: graph.edges.map((edge) => edge.id),
         totalNodes: graph.nodes.length,
         totalEdges: graph.edges.length,
+        totalCitations: graph.citations ? graph.citations.length : 0,
       },
     };
   }
@@ -1009,7 +1325,7 @@ const server = http.createServer(async (req, res) => {
       }
       const healthy = checks.modelConfigured && checks.knowledgeStore === 'ok';
       res.writeHead(healthy ? 200 : 503, { 'Content-Type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({ status: healthy ? 'ok' : 'degraded', checks, timestamp: new Date().toISOString() }));
+      return res.end(JSON.stringify({ status: healthy ? 'ok' : 'degraded', version: API_VERSION, checks, timestamp: new Date().toISOString() }));
     }
 
     let result;
@@ -1017,7 +1333,8 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/workspaces' || pathname === '/mindgrow/api/workspaces') {
       result = await handleWorkspaces(req, user);
     } else if (pathname === '/api/tools/meeting' || pathname === '/mindgrow/api/tools/meeting'
-      || pathname === '/api/tools/article' || pathname === '/mindgrow/api/tools/article') {
+      || pathname === '/api/tools/article' || pathname === '/mindgrow/api/tools/article'
+      || pathname === '/api/tools/audio-overview' || pathname === '/mindgrow/api/tools/audio-overview') {
       if (req.method !== 'POST') result = { status: 405, data: { error: 'Method not allowed', code: 'METHOD_NOT_ALLOWED' } };
       else {
         await resolveWorkspace(req, user);

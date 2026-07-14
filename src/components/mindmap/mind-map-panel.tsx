@@ -41,6 +41,7 @@ function MindGrowNode({ data, selected }: NodeProps) {
   const highlighted = data.highlighted as boolean;
   const childCount = (data.childCount as number) || 0;
   const branchIndex = data.branchIndex as number || 0;
+  const citations = (data.citations || []) as KnowledgeNode["citations"];
   const borderColor = branchIndex > 0
     ? BRANCH_COLORS[branchIndex % BRANCH_COLORS.length]
     : (highlighted ? "#22d3a7" : undefined);
@@ -81,6 +82,14 @@ function MindGrowNode({ data, selected }: NodeProps) {
       {desc && (
         <div className="text-[10px] leading-relaxed mt-0.5 opacity-50 line-clamp-2 break-words">
           {desc}
+        </div>
+      )}
+      {citations && citations.length > 0 && (
+        <div className="mt-1 flex flex-wrap justify-center gap-1" aria-label="节点引用">
+          {citations.slice(0, 4).map((citation) => (
+            <span key={`${citation.documentId || "source"}-${citation.index}`} title={`${citation.locator || "原文"}：${citation.quote}`} className="rounded bg-[#22d3a720] px-1.5 py-0.5 text-[9px] font-semibold text-[#7de8c9]">[{citation.index}]</span>
+          ))}
+          {citations.length > 4 && <span className="text-[9px] opacity-50">+{citations.length - 4}</span>}
         </div>
       )}
       {(childCount > 0 || source === "ai_generated") && (
@@ -281,6 +290,7 @@ function buildGraph(
         childCount: childCountMap.get(dbNode.id) || 0,
         branchIndex: branchMap.get(dbNode.id) || 0,
         collapsed: collapsed.has(dbNode.id),
+        citations: dbNode.citations || [],
       },
     };
   });

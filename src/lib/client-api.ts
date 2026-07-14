@@ -1,6 +1,6 @@
 import { API_BASE_URL } from "@/lib/config";
 import { supabase } from "@/lib/supabase-browser";
-import type { AIMindMap, Category, KnowledgeEdge, KnowledgeNode, MindMap } from "@/types";
+import type { AIMindMap, Category, Citation, KnowledgeEdge, KnowledgeNode, MindMap } from "@/types";
 
 const STORAGE_KEY = "mindgrow.local.v2";
 let activeWorkspaceId: string | null = null;
@@ -149,17 +149,21 @@ function createEdge(state: LocalState, mapId: string, sourceId: string, targetId
   return created;
 }
 
-function addMindMap(state: LocalState, mapId: string, mindMap: AIMindMap, source: KnowledgeNode["source"] = "ai_generated") {
+function addMindMap(state: LocalState, mapId: string, mindMap: AIMindMap, source: KnowledgeNode["source"] = "ai_generated", citations: Citation[] = []) {
   const createdNodes: KnowledgeNode[] = [];
   const createdEdges: KnowledgeEdge[] = [];
-  const root = createNode(state, mapId, { content: mindMap.root, desc: mindMap.rootDesc, type: "topic", source, confidence: 0.95 });
+  const citationMap = new Map(citations.map((citation) => [citation.index, citation]));
+  const cited = (indexes: number[] = []) => indexes.map((index) => citationMap.get(index)).filter(Boolean) as Citation[];
+  const root = createNode(state, mapId, { content: mindMap.root, desc: mindMap.rootDesc, type: "topic", source, confidence: 0.95, citations: cited(mindMap.rootCitationIndexes) });
   createdNodes.push(root);
   for (const child of mindMap.children || []) {
-    const childNode = createNode(state, mapId, { content: child.topic, desc: child.desc, type: "concept", source, confidence: 0.85 });
+    const childNode = createNode(state, mapId, { content: child.topic, desc: child.desc, type: "concept", source, confidence: 0.85, citations: cited(child.citationIndexes) });
     createdNodes.push(childNode);
     createdEdges.push(createEdge(state, mapId, root.id, childNode.id));
-    for (const item of child.items || []) {
-      const detail = createNode(state, mapId, { content: item, type: "detail", source, confidence: 0.75 });
+    const childItems = child.items || [];
+    for (let itemIndex = 0; itemIndex < childItems.length; itemIndex += 1) {
+      const item = childItems[itemIndex];
+      const detail = createNode(state, mapId, { content: item, type: "detail", source, confidence: 0.75, citations: cited(child.itemCitationIndexes?.[itemIndex] || child.citationIndexes) });
       createdNodes.push(detail);
       createdEdges.push(createEdge(state, mapId, childNode.id, detail.id));
     }
@@ -288,7 +292,7 @@ function handleKnowledge(path: string, init?: RequestInit): Response {
 
   const mapId = body.mapId || "map_default";
   if (body.mindMap?.root) {
-    const result = addMindMap(state, mapId, body.mindMap, body.source || "ai_generated");
+    const result = addMindMap(state, mapId, body.mindMap, body.source || "ai_generated", body.citations || []);
     saveState(state);
     return json({
       node: result.root,
@@ -422,15 +426,34 @@ function handleLocalTool(path: string, init?: RequestInit): Response {
     const content = String(body.content || "").trim();
     if (content.length < 50) return json({ error: "本地模式请粘贴至少 50 个字的文章正文" }, 400);
     const mindMap = generateLocalMindMap(content);
+    const excerpts = content.split(/\n+|(?<=[。！？!?])\s*/).map((item) => item.trim()).filter((item) => item.length >= 12).slice(0, 8);
+    const citations: Citation[] = excerpts.map((quote, index) => ({ index: index + 1, quote: quote.slice(0, 180), locator: `原文片段 ${index + 1}`, sourceType: body.sourceType || "text", fileName: body.fileName }));
+    const cited = (index: number) => citations.length ? [citations[index % citations.length].index] : [];
+    mindMap.rootCitationIndexes = cited(0);
+    mindMap.children = mindMap.children.map((child, index) => ({ ...child, citationIndexes: cited(index), itemCitationIndexes: child.items.map((_, itemIndex) => cited(index + itemIndex)) }));
     return json({
       title: mindMap.root,
       summary: mindMap.rootDesc || "",
-      keyPoints: mindMap.children.flatMap((child) => child.items).slice(0, 10),
+      summaryCitationIndexes: cited(0),
+      keyPoints: mindMap.children.flatMap((child, index) => child.items.map((text, itemIndex) => ({ text, citationIndexes: cited(index + itemIndex) }))).slice(0, 10),
       arguments: [],
       questions: ["文章有哪些适用边界？"],
       mindMap,
-      sourceUrl: "",
+      citations,
+      sourceUrl: body.url || "",
+      sourceType: body.sourceType || "text",
+      fileName: body.fileName || "",
+      mimeType: body.mimeType || "",
     });
+  }
+  if (path.endsWith("/audio-overview")) {
+    const keyPoints = Array.isArray(body.keyPoints) ? body.keyPoints : [];
+    const segments = keyPoints.slice(0, 6).map((item, index) => ({
+      speaker: index % 2 === 0 ? "主持人" : "分析师",
+      text: `${index === 0 ? "先看核心结论：" : "接着来看："}${String(item.text || item)}`,
+      citationIndexes: Array.isArray(item.citationIndexes) ? item.citationIndexes : [],
+    }));
+    return json({ title: String(body.title || "文章音频概览"), intro: "根据文章引用生成的双角色概览。", segments, synthesis: "browser" });
   }
   return json({ error: "Tool not found" }, 404);
 }
