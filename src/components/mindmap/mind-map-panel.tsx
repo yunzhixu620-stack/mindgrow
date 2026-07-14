@@ -398,6 +398,7 @@ function buildGraph(
     .filter(e => visibleIds.has(e.sourceId) && visibleIds.has(e.targetId))
     .map((dbEdge) => {
     const isRelation = dbEdge.relation !== "contains";
+    const isContradiction = dbEdge.relation === "contradicts";
     const bi = branchMap.get(dbEdge.sourceId);
     const edgeColor = bi !== undefined ? BRANCH_COLORS[bi % BRANCH_COLORS.length] : "#ffffff10";
     return {
@@ -405,10 +406,15 @@ function buildGraph(
       source: dbEdge.sourceId,
       target: dbEdge.targetId,
       // One continuous cubic curve is easier to follow than multi-turn elbows.
-      type: "bezier",
+      type: "default",
       animated: isRelation,
+      label: isRelation ? (isContradiction ? "观点冲突" : "概念关联") : undefined,
+      labelStyle: isRelation ? { fill: isContradiction ? "#fca5a5" : "#f9a8d4", fontSize: 10, fontWeight: 600 } : undefined,
+      labelBgStyle: isRelation ? { fill: "#111113", fillOpacity: 0.92 } : undefined,
+      labelBgPadding: isRelation ? [5, 3] as [number, number] : undefined,
+      labelBgBorderRadius: isRelation ? 6 : undefined,
       style: {
-        stroke: isRelation ? "#f472b688" : `${edgeColor}44`,
+        stroke: isContradiction ? "#ef4444aa" : isRelation ? "#f472b688" : `${edgeColor}44`,
         strokeWidth: isRelation ? 1.4 : 1.8,
         strokeDasharray: isRelation ? "5 5" : undefined,
       },
@@ -639,6 +645,8 @@ export function MindMapPanel() {
   );
 
   const hiddenNodeCount = Math.max(0, storeNodes.length - graph.nodes.length);
+  const relationCount = storeEdges.filter((edge) => edge.relation !== "contains").length;
+  const citedNodeCount = storeNodes.filter((node) => (node.citations || []).length > 0).length;
 
   const [flowNodes, setFlowNodes, onNodesChange] = useNodesState(graph.nodes);
   const [flowEdges, setFlowEdges, onEdgesChange] = useEdgesState(graph.edges);
@@ -945,6 +953,9 @@ export function MindMapPanel() {
         {(!isMobile || showToolbar) && (
           <>
             <div className="rounded-xl border border-[var(--primary-border)] bg-[var(--primary-subtle)] px-3 py-2 text-xs font-semibold text-[var(--primary-hover)]">{MODE_LIBRARY_CONFIG[currentMode].emoji} {MODE_LIBRARY_CONFIG[currentMode].shortLabel}知识图谱</div>
+            <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/5 px-3 py-2 text-[10px] font-medium text-emerald-200" title="新增内容会成为节点；层级、关联与冲突关系会持续连接旧知识">
+              🌱 生长中 · {storeNodes.length} 节点 · {storeEdges.length} 条连接{relationCount > 0 ? ` · ${relationCount} 条语义关系` : ""}{citedNodeCount > 0 ? ` · ${citedNodeCount} 个可追溯节点` : ""}
+            </div>
             <div className="flex gap-0 bg-[var(--card)] border border-[var(--border)] rounded-xl p-1">
               <button
                 onClick={showOutline}
@@ -1187,7 +1198,7 @@ export function MindMapPanel() {
         zoomOnScroll={true}
         zoomOnPinch={true}
         zoomOnDoubleClick={false}
-        defaultEdgeOptions={{ type: "bezier", style: { stroke: "#ffffff24", strokeWidth: 1.8 } }}
+        defaultEdgeOptions={{ type: "default", style: { stroke: "#ffffff24", strokeWidth: 1.8 } }}
         proOptions={{ hideAttribution: true }}
         className={`!bg-[var(--background)] ${isMobile ? "!touch-none" : ""}`}
       >

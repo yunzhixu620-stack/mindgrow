@@ -25,7 +25,7 @@ function AuthenticatedLayout({ children }: { children: React.ReactNode }) {
   }, []);
 
   if (isDocumentPage) {
-    return <div className="min-h-screen w-full overflow-y-auto bg-[var(--bg-base)]">{children}</div>;
+    return <div className="h-screen w-full overflow-y-scroll overscroll-y-contain bg-[var(--bg-base)]" data-guide-scroll>{children}</div>;
   }
 
   if (!IS_LOCAL_MODE && loading) {

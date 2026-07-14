@@ -126,14 +126,16 @@ export default function Home() {
     setCurrentMapId(currentWorkspaceDefaultMapId);
   }, [currentWorkspaceId, currentWorkspaceDefaultMapId, setMaps, setCategories, setNodes, setEdges, setCurrentMapId]);
 
-  const reloadAll = useCallback(async () => {
+  const reloadAll = useCallback(async (): Promise<MindMap[]> => {
+    let allMaps: MindMap[] = [];
     try {
       const [mapsRes, catsRes] = await Promise.all([
         apiFetch("/api/knowledge?action=maps"),
         apiFetch("/api/knowledge?action=categories"),
       ]);
       if (mapsRes.ok) {
-        const { maps: allMaps } = await mapsRes.json();
+        const data = await mapsRes.json();
+        allMaps = data.maps || [];
         setMaps(allMaps);
       }
       if (catsRes.ok) {
@@ -142,25 +144,19 @@ export default function Home() {
       }
       setMapCatalogReady(true);
     } catch (e) { console.error(e); }
+    return allMaps;
   }, [setMaps, setCategories]);
 
-  const handleSwitchMap = useCallback(async (mapId: string) => {
+  const handleSwitchMap = useCallback((mapId: string) => {
     if (mapId === currentMapId) { setDrawerOpen(false); return; }
-    const requestId = ++mapLoadRequestRef.current;
+    // Invalidate any response that belongs to the previous library. The only
+    // code that fetches graph data is the currentMapId effect below.
+    ++mapLoadRequestRef.current;
     saveChatHistory();
     setCurrentMapId(mapId);
-    setDrawerOpen(false);
-    try {
-      const res = await apiFetch(`/api/knowledge?mapId=${mapId}`);
-      if (res.ok) {
-        const { nodes, edges } = await res.json();
-        if (requestId !== mapLoadRequestRef.current) return;
-        setNodes(nodes || []);
-        setEdges(edges || []);
-      }
-    } catch (e) { console.error(e); }
     loadChatHistory(mapId);
-  }, [currentMapId, setCurrentMapId, setNodes, setEdges, saveChatHistory, loadChatHistory]);
+    setDrawerOpen(false);
+  }, [currentMapId, setCurrentMapId, saveChatHistory, loadChatHistory]);
 
   // Switching product boards also switches to a board-owned knowledge library.
   // Meeting and article libraries are provisioned once, then reused on later visits.
@@ -173,6 +169,7 @@ export default function Home() {
       lastMapByModeRef.current[previousMode] = currentMapId;
       activeModeRef.current = currentMode;
       setModeLibraryError("");
+      setModeLibraryBusy(true);
     } else if (modeLibraryError) {
       return;
     }
@@ -190,7 +187,7 @@ export default function Home() {
 
     if (target) {
       setModeLibraryBusy(true);
-      void handleSwitchMap(target.id).finally(() => setModeLibraryBusy(false));
+      handleSwitchMap(target.id);
       return;
     }
 
@@ -215,7 +212,10 @@ export default function Home() {
         if (!response.ok || !data.map?.id) throw new Error(data.error || `无法创建${config.defaultName}`);
         if (cancelled) return;
         lastMapByModeRef.current[currentMode] = data.map.id;
-        await handleSwitchMap(data.map.id);
+        // Select first, then publish the refreshed catalog. Reversing this
+        // order lets the mode effect issue a duplicate switch that invalidates
+        // the sole graph request and leaves the board in a permanent spinner.
+        handleSwitchMap(data.map.id);
         await reloadAll();
       })
       .catch((error) => {
@@ -244,23 +244,15 @@ export default function Home() {
       });
       if (res.ok) {
         const { map } = await res.json();
-        saveChatHistory();
-        setCurrentMapId(map.id);
-        const dataRes = await apiFetch(`/api/knowledge?mapId=${map.id}`);
-        if (dataRes.ok) {
-          const { nodes, edges } = await dataRes.json();
-          setNodes(nodes || []);
-          setEdges(edges || []);
-        }
-        loadChatHistory(map.id);
         await reloadAll();
+        handleSwitchMap(map.id);
       }
     } catch (e) { console.error(e); }
     setIsCreating(false);
     setNewName("");
     setNewCategoryId(null);
     setDrawerOpen(false);
-  }, [newName, newCategoryId, currentMode, setCurrentMapId, setNodes, setEdges, saveChatHistory, loadChatHistory, reloadAll]);
+  }, [newName, newCategoryId, currentMode, handleSwitchMap, reloadAll]);
 
   const handleDeleteMap = useCallback(async (map: MindMap) => {
     if (map.isDefault) return;
@@ -270,12 +262,20 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "deleteMap", mapId: map.id }),
       });
-      await reloadAll();
-      if (map.id === currentMapId) handleSwitchMap(maps.find((item) => item.isDefault)?.id || currentWorkspaceDefaultMapId || "map_default");
+      const allMaps = await reloadAll();
+      if (map.id === currentMapId) {
+        const fallback = allMaps.find((item) => item.id !== map.id && isMapForMode(item, currentMode));
+        if (fallback) handleSwitchMap(fallback.id);
+        else {
+          ++mapLoadRequestRef.current;
+          setNodes([]);
+          setEdges([]);
+        }
+      }
     } catch (e) { console.error(e); }
     setActionSheet("none");
     setContextMenu(null);
-  }, [currentMapId, handleSwitchMap, reloadAll, maps, currentWorkspaceDefaultMapId]);
+  }, [currentMapId, currentMode, handleSwitchMap, reloadAll, setNodes, setEdges]);
 
   const handleCreateCategory = useCallback(async () => {
     if (!newCategoryName.trim()) { setIsCreatingCategory(false); return; }
@@ -305,20 +305,36 @@ export default function Home() {
     setContextMenu(null);
   }, [reloadAll]);
 
-  // Load data when map changes (desktop only, mobile handles in handleSwitchMap)
+  // One authoritative graph loader for desktop, mobile and top-tab switches.
+  // It validates both the map id and product mode before committing a response.
   useEffect(() => {
-    if (isMobile) return;
+    if (!mapCatalogReady) return;
+    const selectedMap = maps.find((map) => map.id === currentMapId);
+    if (!selectedMap || !isMapForMode(selectedMap, currentMode)) return;
     const requestId = ++mapLoadRequestRef.current;
+    const requestedMode = currentMode;
+    setModeLibraryBusy(true);
     apiFetch(`/api/knowledge?mapId=${currentMapId}`)
-      .then((r) => r.json())
+      .then(async (response) => {
+        if (!response.ok) throw new Error("知识图谱加载失败");
+        return response.json();
+      })
       .then((data) => {
         if (requestId !== mapLoadRequestRef.current) return;
+        const latest = useMindGrowStore.getState();
+        if (latest.currentMapId !== currentMapId || latest.currentMode !== requestedMode) return;
         setNodes(data.nodes || []);
         setEdges(data.edges || []);
+        setModeLibraryError("");
       })
-      .catch(() => {});
+      .catch((error) => {
+        if (requestId === mapLoadRequestRef.current) setModeLibraryError(error instanceof Error ? error.message : "知识图谱加载失败");
+      })
+      .finally(() => {
+        if (requestId === mapLoadRequestRef.current) setModeLibraryBusy(false);
+      });
     loadChatHistory(currentMapId);
-  }, [isMobile, currentMapId, setNodes, setEdges, loadChatHistory]);
+  }, [currentMapId, currentMode, maps, mapCatalogReady, setNodes, setEdges, loadChatHistory]);
 
   // Each product board owns a separate set of knowledge libraries.
   const visibleMaps = maps.filter((map) => isMapForMode(map, currentMode));
@@ -337,7 +353,7 @@ export default function Home() {
           <div className="mb-3 text-3xl">{modeConfig.emoji}</div>
           <h2 className="text-base font-semibold text-[var(--foreground)]">{modeLibraryError ? `${modeConfig.defaultName}暂时不可用` : `正在进入${modeConfig.defaultName}`}</h2>
           <p className="mt-2 text-xs leading-6 text-[var(--muted-foreground)]">{modeLibraryError || "首次进入会自动创建独立知识库，后续将直接恢复上次内容。"}</p>
-          {modeLibraryError && <button type="button" onClick={() => setModeLibraryError("")} className="mt-4 rounded-xl bg-[var(--primary)] px-4 py-2 text-xs font-semibold text-black">重新尝试</button>}
+          {modeLibraryError && <button type="button" onClick={() => { setModeLibraryError(""); ++mapLoadRequestRef.current; setMapCatalogReady(false); void reloadAll(); }} className="mt-4 rounded-xl bg-[var(--primary)] px-4 py-2 text-xs font-semibold text-black">重新尝试</button>}
         </div>
       </div>
     )
@@ -473,24 +489,21 @@ export default function Home() {
                       {isExpanded && (
                         <div className="ml-3 border-l border-[var(--border)]">
                           {catMaps.map((map) => (
-                            <button
-                              key={map.id}
-                              onClick={() => handleSwitchMap(map.id)}
-                              onContextMenu={(e) => { e.preventDefault(); setContextMenu({ map }); setActionSheet("map-actions"); }}
-                              className={`w-full px-4 py-2.5 flex items-center gap-3 text-left transition-colors cursor-pointer ${
-                                currentMapId === map.id
-                                  ? "bg-[var(--primary)]/10 border-l-2 border-[var(--primary)]"
-                                  : "hover:bg-[var(--bg-hover)] border-l-2 border-transparent"
-                              }`}
-                            >
-                              <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: map.color }} />
-                              <div className="flex-1 min-w-0">
-                                <div className={`text-xs font-medium truncate ${
-                                  currentMapId === map.id ? "text-[var(--primary)]" : "text-[var(--text-primary)]"
-                                }`}>{map.name}</div>
-                                <div className="text-[10px] text-[var(--muted-foreground)]">{map.nodeCount || 0} 节点</div>
-                              </div>
-                            </button>
+                            <div key={map.id} className={`flex w-full items-center transition-colors ${currentMapId === map.id ? "bg-[var(--primary)]/10 border-l-2 border-[var(--primary)]" : "hover:bg-[var(--bg-hover)] border-l-2 border-transparent"}`}>
+                              <button
+                                onClick={() => handleSwitchMap(map.id)}
+                                onContextMenu={(e) => { e.preventDefault(); setContextMenu({ map }); setActionSheet("map-actions"); }}
+                                className="flex min-w-0 flex-1 items-center gap-3 px-4 py-2.5 text-left cursor-pointer"
+                                aria-label={`打开知识库 ${map.name}`}
+                              >
+                                <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: map.color }} />
+                                <div className="flex-1 min-w-0">
+                                  <div className={`text-xs font-medium truncate ${currentMapId === map.id ? "text-[var(--primary)]" : "text-[var(--text-primary)]"}`}>{map.name}</div>
+                                  <div className="text-[10px] text-[var(--muted-foreground)]">{map.nodeCount || 0} 节点</div>
+                                </div>
+                              </button>
+                              {!map.isDefault && <button type="button" onClick={() => { setContextMenu({ map }); setActionSheet("map-actions"); }} aria-label={`删除知识库 ${map.name}`} className="mr-2 flex h-9 w-9 items-center justify-center rounded-lg text-[var(--muted-foreground)] hover:bg-red-500/10 hover:text-red-400">🗑️</button>}
+                            </div>
                           ))}
                           {catMaps.length === 0 && (
                             <div className="px-4 py-2 text-[10px] text-[var(--muted-foreground)] italic">空文件夹</div>
@@ -517,24 +530,21 @@ export default function Home() {
                     {showUncategorized && (
                       <div className="ml-3 border-l border-[var(--border)]">
                         {uncategorizedMaps.map((map) => (
-                          <button
-                            key={map.id}
-                            onClick={() => handleSwitchMap(map.id)}
-                            onContextMenu={(e) => { e.preventDefault(); setContextMenu({ map }); setActionSheet("map-actions"); }}
-                            className={`w-full px-4 py-2.5 flex items-center gap-3 text-left transition-colors cursor-pointer ${
-                              currentMapId === map.id
-                                ? "bg-[var(--primary)]/10 border-l-2 border-[var(--primary)]"
-                                : "hover:bg-[var(--bg-hover)] border-l-2 border-transparent"
-                            }`}
-                          >
-                            <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: map.color }} />
-                            <div className="flex-1 min-w-0">
-                              <div className={`text-xs font-medium truncate ${
-                                currentMapId === map.id ? "text-[var(--primary)]" : "text-[var(--text-primary)]"
-                              }`}>{map.name}</div>
-                              <div className="text-[10px] text-[var(--muted-foreground)]">{map.nodeCount || 0} 节点</div>
-                            </div>
-                          </button>
+                          <div key={map.id} className={`flex w-full items-center transition-colors ${currentMapId === map.id ? "bg-[var(--primary)]/10 border-l-2 border-[var(--primary)]" : "hover:bg-[var(--bg-hover)] border-l-2 border-transparent"}`}>
+                            <button
+                              onClick={() => handleSwitchMap(map.id)}
+                              onContextMenu={(e) => { e.preventDefault(); setContextMenu({ map }); setActionSheet("map-actions"); }}
+                              className="flex min-w-0 flex-1 items-center gap-3 px-4 py-2.5 text-left cursor-pointer"
+                              aria-label={`打开知识库 ${map.name}`}
+                            >
+                              <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: map.color }} />
+                              <div className="flex-1 min-w-0">
+                                <div className={`text-xs font-medium truncate ${currentMapId === map.id ? "text-[var(--primary)]" : "text-[var(--text-primary)]"}`}>{map.name}</div>
+                                <div className="text-[10px] text-[var(--muted-foreground)]">{map.nodeCount || 0} 节点</div>
+                              </div>
+                            </button>
+                            {!map.isDefault && <button type="button" onClick={() => { setContextMenu({ map }); setActionSheet("map-actions"); }} aria-label={`删除知识库 ${map.name}`} className="mr-2 flex h-9 w-9 items-center justify-center rounded-lg text-[var(--muted-foreground)] hover:bg-red-500/10 hover:text-red-400">🗑️</button>}
+                          </div>
                         ))}
                       </div>
                     )}
@@ -770,7 +780,7 @@ export default function Home() {
   // All product boards share the same library → content → graph workspace.
   // Meeting and article keep isolated libraries but reuse the map interaction.
   return (
-    <main className="flex h-full w-full overflow-hidden" data-testid={`${currentMode}-workspace`}>
+    <main className="flex h-full w-full overflow-hidden" data-testid={`${currentMode}-workspace`} data-current-map-id={currentMapId} data-library-busy={modeLibraryBusy ? "true" : "false"}>
       <Sidebar />
       <div className={currentMode === "knowledge" ? "flex h-full shrink-0" : "h-full w-[clamp(360px,36vw,520px)] shrink-0 border-r border-[var(--border)]"}>
         {currentMode === "knowledge" ? <ChatPanel /> : activeModePanel}

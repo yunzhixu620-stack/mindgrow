@@ -71,6 +71,10 @@ const clickByText = async (page, selector, text) => {
     await page.waitForFunction(() => window.location.pathname.endsWith("/guide") || window.location.pathname.endsWith("/guide/"));
     const heading = await page.$eval("h1", (element) => element.textContent.trim());
     if (!heading.includes("可追溯的知识网络")) throw new Error("Usage guide did not render after clicking");
+    const guideScroll = await page.$eval('[data-guide-scroll]', (element) => ({ scrollHeight: element.scrollHeight, clientHeight: element.clientHeight }));
+    if (guideScroll.scrollHeight <= guideScroll.clientHeight) throw new Error("Usage guide is not vertically scrollable");
+    await page.$eval('[data-guide-scroll]', (element) => { element.scrollTop = Math.floor((element.scrollHeight - element.clientHeight) * 0.55); element.dispatchEvent(new Event("scroll")); });
+    await page.waitForFunction(() => parseFloat(document.querySelector('[data-testid="guide-progress"]')?.style.width || "0") > 25);
     await page.goBack({ waitUntil: "networkidle0" });
     await page.waitForFunction(() => document.querySelectorAll(".react-flow__node").length >= 10);
   });
@@ -265,12 +269,12 @@ const clickByText = async (page, selector, text) => {
     await clickByText(page, "button", "解析文章");
     await page.waitForFunction(() => document.body.innerText.includes("核心要点"));
     await page.waitForFunction(() => document.body.innerText.includes("[1]"));
-    await page.waitForFunction(() => document.body.innerText.includes("GraphRAG 论文结构预览"));
+    await page.waitForFunction(() => document.body.innerText.includes("图谱增强检索（GraphRAG）论文结构预览"));
     await page.waitForFunction(() => document.querySelectorAll(".react-flow__node").length >= 3);
     if (!await page.$('input[aria-label="搜索论文链路"]')) throw new Error("Paper link navigator search is missing");
     if (!await page.$('textarea[aria-label="向文章知识库提问"]')) throw new Error("Article-library Q&A input is missing");
-    await clickByText(page, "button", "生成 Audio Overview");
-    await page.waitForFunction(() => document.body.innerText.includes("Audio Overview ·"));
+    await clickByText(page, "button", "生成音频概览");
+    await page.waitForFunction(() => document.body.innerText.includes("音频概览 ·"));
     await clickByText(page, "button", "保存到文章知识库");
     await page.waitForFunction(() => document.body.innerText.includes("文章知识节点"));
   });
@@ -297,10 +301,61 @@ const clickByText = async (page, selector, text) => {
     await newCard.click();
     await page.waitForFunction((expected) => document.querySelector("[data-mode-library-id]")?.getAttribute("data-mode-library-id") === expected, {}, targetMapId);
     if (!await page.$('[data-testid="knowledge-graph-workspace"][data-graph-mode="article"]')) throw new Error("Article graph disappeared after project navigation");
+    const repeatedFile = await page.waitForSelector('input[type="file"][accept*="pdf"]');
+    await repeatedFile.uploadFile(pdfPath);
+    await page.waitForFunction(() => document.body.innerText.includes("已读取 2 页"));
+    await clickByText(page, "button", "解析文章");
+    await page.waitForFunction(() => document.body.innerText.includes("核心要点"));
+    await clickByText(page, "button", "保存到文章知识库");
+    await page.waitForFunction(() => document.body.innerText.includes("文章知识节点"));
+  });
+
+  await check("top product tabs switch both content and graph without cross-board residue", async () => {
+    for (const [label, mode] of [["会议助手", "meeting"], ["知识碎片", "knowledge"], ["文章解析", "article"]]) {
+      await clickByText(page, "button", label);
+      await page.waitForSelector(`[data-testid="knowledge-graph-workspace"][data-graph-mode="${mode}"]`);
+      await page.waitForFunction((expectedMode) => {
+        const id = document.querySelector("[data-mode-library-id]")?.getAttribute("data-mode-library-id");
+        if (!id && expectedMode === "knowledge") return true;
+        const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+        const map = state.maps.find((item) => item.id === id);
+        if (!map) return false;
+        const description = map.description || "";
+        return expectedMode === "meeting" ? description.includes("[MindGrow:meeting]") : expectedMode === "article" ? description.includes("[MindGrow:article]") : !description.includes("[MindGrow:");
+      }, {}, mode);
+    }
+    await clickByText(page, "button", "会议助手");
+    await clickByText(page, "button", "知识碎片");
+    await clickByText(page, "button", "文章解析");
+    await page.waitForSelector('[data-testid="knowledge-graph-workspace"][data-graph-mode="article"]');
+    const finalMode = await page.$eval('[data-testid="knowledge-graph-workspace"]', (element) => element.getAttribute("data-graph-mode"));
+    if (finalMode !== "article") throw new Error(`Rapid tab switch ended in ${finalMode}`);
+  });
+
+  await check("all three product boards expose and execute inline library deletion", async () => {
+    for (const [label, mode, name] of [["文章解析", "article", "待删除文章库"], ["会议助手", "meeting", "待删除会议库"], ["知识碎片", "knowledge", "待删除知识库"]]) {
+      await clickByText(page, "button", label);
+      await page.waitForSelector(`[data-testid="knowledge-graph-workspace"][data-graph-mode="${mode}"]`);
+      await page.click('button[title="新建知识库"]');
+      await page.waitForSelector('input[placeholder="知识库名称..."]');
+      await page.type('input[placeholder="知识库名称..."]', name);
+      await clickByText(page, "button", "创建");
+      await page.waitForSelector(`button[aria-label="删除知识库 ${name}"]`);
+      await page.click(`button[aria-label="删除知识库 ${name}"]`);
+      await page.waitForFunction((libraryName) => document.querySelector('[role="dialog"]')?.textContent.includes(libraryName), {}, name);
+      await clickByText(page, "button", "确认删除");
+      await page.waitForFunction((libraryName) => {
+        const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+        return !state.maps.some((map) => map.name === libraryName);
+      }, {}, name);
+      if (await page.$(`button[aria-label="删除知识库 ${name}"]`)) throw new Error(`${name} still appears after deletion`);
+    }
   });
 
   await check("real research PDF preserves pages and reports visual structures", async () => {
     if (!fs.existsSync(realPaperPath)) throw new Error("LayoutLMv3 test paper is missing");
+    await clickByText(page, "button", "文章解析");
+    await page.waitForSelector('[data-testid="article-content-workspace"]');
     const fileInput = await page.waitForSelector('input[type="file"][accept*="pdf"]');
     await fileInput.uploadFile(realPaperPath);
     await page.waitForFunction(() => document.body.innerText.includes("已读取 10 页"));
@@ -352,13 +407,24 @@ const clickByText = async (page, selector, text) => {
     await new Promise((resolve) => setTimeout(resolve, 400));
   });
 
-  await check("knowledge universe renders a single application header", async () => {
+  await check("knowledge universe keeps board isolation and supports zoom", async () => {
     await page.setViewport({ width: 1440, height: 900 });
-    await page.goto(`${BASE_URL}/universe`, { waitUntil: "networkidle0", timeout: 30000 });
+    await page.goto(`${BASE_URL}/universe?mode=article`, { waitUntil: "networkidle0", timeout: 30000 });
+    await page.waitForSelector('[data-testid="universe-view"][data-universe-mode="article"]');
+    await page.waitForFunction(() => document.body.innerText.includes("文章解析宇宙") && document.body.innerText.includes("跨库关系"));
+    const crossLibraryCount = await page.$eval('[data-testid="universe-cross-library-count"]', (element) => Number(element.getAttribute("data-count") || 0));
+    if (crossLibraryCount < 1) throw new Error("Shared article concepts did not produce a cross-library relationship");
     const headerCount = await page.$$eval("header", (headers) => headers.length);
     if (headerCount !== 1) throw new Error(`Expected one application header, got ${headerCount}`);
-    const hasBackButton = await page.evaluate(() => document.body.innerText.includes("返回知识导图"));
+    const hasBackButton = await page.evaluate(() => document.body.innerText.includes("返回当前知识库"));
     if (!hasBackButton) throw new Error("Universe navigation is incomplete");
+    const beforeZoom = await page.$eval('button[aria-label="重置知识宇宙视图"]', (button) => button.textContent.trim());
+    await page.click('button[aria-label="放大知识宇宙"]');
+    const afterZoom = await page.$eval('button[aria-label="重置知识宇宙视图"]', (button) => button.textContent.trim());
+    if (beforeZoom === afterZoom) throw new Error("Universe zoom control did not update the viewport");
+    await clickByText(page, "button", "会议助手");
+    await page.waitForSelector('[data-testid="universe-view"][data-universe-mode="meeting"]');
+    await page.waitForFunction(() => document.body.innerText.includes("会议助手宇宙"));
   });
 
   await check("SEO guide is indexable and readable", async () => {

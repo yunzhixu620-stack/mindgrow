@@ -7,6 +7,7 @@ import { apiFetch } from "@/lib/client-api";
 import { Category } from "@/types";
 import { TemplateBrowser } from "@/components/template/template-browser";
 import { MODE_LIBRARY_CONFIG, isMapForMode, modeLibraryDescription } from "@/lib/mode-libraries";
+import Link from "next/link";
 
 interface LibrarySearchMatch {
   id: string;
@@ -30,6 +31,7 @@ function CategorySection({
   currentMapId,
   onSwitch,
   onContextMenu,
+  onDeleteMap,
   onDeleteCategory,
   onRenameCategory,
   defaultExpanded = true,
@@ -39,6 +41,7 @@ function CategorySection({
   currentMapId: string;
   onSwitch: (id: string) => void;
   onContextMenu: (e: React.MouseEvent, map: MindMap) => void;
+  onDeleteMap: (map: MindMap) => void;
   onDeleteCategory?: (catId: string) => void;
   onRenameCategory?: (catId: string, name: string) => void;
   defaultExpanded?: boolean;
@@ -145,6 +148,7 @@ function CategorySection({
               isActive={map.id === currentMapId}
               onSwitch={onSwitch}
               onContextMenu={onContextMenu}
+              onDelete={onDeleteMap}
             />
           ))}
         </div>
@@ -161,39 +165,55 @@ function MapItem({
   isActive,
   onSwitch,
   onContextMenu,
+  onDelete,
 }: {
   map: MindMap;
   isActive: boolean;
   onSwitch: (id: string) => void;
   onContextMenu: (e: React.MouseEvent, map: MindMap) => void;
+  onDelete: (map: MindMap) => void;
 }) {
   return (
-    <button
-      draggable
-      onDragStart={(e) => {
-        e.dataTransfer.setData("text/plain", map.id);
-        e.dataTransfer.effectAllowed = "move";
-      }}
-      onClick={() => onSwitch(map.id)}
-      onContextMenu={(e) => onContextMenu(e, map)}
-      className={`w-full px-2.5 py-2 flex items-center gap-2 text-left transition-colors cursor-pointer group rounded-md my-0.5 ${
-        isActive
-          ? "bg-[var(--primary)]/10 border-l-2 border-[var(--primary)]"
-          : "hover:bg-[var(--bg-hover)] border-l-2 border-transparent"
-      }`}
-    >
-      <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: map.color }} />
-      <div className="flex-1 min-w-0">
-        <div className={`text-xs font-medium truncate ${
-          isActive ? "text-[var(--primary)]" : "text-[var(--text-primary)]"
-        }`}>
-          {map.name}
+    <div className="group relative my-0.5 w-full">
+      <button
+        draggable
+        onDragStart={(e) => {
+          e.dataTransfer.setData("text/plain", map.id);
+          e.dataTransfer.effectAllowed = "move";
+        }}
+        onClick={() => onSwitch(map.id)}
+        onContextMenu={(e) => onContextMenu(e, map)}
+        aria-label={`打开知识库 ${map.name}`}
+        className={`w-full px-2.5 py-2 pr-9 flex items-center gap-2 text-left transition-colors cursor-pointer rounded-md ${
+          isActive
+            ? "bg-[var(--primary)]/10 border-l-2 border-[var(--primary)]"
+            : "hover:bg-[var(--bg-hover)] border-l-2 border-transparent"
+        }`}
+      >
+        <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: map.color }} />
+        <div className="flex-1 min-w-0">
+          <div className={`text-xs font-medium truncate ${
+            isActive ? "text-[var(--primary)]" : "text-[var(--text-primary)]"
+          }`}>
+            {map.name}
+          </div>
+          <div className="text-[10px] text-[var(--muted-foreground)]">
+            {map.nodeCount || 0} 节点
+          </div>
         </div>
-        <div className="text-[10px] text-[var(--muted-foreground)]">
-          {map.nodeCount || 0} 节点
-        </div>
-      </div>
-    </button>
+      </button>
+      {!map.isDefault && (
+        <button
+          type="button"
+          onClick={(event) => { event.stopPropagation(); onDelete(map); }}
+          aria-label={`删除知识库 ${map.name}`}
+          title="删除知识库"
+          className="absolute right-1.5 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-lg text-[var(--muted-foreground)] opacity-100 transition-all hover:bg-red-500/10 hover:text-red-400 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100"
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="M19 6l-1 14H6L5 6" /><path d="M10 11v5M14 11v5" /></svg>
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -233,6 +253,10 @@ export function Sidebar() {
     setSearchResults,
     setHighlightedNodeId,
     currentMode,
+    saveChatHistory,
+    loadChatHistory,
+    setNodes,
+    setEdges,
   } = useMindGrowStore();
 
   const [contextMenu, setContextMenu] = useState<{
@@ -240,6 +264,7 @@ export function Sidebar() {
     y: number;
     map: MindMap;
   } | null>(null);
+  const [deleteCandidate, setDeleteCandidate] = useState<MindMap | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [newName, setNewName] = useState("");
   const [newColor, setNewColor] = useState("#22d3a7");
@@ -355,6 +380,7 @@ export function Sidebar() {
       });
       if (res.ok) {
         const { map } = await res.json();
+        saveChatHistory();
         setCurrentMapId(map.id);
         setNewName("");
         setIsCreating(false);
@@ -372,35 +398,22 @@ export function Sidebar() {
           const { categories: allCats } = await catsRes.json();
           useMindGrowStore.getState().setCategories(allCats);
         }
-        // Switch to the new map
-        const dataRes = await apiFetch(`/api/knowledge?mapId=${map.id}`);
-        if (dataRes.ok) {
-          const { nodes, edges } = await dataRes.json();
-          useMindGrowStore.getState().setNodes(nodes);
-          useMindGrowStore.getState().setEdges(edges);
-        }
+        loadChatHistory(map.id);
       }
     } catch (e) {
       console.error("Failed to create map:", e);
     }
-  }, [newName, newColor, newCategoryId, currentMode, setCurrentMapId]);
+  }, [newName, newColor, newCategoryId, currentMode, setCurrentMapId, saveChatHistory, loadChatHistory]);
 
-  const handleSwitch = useCallback(async (mapId: string) => {
+  const handleSwitch = useCallback((mapId: string) => {
+    if (mapId === currentMapId) return;
+    saveChatHistory();
     setCurrentMapId(mapId);
+    loadChatHistory(mapId);
     setContextMenu(null);
     setSearchResults([]);
     setHighlightedNodeId(null);
-    try {
-      const res = await apiFetch(`/api/knowledge?mapId=${mapId}`);
-      if (res.ok) {
-        const { nodes, edges } = await res.json();
-        useMindGrowStore.getState().setNodes(nodes);
-        useMindGrowStore.getState().setEdges(edges);
-      }
-    } catch (e) {
-      console.error("Failed to switch map:", e);
-    }
-  }, [setCurrentMapId, setSearchResults, setHighlightedNodeId]);
+  }, [currentMapId, saveChatHistory, setCurrentMapId, loadChatHistory, setSearchResults, setHighlightedNodeId]);
 
   const handleSearchResultSelect = useCallback(async (result: LibrarySearchResult) => {
     await handleSwitch(result.map.id);
@@ -410,30 +423,37 @@ export function Sidebar() {
     setLibrarySearch("");
   }, [handleSwitch, setSearchResults, setHighlightedNodeId]);
 
-  const handleDelete = useCallback(async () => {
-    if (!contextMenu) return;
-    const { map } = contextMenu;
+  const handleDeleteMap = useCallback(async (map: MindMap) => {
     if (map.isDefault) return;
     try {
-      await apiFetch("/api/knowledge", {
+      const deletion = await apiFetch("/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "deleteMap", mapId: map.id }),
       });
+      if (!deletion.ok) throw new Error("删除知识库失败");
       const mapsRes = await apiFetch("/api/knowledge?action=maps");
       if (mapsRes.ok) {
         const { maps: allMaps } = await mapsRes.json();
         useMindGrowStore.getState().setMaps(allMaps);
-      }
-      if (map.id === currentMapId) {
-        const fallback = maps.find((candidate) => candidate.id !== map.id && isMapForMode(candidate, currentMode));
-        if (fallback) handleSwitch(fallback.id);
+        if (map.id === currentMapId) {
+          const fallback = allMaps.find((candidate: MindMap) => candidate.id !== map.id && isMapForMode(candidate, currentMode));
+          if (fallback) handleSwitch(fallback.id);
+          else { setNodes([]); setEdges([]); }
+        }
       }
     } catch (e) {
       console.error("Failed to delete map:", e);
     }
+    setDeleteCandidate(null);
     setContextMenu(null);
-  }, [contextMenu, currentMapId, handleSwitch, maps, currentMode]);
+  }, [currentMapId, handleSwitch, currentMode, setNodes, setEdges]);
+
+  const handleDelete = useCallback(() => {
+    if (!contextMenu?.map || contextMenu.map.isDefault) return;
+    setDeleteCandidate(contextMenu.map);
+    setContextMenu(null);
+  }, [contextMenu]);
 
   const handleClear = useCallback(async () => {
     if (!contextMenu) return;
@@ -667,6 +687,14 @@ export function Sidebar() {
             <kbd className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded border border-[var(--border)] px-1 py-0.5 text-[8px] text-[var(--muted-foreground)]">Ctrl K</kbd>
           )}
         </div>
+        <Link
+          href={`/universe?mode=${currentMode}`}
+          data-testid="mode-universe-link"
+          className="mt-2 flex items-center justify-between rounded-lg border border-[var(--primary-border)] bg-[var(--primary-subtle)] px-3 py-2 text-[10px] text-[var(--primary-hover)] no-underline hover:border-[var(--primary)]"
+        >
+          <span>🌱 查看{MODE_LIBRARY_CONFIG[currentMode].shortLabel}库之间的生长关系</span>
+          <span aria-hidden="true">→</span>
+        </Link>
       </div>
 
       {/* Map List grouped by category */}
@@ -723,6 +751,7 @@ export function Sidebar() {
                 currentMapId={currentMapId}
                 onSwitch={handleSwitch}
                 onContextMenu={handleContextMenu}
+                onDeleteMap={setDeleteCandidate}
                 onDeleteCategory={handleDeleteCategory}
                 onRenameCategory={handleRenameCategory}
               />
@@ -735,6 +764,7 @@ export function Sidebar() {
               currentMapId={currentMapId}
               onSwitch={handleSwitch}
               onContextMenu={handleContextMenu}
+              onDeleteMap={setDeleteCandidate}
             />
           </>
         )}
@@ -908,6 +938,20 @@ export function Sidebar() {
               默认知识库不可操作
             </div>
           )}
+        </div>
+      )}
+
+      {deleteCandidate && (
+        <div className="fixed inset-0 z-[260] flex items-center justify-center bg-black/55 px-4" onClick={() => setDeleteCandidate(null)}>
+          <div role="dialog" aria-modal="true" aria-labelledby="delete-library-title" className="w-full max-w-sm rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-red-500/10 text-red-400">🗑️</div>
+            <h3 id="delete-library-title" className="text-sm font-semibold text-[var(--foreground)]">删除“{deleteCandidate.name}”？</h3>
+            <p className="mt-2 text-xs leading-6 text-[var(--muted-foreground)]">该知识库中的节点、关系和引用将一起删除，无法撤销。其他板块的知识库不会受影响。</p>
+            <div className="mt-5 flex gap-2">
+              <button type="button" onClick={() => setDeleteCandidate(null)} className="flex-1 rounded-xl border border-[var(--border)] px-4 py-2.5 text-xs text-[var(--foreground)] hover:bg-[var(--bg-hover)]">取消</button>
+              <button type="button" onClick={() => void handleDeleteMap(deleteCandidate)} className="flex-1 rounded-xl bg-red-500 px-4 py-2.5 text-xs font-semibold text-white hover:bg-red-400">确认删除</button>
+            </div>
+          </div>
         </div>
       )}
 

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { GuideProgress } from "@/components/guide/guide-progress";
 
 export const metadata: Metadata = {
   title: "AI 知识助手使用指南与场景",
@@ -36,6 +37,7 @@ export default function GuidePage() {
 
   return (
     <main className="min-h-screen text-[var(--text-primary)]">
+      <GuideProgress />
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(faq) }} />
       <nav className="sticky top-0 z-20 border-b border-[var(--border)] bg-[rgba(9,9,11,0.9)] backdrop-blur-xl">
         <div className="max-w-5xl mx-auto px-5 h-16 flex items-center justify-between">
@@ -46,7 +48,7 @@ export default function GuidePage() {
 
       <article className="max-w-5xl mx-auto px-5 py-16 md:py-24">
         <header className="max-w-3xl mb-20">
-          <div className="text-xs uppercase tracking-[0.18em] text-[var(--primary)] mb-5">AI Knowledge Assistant</div>
+          <div className="text-xs uppercase tracking-[0.18em] text-[var(--primary)] mb-5">AI 知识助手</div>
           <h1 className="text-4xl md:text-6xl font-semibold leading-tight tracking-tight mb-6">把碎片信息，变成可追溯的知识网络</h1>
           <p className="text-lg md:text-xl leading-relaxed text-[var(--text-secondary)]">MindGrow 是一款本地优先的 AI 知识助手。它先检索证据，再组织回答，并把对话结果沉淀为可编辑的知识导图。</p>
         </header>

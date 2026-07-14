@@ -114,7 +114,20 @@ const MAX_HISTORY = 50;
 
 export const useMindGrowStore = create<MindGrowState>((set, get) => ({
   currentMapId: "map_default",
-  setCurrentMapId: (id) => set({ currentMapId: id }),
+  setCurrentMapId: (id) => set((state) => state.currentMapId === id ? {} : ({
+    currentMapId: id,
+    // A map id and its graph must change atomically. Clearing here prevents
+    // the previous library from flashing while the next request is in flight.
+    nodes: [],
+    edges: [],
+    searchResults: [],
+    highlightedNodeId: null,
+    collapsedNodes: new Set<string>(),
+    contextMenu: null,
+    pendingSuggestion: null,
+    pendingMindMap: null,
+    pendingPlacement: null,
+  })),
 
   maps: [],
   setMaps: (maps) => set({ maps }),
@@ -242,7 +255,20 @@ export const useMindGrowStore = create<MindGrowState>((set, get) => ({
   setSidebarOpen: (open) => set({ sidebarOpen: open }),
 
   currentMode: "knowledge",
-  setCurrentMode: (mode) => set({ currentMode: mode }),
+  setCurrentMode: (mode) => set((state) => state.currentMode === mode ? {} : ({
+    currentMode: mode,
+    // Product-board switches must never render the previous board's graph.
+    // The page controller will select and load the last library for this mode.
+    nodes: [],
+    edges: [],
+    searchResults: [],
+    highlightedNodeId: null,
+    collapsedNodes: new Set<string>(),
+    contextMenu: null,
+    pendingSuggestion: null,
+    pendingMindMap: null,
+    pendingPlacement: null,
+  })),
   layoutDirection: "vertical",
   setLayoutDirection: (dir) => set({ layoutDirection: dir }),
 

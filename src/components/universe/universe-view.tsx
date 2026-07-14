@@ -1,16 +1,25 @@
 "use client";
 
-import { useEffect, useMemo, useState, useCallback, useRef } from "react";
-import { useMindGrowStore } from "@/store/mindgrow-store";
-import { KnowledgeNode, KnowledgeEdge } from "@/types";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { apiFetch } from "@/lib/client-api";
+import { isMapForMode, MODE_LIBRARY_CONFIG } from "@/lib/mode-libraries";
+import { useMindGrowStore, type AppMode } from "@/store/mindgrow-store";
+import type { KnowledgeEdge, KnowledgeNode, MindMap } from "@/types";
 
-// ============================================================
-// Simple force-directed layout for the universe view
-// ============================================================
+interface LibraryGraph {
+  map: MindMap;
+  nodes: KnowledgeNode[];
+  edges: KnowledgeEdge[];
+}
+
 interface GraphNode {
   id: string;
+  mapId: string;
+  mapName: string;
   label: string;
   type: string;
+  kind: "library" | "knowledge";
   x: number;
   y: number;
   vx: number;
@@ -23,329 +32,442 @@ interface GraphLink {
   source: string;
   target: string;
   strength: number;
-  isRelation: boolean;
+  kind: "hierarchy" | "relation" | "cross-library";
+  label: string;
 }
 
-function buildUniverseData(
-  dbNodes: KnowledgeNode[],
-  dbEdges: KnowledgeEdge[]
-): { nodes: GraphNode[]; links: GraphLink[] } {
-  // Count connections for each node
-  const connectionCount = new Map<string, number>();
-  for (const node of dbNodes) {
-    connectionCount.set(node.id, 0);
-  }
-  for (const edge of dbEdges) {
-    connectionCount.set(
-      edge.sourceId,
-      (connectionCount.get(edge.sourceId) || 0) + 1
-    );
-    connectionCount.set(
-      edge.targetId,
-      (connectionCount.get(edge.targetId) || 0) + 1
-    );
-  }
+const TYPE_COLORS: Record<string, string> = {
+  topic: "#22d3a7",
+  concept: "#38bdf8",
+  detail: "#818cf8",
+  question: "#f472b6",
+};
 
-  const colorMap: Record<string, string> = {
-    topic: "#22d3a7",
-    concept: "#38bdf8",
-    detail: "#818cf8",
-    question: "#f472b6",
-  };
+const GENERIC_TERMS = new Set(["研究", "方法", "模型", "数据", "系统", "结果", "分析", "文章", "知识", "内容", "问题", "应用", "the", "and", "for", "with", "from"]);
 
-  // Count total nodes for sizing
-  const totalChildren = new Map<string, number>();
-  for (const edge of dbEdges) {
-    if (edge.relation === "contains") {
-      totalChildren.set(
-        edge.sourceId,
-        (totalChildren.get(edge.sourceId) || 0) + 1
-      );
+function hashNumber(value: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return Math.abs(hash >>> 0);
+}
+
+function normalizedLabel(value: string) {
+  return value.toLocaleLowerCase().replace(/[\s!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~，。！？；：、“”‘’（）【】《》·…—]+/g, "").slice(0, 80);
+}
+
+function topicTerms(value: string) {
+  const lower = value.toLocaleLowerCase();
+  const terms = new Set<string>();
+  for (const word of lower.match(/[a-z][a-z0-9-]{2,}/g) || []) {
+    if (!GENERIC_TERMS.has(word)) terms.add(word);
+  }
+  for (const run of lower.match(/[\u3400-\u9fff]{2,}/g) || []) {
+    for (let index = 0; index < Math.min(run.length - 1, 18); index += 1) {
+      const term = run.slice(index, index + 2);
+      if (!GENERIC_TERMS.has(term)) terms.add(term);
     }
   }
+  return terms;
+}
 
-  const nodes: GraphNode[] = dbNodes.map((n, idx) => {
-    const angle = (idx / dbNodes.length) * Math.PI * 2;
-    const baseRadius = 200 + Math.random() * 150;
-    const connections = connectionCount.get(n.id) || 0;
-    const children = totalChildren.get(n.id) || 0;
+function buildUniverseData(libraries: LibraryGraph[]): { nodes: GraphNode[]; links: GraphLink[]; crossLibraryCount: number } {
+  const nodes: GraphNode[] = [];
+  const links: GraphLink[] = [];
+  const libraryTerms = new Map<string, Set<string>>();
+  const exactConcepts = new Map<string, GraphNode[]>();
+  const libraryCount = Math.max(1, libraries.length);
 
-    return {
-      id: n.id,
-      label: n.content,
-      type: n.type,
-      x: Math.cos(angle) * baseRadius,
-      y: Math.sin(angle) * baseRadius,
+  libraries.forEach((library, libraryIndex) => {
+    const clusterAngle = (libraryIndex / libraryCount) * Math.PI * 2 - Math.PI / 2;
+    const clusterDistance = libraryCount === 1 ? 0 : 340 + libraryCount * 28;
+    const clusterX = Math.cos(clusterAngle) * clusterDistance;
+    const clusterY = Math.sin(clusterAngle) * clusterDistance;
+    const hubId = `library:${library.map.id}`;
+    nodes.push({
+      id: hubId,
+      mapId: library.map.id,
+      mapName: library.map.name,
+      label: library.map.name,
+      type: "library",
+      kind: "library",
+      x: clusterX,
+      y: clusterY,
       vx: 0,
       vy: 0,
-      radius: Math.max(6, 6 + children * 2 + connections),
-      color: colorMap[n.type] || "#818cf8",
-    };
+      radius: 18 + Math.min(18, Math.sqrt(library.nodes.length) * 2),
+      color: library.map.color || "#22d3a7",
+    });
+
+    const scopedNodes = library.nodes.slice(0, 90);
+    const scopedIds = new Set(scopedNodes.map((node) => node.id));
+    const incomingContains = new Set(library.edges.filter((edge) => edge.relation === "contains").map((edge) => edge.targetId));
+    const terms = new Set<string>();
+    libraryTerms.set(library.map.id, terms);
+
+    scopedNodes.forEach((node, nodeIndex) => {
+      const seed = hashNumber(`${library.map.id}:${node.id}`);
+      const angle = (nodeIndex / Math.max(1, scopedNodes.length)) * Math.PI * 2 + (seed % 37) / 37;
+      const distance = 95 + (seed % 170);
+      const graphNode: GraphNode = {
+        id: `${library.map.id}:${node.id}`,
+        mapId: library.map.id,
+        mapName: library.map.name,
+        label: node.content,
+        type: node.type,
+        kind: "knowledge",
+        x: clusterX + Math.cos(angle) * distance,
+        y: clusterY + Math.sin(angle) * distance,
+        vx: 0,
+        vy: 0,
+        radius: node.type === "topic" ? 10 : node.type === "concept" ? 7 : 5,
+        color: TYPE_COLORS[node.type] || "#818cf8",
+      };
+      nodes.push(graphNode);
+      topicTerms(node.content).forEach((term) => terms.add(term));
+      const exact = normalizedLabel(node.content);
+      if (exact.length >= 2 && node.type !== "detail") {
+        const entries = exactConcepts.get(exact) || [];
+        entries.push(graphNode);
+        exactConcepts.set(exact, entries);
+      }
+      if (!incomingContains.has(node.id)) {
+        links.push({ source: hubId, target: graphNode.id, strength: 0.85, kind: "hierarchy", label: "知识库主干" });
+      }
+    });
+
+    library.edges.forEach((edge) => {
+      if (!scopedIds.has(edge.sourceId) || !scopedIds.has(edge.targetId)) return;
+      links.push({
+        source: `${library.map.id}:${edge.sourceId}`,
+        target: `${library.map.id}:${edge.targetId}`,
+        strength: edge.weight || 0.6,
+        kind: edge.relation === "contains" ? "hierarchy" : "relation",
+        label: edge.relation === "contains" ? "包含" : edge.relation === "contradicts" ? "观点冲突" : "概念关联",
+      });
+    });
   });
 
-  const links: GraphLink[] = dbEdges.map((e) => ({
-    source: e.sourceId,
-    target: e.targetId,
-    strength: e.weight,
-    isRelation: e.relation !== "contains",
-  }));
-
-  return { nodes, links };
-}
-
-function simulateForceLayout(
-  nodes: GraphNode[],
-  links: GraphLink[],
-  iterations: number = 80
-) {
-  const centerX = 0;
-  const centerY = 0;
-
-  for (let iter = 0; iter < iterations; iter++) {
-    // Repulsion between all nodes
-    for (let i = 0; i < nodes.length; i++) {
-      for (let j = i + 1; j < nodes.length; j++) {
-        const dx = nodes[j].x - nodes[i].x;
-        const dy = nodes[j].y - nodes[i].y;
-        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-        const force = 3000 / (dist * dist);
-        const fx = (dx / dist) * force;
-        const fy = (dy / dist) * force;
-        nodes[i].vx -= fx;
-        nodes[i].vy -= fy;
-        nodes[j].vx += fx;
-        nodes[j].vy += fy;
-      }
+  const crossPairs = new Set<string>();
+  exactConcepts.forEach((matches) => {
+    const byLibrary = new Map<string, GraphNode>();
+    matches.forEach((node) => { if (!byLibrary.has(node.mapId)) byLibrary.set(node.mapId, node); });
+    const distinct = Array.from(byLibrary.values());
+    for (let index = 1; index < distinct.length; index += 1) {
+      const left = distinct[0];
+      const right = distinct[index];
+      const key = [left.id, right.id].sort().join("|");
+      if (crossPairs.has(key)) continue;
+      crossPairs.add(key);
+      links.push({ source: left.id, target: right.id, strength: 0.9, kind: "cross-library", label: `共享概念：${left.label}` });
     }
+  });
 
-    // Attraction along links
-    for (const link of links) {
-      const source = nodes.find((n) => n.id === link.source);
-      const target = nodes.find((n) => n.id === link.target);
-      if (!source || !target) continue;
-
-      const dx = target.x - source.x;
-      const dy = target.y - source.y;
-      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-      const idealDist = link.isRelation ? 200 : 120;
-      const force = (dist - idealDist) * 0.005 * link.strength;
-      const fx = (dx / dist) * force;
-      const fy = (dy / dist) * force;
-      source.vx += fx;
-      source.vy += fy;
-      target.vx -= fx;
-      target.vy -= fy;
-    }
-
-    // Center gravity
-    for (const node of nodes) {
-      node.vx += (centerX - node.x) * 0.001;
-      node.vy += (centerY - node.y) * 0.001;
-    }
-
-    // Update positions
-    const damping = 0.9;
-    for (const node of nodes) {
-      node.vx *= damping;
-      node.vy *= damping;
-      node.x += node.vx;
-      node.y += node.vy;
+  // When two libraries have no exact duplicate concept, connect their hubs if
+  // their topic vocabularies overlap. This is a derived navigation signal, not
+  // a fabricated source citation, so the percentage is shown explicitly.
+  for (let leftIndex = 0; leftIndex < libraries.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < libraries.length; rightIndex += 1) {
+      const left = libraries[leftIndex];
+      const right = libraries[rightIndex];
+      const leftTerms = libraryTerms.get(left.map.id) || new Set<string>();
+      const rightTerms = libraryTerms.get(right.map.id) || new Set<string>();
+      const shared = Array.from(leftTerms).filter((term) => rightTerms.has(term));
+      const unionSize = new Set([...Array.from(leftTerms), ...Array.from(rightTerms)]).size || 1;
+      const similarity = shared.length / unionSize;
+      if (similarity < 0.06 || shared.length < 2) continue;
+      links.push({
+        source: `library:${left.map.id}`,
+        target: `library:${right.map.id}`,
+        strength: Math.min(1, 0.45 + similarity * 2),
+        kind: "cross-library",
+        label: `主题相关 ${Math.round(similarity * 100)}%`,
+      });
     }
   }
 
+  return { nodes, links, crossLibraryCount: links.filter((link) => link.kind === "cross-library").length };
+}
+
+function simulateForceLayout(nodes: GraphNode[], links: GraphLink[], iterations = 72) {
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  for (let iteration = 0; iteration < iterations; iteration += 1) {
+    for (let leftIndex = 0; leftIndex < nodes.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < nodes.length; rightIndex += 1) {
+        const left = nodes[leftIndex];
+        const right = nodes[rightIndex];
+        const dx = right.x - left.x;
+        const dy = right.y - left.y;
+        const distance = Math.sqrt(dx * dx + dy * dy) || 1;
+        const force = (left.kind === "library" || right.kind === "library" ? 3600 : 1500) / (distance * distance);
+        const forceX = (dx / distance) * force;
+        const forceY = (dy / distance) * force;
+        left.vx -= forceX;
+        left.vy -= forceY;
+        right.vx += forceX;
+        right.vy += forceY;
+      }
+    }
+    links.forEach((link) => {
+      const source = nodeById.get(link.source);
+      const target = nodeById.get(link.target);
+      if (!source || !target) return;
+      const dx = target.x - source.x;
+      const dy = target.y - source.y;
+      const distance = Math.sqrt(dx * dx + dy * dy) || 1;
+      const ideal = link.kind === "cross-library" ? 300 : link.kind === "relation" ? 155 : 105;
+      const force = (distance - ideal) * 0.0035 * link.strength;
+      source.vx += (dx / distance) * force;
+      source.vy += (dy / distance) * force;
+      target.vx -= (dx / distance) * force;
+      target.vy -= (dy / distance) * force;
+    });
+    nodes.forEach((node) => {
+      node.vx += -node.x * 0.00025;
+      node.vy += -node.y * 0.00025;
+      node.vx *= 0.88;
+      node.vy *= 0.88;
+      node.x += node.vx;
+      node.y += node.vy;
+    });
+  }
   return nodes;
 }
 
 export function UniverseView() {
-  const { nodes: dbNodes, edges: dbEdges } = useMindGrowStore();
+  const router = useRouter();
+  const currentMode = useMindGrowStore((state) => state.currentMode);
+  const setCurrentMode = useMindGrowStore((state) => state.setCurrentMode);
+  const setCurrentMapId = useMindGrowStore((state) => state.setCurrentMapId);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const loadRequestRef = useRef(0);
+  const [libraries, setLibraries] = useState<LibraryGraph[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [zoom, setZoom] = useState(0.82);
   const [dragging, setDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
 
-  const universeData = useMemo(
-    () => buildUniverseData(dbNodes, dbEdges),
-    [dbNodes, dbEdges]
-  );
-
-  const positionedNodes = useMemo(
-    () => simulateForceLayout(
-      universeData.nodes.map((n) => ({ ...n })),
-      universeData.links
-    ),
-    [universeData]
-  );
+  useEffect(() => {
+    const requested = new URLSearchParams(window.location.search).get("mode");
+    if (requested === "knowledge" || requested === "meeting" || requested === "article") setCurrentMode(requested as AppMode);
+  }, [setCurrentMode]);
 
   useEffect(() => {
+    const requestId = ++loadRequestRef.current;
+    setLoading(true);
+    setError("");
+    setLibraries([]);
+    setHoveredNode(null);
+    setOffset({ x: 0, y: 0 });
+    setZoom(0.82);
+    void apiFetch("/api/knowledge?action=maps")
+      .then(async (response) => {
+        if (!response.ok) throw new Error("知识库目录加载失败");
+        const data = await response.json();
+        const maps = ((data.maps || []) as MindMap[]).filter((map) => isMapForMode(map, currentMode));
+        const graphs = await Promise.all(maps.map(async (map) => {
+          const graphResponse = await apiFetch(`/api/knowledge?mapId=${encodeURIComponent(map.id)}`);
+          if (!graphResponse.ok) return { map, nodes: [], edges: [] };
+          const graph = await graphResponse.json();
+          return { map, nodes: graph.nodes || [], edges: graph.edges || [] } as LibraryGraph;
+        }));
+        if (requestId === loadRequestRef.current) setLibraries(graphs);
+      })
+      .catch((reason) => {
+        if (requestId === loadRequestRef.current) setError(reason instanceof Error ? reason.message : "知识宇宙加载失败");
+      })
+      .finally(() => {
+        if (requestId === loadRequestRef.current) setLoading(false);
+      });
+  }, [currentMode]);
+
+  const universeData = useMemo(() => buildUniverseData(libraries), [libraries]);
+  const positionedNodes = useMemo(
+    () => simulateForceLayout(universeData.nodes.map((node) => ({ ...node })), universeData.links),
+    [universeData],
+  );
+
+  const draw = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    const dpr = window.devicePixelRatio || 1;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    const ratio = window.devicePixelRatio || 1;
     const rect = canvas.getBoundingClientRect();
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
-    ctx.scale(dpr, dpr);
-
+    canvas.width = Math.max(1, Math.round(rect.width * ratio));
+    canvas.height = Math.max(1, Math.round(rect.height * ratio));
+    context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    context.fillStyle = "#0a0a0f";
+    context.fillRect(0, 0, rect.width, rect.height);
+    for (let index = 0; index < 120; index += 1) {
+      const x = (index * 137.5) % Math.max(1, rect.width);
+      const y = (index * 73.3) % Math.max(1, rect.height);
+      context.fillStyle = `rgba(255,255,255,${0.08 + (index % 5) * 0.025})`;
+      context.fillRect(x, y, 1, 1);
+    }
     const centerX = rect.width / 2 + offset.x;
     const centerY = rect.height / 2 + offset.y;
-
-    // Clear
-    ctx.fillStyle = "#0a0a0f";
-    ctx.fillRect(0, 0, rect.width, rect.height);
-
-    // Draw stars background
-    for (let i = 0; i < 100; i++) {
-      const sx = ((i * 137.5) % rect.width);
-      const sy = ((i * 73.3) % rect.height);
-      ctx.fillStyle = `rgba(255, 255, 255, ${0.1 + Math.random() * 0.15})`;
-      ctx.beginPath();
-      ctx.arc(sx, sy, 0.5, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    const nodeMap = new Map(positionedNodes.map((n) => [n.id, n]));
-
-    // Draw links
-    for (const link of universeData.links) {
-      const source = nodeMap.get(link.source);
-      const target = nodeMap.get(link.target);
-      if (!source || !target) continue;
-
-      ctx.beginPath();
-      ctx.moveTo(centerX + source.x, centerY + source.y);
-      ctx.lineTo(centerX + target.x, centerY + target.y);
-      ctx.strokeStyle = link.isRelation
-        ? "rgba(244, 114, 182, 0.2)"
-        : "rgba(255, 255, 255, 0.06)";
-      ctx.lineWidth = link.isRelation ? 1 : 0.5;
-      if (link.isRelation) {
-        ctx.setLineDash([4, 4]);
+    const nodeById = new Map(positionedNodes.map((node) => [node.id, node]));
+    universeData.links.forEach((link) => {
+      const source = nodeById.get(link.source);
+      const target = nodeById.get(link.target);
+      if (!source || !target) return;
+      const sourceX = centerX + source.x * zoom;
+      const sourceY = centerY + source.y * zoom;
+      const targetX = centerX + target.x * zoom;
+      const targetY = centerY + target.y * zoom;
+      context.beginPath();
+      context.moveTo(sourceX, sourceY);
+      context.lineTo(targetX, targetY);
+      context.setLineDash(link.kind === "cross-library" ? [7, 5] : link.kind === "relation" ? [4, 4] : []);
+      context.strokeStyle = link.kind === "cross-library" ? "rgba(250,204,21,0.5)" : link.kind === "relation" ? "rgba(244,114,182,0.28)" : "rgba(255,255,255,0.075)";
+      context.lineWidth = link.kind === "cross-library" ? 1.4 : link.kind === "relation" ? 1 : 0.65;
+      context.stroke();
+      context.setLineDash([]);
+      if (link.kind === "cross-library" && (source.id === hoveredNode || target.id === hoveredNode)) {
+        context.font = "11px sans-serif";
+        context.textAlign = "center";
+        context.fillStyle = "#fde68a";
+        context.fillText(link.label, (sourceX + targetX) / 2, (sourceY + targetY) / 2 - 6);
       }
-      ctx.stroke();
-      ctx.setLineDash([]);
-    }
-
-    // Draw nodes
-    for (const node of positionedNodes) {
+    });
+    positionedNodes.forEach((node) => {
       const isHovered = node.id === hoveredNode;
-      const x = centerX + node.x;
-      const y = centerY + node.y;
-      const r = isHovered ? node.radius * 1.5 : node.radius;
-
-      // Glow
-      if (isHovered) {
-        const gradient = ctx.createRadialGradient(x, y, 0, x, y, r * 3);
-        gradient.addColorStop(0, node.color + "40");
-        gradient.addColorStop(1, "transparent");
-        ctx.fillStyle = gradient;
-        ctx.beginPath();
-        ctx.arc(x, y, r * 3, 0, Math.PI * 2);
-        ctx.fill();
+      const x = centerX + node.x * zoom;
+      const y = centerY + node.y * zoom;
+      const radius = Math.max(3, node.radius * Math.sqrt(zoom)) * (isHovered ? 1.3 : 1);
+      if (isHovered || node.kind === "library") {
+        const glow = context.createRadialGradient(x, y, 0, x, y, radius * 3);
+        glow.addColorStop(0, `${node.color}45`);
+        glow.addColorStop(1, "transparent");
+        context.fillStyle = glow;
+        context.beginPath();
+        context.arc(x, y, radius * 3, 0, Math.PI * 2);
+        context.fill();
       }
-
-      // Node circle
-      ctx.beginPath();
-      ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.fillStyle = node.color + (isHovered ? "ff" : "80");
-      ctx.fill();
-
-      // Border
-      ctx.strokeStyle = node.color;
-      ctx.lineWidth = isHovered ? 2 : 0.5;
-      ctx.stroke();
-
-      // Label
-      if (isHovered || node.type === "topic") {
-        ctx.font = isHovered ? "13px sans-serif" : "11px sans-serif";
-        ctx.fillStyle = "#e4e4e7";
-        ctx.textAlign = "center";
-        ctx.fillText(node.label, x, y + r + 16);
-      }
-    }
-
-    // Title
-    ctx.font = "bold 16px sans-serif";
-    ctx.fillStyle = "#a1a1aa";
-    ctx.textAlign = "left";
-    ctx.fillText(
-      `🌌 你的知识宇宙 · ${dbNodes.length} 个知识节点`,
-      20,
-      30
-    );
-  }, [positionedNodes, universeData.links, dbNodes.length, hoveredNode, offset]);
-
-  const handleMouseMove = useCallback(
-    (e: React.MouseEvent<HTMLCanvasElement>) => {
-      if (dragging) {
-        setOffset({
-          x: offset.x + (e.clientX - dragStart.x),
-          y: offset.y + (e.clientY - dragStart.y),
-        });
-        setDragStart({ x: e.clientX, y: e.clientY });
-        return;
-      }
-
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-
-      const rect = canvas.getBoundingClientRect();
-      const mx = e.clientX - rect.left - rect.width / 2 - offset.x;
-      const my = e.clientY - rect.top - rect.height / 2 - offset.y;
-
-      let found = null;
-      for (const node of positionedNodes) {
-        const dx = mx - node.x;
-        const dy = my - node.y;
-        if (dx * dx + dy * dy < node.radius * node.radius * 2) {
-          found = node.id;
-          break;
+      context.beginPath();
+      context.arc(x, y, radius, 0, Math.PI * 2);
+      context.fillStyle = `${node.color}${node.kind === "library" ? "e8" : isHovered ? "ff" : "88"}`;
+      context.fill();
+      context.strokeStyle = node.kind === "library" ? "#ffffffb0" : node.color;
+      context.lineWidth = node.kind === "library" ? 1.6 : isHovered ? 1.5 : 0.5;
+      context.stroke();
+      if (node.kind === "library" || isHovered || (node.type === "topic" && zoom >= 0.75)) {
+        context.font = node.kind === "library" ? "600 13px sans-serif" : isHovered ? "12px sans-serif" : "10px sans-serif";
+        context.fillStyle = node.kind === "library" ? "#fafafa" : "#d4d4d8";
+        context.textAlign = "center";
+        const label = node.label.length > 28 ? `${node.label.slice(0, 27)}…` : node.label;
+        context.fillText(label, x, y + radius + 15);
+        if (isHovered && node.kind === "knowledge") {
+          context.font = "10px sans-serif";
+          context.fillStyle = "#a1a1aa";
+          context.fillText(node.mapName, x, y + radius + 29);
         }
       }
-      setHoveredNode(found);
-    },
-    [dragging, dragStart, offset, positionedNodes]
-  );
+    });
+  }, [hoveredNode, offset, positionedNodes, universeData.links, zoom]);
 
-  const handleMouseDown = useCallback(
-    (e: React.MouseEvent) => {
-      setDragging(true);
-      setDragStart({ x: e.clientX, y: e.clientY });
-    },
-    []
-  );
+  useEffect(() => {
+    draw();
+    const handleResize = () => draw();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, [draw]);
 
-  const handleMouseUp = useCallback(() => {
-    setDragging(false);
-  }, []);
+  const locateNode = useCallback((clientX: number, clientY: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    const worldX = (clientX - rect.left - rect.width / 2 - offset.x) / zoom;
+    const worldY = (clientY - rect.top - rect.height / 2 - offset.y) / zoom;
+    return positionedNodes.find((node) => {
+      const dx = worldX - node.x;
+      const dy = worldY - node.y;
+      const hitRadius = Math.max(node.radius, 8) / Math.sqrt(zoom);
+      return dx * dx + dy * dy <= hitRadius * hitRadius;
+    }) || null;
+  }, [offset, positionedNodes, zoom]);
 
-  if (dbNodes.length === 0) {
-    return (
-      <div className="flex items-center justify-center h-full bg-[var(--background)]">
-        <div className="text-center space-y-4">
-          <div className="text-6xl">🌌</div>
-          <h2 className="text-xl text-[var(--muted-foreground)]">
-            知识宇宙还是一片虚空
-          </h2>
-          <p className="text-sm text-[var(--muted-foreground)]">
-            先去添加一些知识点，这里会自动生成你的知识星图
-          </p>
-        </div>
-      </div>
-    );
-  }
+  const handleMouseMove = useCallback((event: React.MouseEvent<HTMLCanvasElement>) => {
+    if (dragging) {
+      setOffset((current) => ({ x: current.x + event.clientX - dragStart.x, y: current.y + event.clientY - dragStart.y }));
+      setDragStart({ x: event.clientX, y: event.clientY });
+      return;
+    }
+    setHoveredNode(locateNode(event.clientX, event.clientY)?.id || null);
+  }, [dragStart, dragging, locateNode]);
+
+  const changeZoom = useCallback((nextZoom: number, clientX?: number, clientY?: number) => {
+    const bounded = Math.min(2.5, Math.max(0.28, nextZoom));
+    const canvas = canvasRef.current;
+    if (canvas && clientX !== undefined && clientY !== undefined) {
+      const rect = canvas.getBoundingClientRect();
+      const relativeX = clientX - rect.left - rect.width / 2 - offset.x;
+      const relativeY = clientY - rect.top - rect.height / 2 - offset.y;
+      const ratio = bounded / zoom;
+      setOffset((current) => ({ x: current.x + relativeX * (1 - ratio), y: current.y + relativeY * (1 - ratio) }));
+    }
+    setZoom(bounded);
+  }, [offset, zoom]);
+
+  const openHoveredLibrary = useCallback(() => {
+    const node = positionedNodes.find((item) => item.id === hoveredNode);
+    if (!node) return;
+    setCurrentMapId(node.mapId);
+    router.push("/");
+  }, [hoveredNode, positionedNodes, router, setCurrentMapId]);
+
+  const totalNodes = libraries.reduce((sum, library) => sum + library.nodes.length, 0);
+  const modeConfig = MODE_LIBRARY_CONFIG[currentMode];
 
   return (
-    <canvas
-      ref={canvasRef}
-      className="w-full h-full cursor-grab active:cursor-grabbing"
-      onMouseMove={handleMouseMove}
-      onMouseDown={handleMouseDown}
-      onMouseUp={handleMouseUp}
-      onMouseLeave={handleMouseUp}
-    />
+    <div className="relative h-full w-full overflow-hidden bg-[#0a0a0f]" data-testid="universe-view" data-universe-mode={currentMode}>
+      <canvas
+        ref={canvasRef}
+        className={`h-full w-full ${dragging ? "cursor-grabbing" : hoveredNode ? "cursor-pointer" : "cursor-grab"}`}
+        onMouseMove={handleMouseMove}
+        onMouseDown={(event) => { setDragging(true); setDragStart({ x: event.clientX, y: event.clientY }); }}
+        onMouseUp={(event) => {
+          const moved = Math.abs(event.clientX - dragStart.x) + Math.abs(event.clientY - dragStart.y);
+          setDragging(false);
+          if (moved < 5 && locateNode(event.clientX, event.clientY)) openHoveredLibrary();
+        }}
+        onMouseLeave={() => { setDragging(false); setHoveredNode(null); }}
+        onWheel={(event) => { event.preventDefault(); changeZoom(zoom * (event.deltaY < 0 ? 1.12 : 0.89), event.clientX, event.clientY); }}
+        aria-label={`${modeConfig.label}知识宇宙，可拖动和缩放`}
+      />
+
+      <div className="pointer-events-none absolute left-4 top-16 z-30 max-w-[min(520px,calc(100%-2rem))] rounded-2xl border border-white/10 bg-black/55 p-4 backdrop-blur-xl">
+        <div className="text-sm font-semibold text-white">🌌 {modeConfig.label}宇宙</div>
+        <div className="mt-1 text-xs leading-5 text-zinc-400">{libraries.length} 个知识库 · {totalNodes} 个节点 · <span data-testid="universe-cross-library-count" data-count={universeData.crossLibraryCount}>{universeData.crossLibraryCount}</span> 条跨库关系</div>
+        <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-zinc-400">
+          <span><i className="mr-1 inline-block h-px w-4 bg-white/25 align-middle" />库内层级</span>
+          <span><i className="mr-1 inline-block h-px w-4 border-t border-dashed border-pink-300/70 align-middle" />概念关联</span>
+          <span><i className="mr-1 inline-block h-px w-4 border-t border-dashed border-yellow-300/80 align-middle" />跨库生长关系</span>
+        </div>
+        <div className="mt-2 text-[10px] text-zinc-500">悬停查看关系，点击节点进入所属知识库。</div>
+      </div>
+
+      <div className="absolute right-4 top-4 z-40 flex items-center gap-1 rounded-xl border border-white/10 bg-black/60 p-1 shadow-xl backdrop-blur">
+        <button type="button" onClick={() => changeZoom(zoom / 1.18)} aria-label="缩小知识宇宙" title="缩小" className="flex h-8 w-8 items-center justify-center rounded-lg text-base text-zinc-300 hover:bg-white/10">−</button>
+        <button type="button" onClick={() => { setZoom(0.82); setOffset({ x: 0, y: 0 }); }} aria-label="重置知识宇宙视图" title="适应画布" className="min-w-14 rounded-lg px-2 py-2 text-[10px] font-medium text-zinc-300 hover:bg-white/10">{Math.round(zoom * 100)}%</button>
+        <button type="button" onClick={() => changeZoom(zoom * 1.18)} aria-label="放大知识宇宙" title="放大" className="flex h-8 w-8 items-center justify-center rounded-lg text-base text-zinc-300 hover:bg-white/10">＋</button>
+      </div>
+
+      {(loading || error || (!loading && libraries.length === 0)) && (
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-[#0a0a0f]/80 px-6">
+          <div className="max-w-sm rounded-2xl border border-white/10 bg-zinc-950/90 p-6 text-center shadow-2xl">
+            <div className="text-4xl">{error ? "⚠️" : loading ? "🪐" : "🌱"}</div>
+            <h2 className="mt-4 text-base font-semibold text-white">{error ? "知识宇宙加载失败" : loading ? `正在连接${modeConfig.label}知识库…` : `${modeConfig.label}宇宙还是一片空地`}</h2>
+            <p className="mt-2 text-xs leading-6 text-zinc-400">{error || (loading ? "正在汇总库内关系与跨库共享概念" : "先创建知识库并保存内容，新增节点会在这里继续生长。")}</p>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

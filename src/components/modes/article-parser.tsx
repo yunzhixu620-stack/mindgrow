@@ -251,7 +251,7 @@ export function ArticleParser() {
         <ArticleBlock title="论点与证据">{result.arguments.length ? result.arguments.map((item, index) => <div key={index} className="mb-2 last:mb-0"><div className="font-medium">{index + 1}. {item.claim}{showCitations(item.citationIndexes)}</div>{item.evidence && <div className="mt-0.5 text-[var(--text-tertiary)]">依据：{item.evidence}</div>}</div>) : <span className="text-[var(--text-tertiary)]">未提取到论点</span>}</ArticleBlock>
         <ArticleBlock title="可继续追问"><SimpleList items={result.questions} empty="暂无" /></ArticleBlock>
         {selectedCitation && <ArticleBlock title={`引用 [${selectedCitation.index}] · ${selectedCitation.locator || "原文"}`}><blockquote className="border-l-2 border-[var(--primary)] pl-2 text-[var(--text-secondary)]">“{selectedCitation.quote}”</blockquote>{result.sourceUrl && <a className="mt-2 inline-block text-[var(--primary-hover)] underline" href={result.sourceUrl} target="_blank" rel="noreferrer">打开原网页核对</a>}</ArticleBlock>}
-        <button onClick={() => void createAudioOverview()} disabled={audioBusy} className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] py-2.5 text-sm font-medium disabled:opacity-40">{audioBusy ? "正在生成引用型播客脚本与音频…" : "🎧 生成 Audio Overview"}</button>
+        <button onClick={() => void createAudioOverview()} disabled={audioBusy} className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] py-2.5 text-sm font-medium disabled:opacity-40">{audioBusy ? "正在生成引用型播客脚本与音频…" : "🎧 生成音频概览"}</button>
         {audio && <AudioOverviewCard audio={audio} speech={speech} showCitations={showCitations} />}
         <button onClick={() => void save()} disabled={saving} className="w-full rounded-xl border border-[var(--primary-border)] bg-[var(--primary-subtle)] py-2.5 text-sm font-medium text-[var(--primary-hover)] disabled:opacity-40">{saving ? "正在保存…" : "保存到文章知识库（含引用）"}</button>
       </div>}
@@ -264,7 +264,7 @@ export function ArticleParser() {
         {qaMessages.length > 0 && <div className="mb-3 max-h-[420px] space-y-3 overflow-y-auto rounded-xl bg-[var(--background)] p-3">
           {qaMessages.map((message) => <div key={message.id} className={message.role === "user" ? "ml-8 rounded-xl bg-[var(--primary)] px-3 py-2 text-sm text-black" : "mr-8 rounded-xl bg-[var(--bg-elevated)] px-3 py-2 text-sm"}>
             <div className="whitespace-pre-wrap leading-relaxed">{message.content}</div>
-            {message.role === "assistant" && message.retrievalTrace && <div className="mt-2 rounded-lg border border-violet-400/20 bg-violet-400/5 px-2 py-1.5 text-[10px] text-violet-200" data-testid="graphrag-trace">GraphRAG · {message.retrievalTrace.seedNodes} 个入口节点 → {message.retrievalTrace.expandedNodes} 个邻域节点 · 关联 {message.retrievalTrace.graphDocuments} 篇来源 · 重排 {message.retrievalTrace.candidateChunks} 个证据块</div>}
+            {message.role === "assistant" && message.retrievalTrace && <div className="mt-2 rounded-lg border border-violet-400/20 bg-violet-400/5 px-2 py-1.5 text-[10px] text-violet-200" data-testid="graphrag-trace">图谱增强检索（GraphRAG）· {message.retrievalTrace.seedNodes} 个入口节点 → {message.retrievalTrace.expandedNodes} 个邻域节点 · 关联 {message.retrievalTrace.graphDocuments} 篇来源 · 重排 {message.retrievalTrace.candidateChunks} 个证据块</div>}
             {message.role === "assistant" && message.sources && message.sources.length > 0 && <div className="mt-2 space-y-1.5 border-t border-[var(--border)] pt-2">
               {message.sources.map((source) => <details key={`${message.id}-${source.id}-${source.index}`} className="rounded-lg bg-[var(--card)] px-2 py-1.5 text-[11px]">
                 <summary className="cursor-pointer text-[var(--primary-hover)]">[{source.index}] {source.title}{source.locator ? ` · ${source.locator}` : ""}</summary>
@@ -294,7 +294,7 @@ function ArticleWikiNavigator({ mindMap, showCitations }: { mindMap: AIMindMap; 
     visibleItems: child.items.map((item, index) => ({ item, index })).filter(({ item }) => !normalized || item.toLowerCase().includes(normalized)),
   })).filter((child) => !normalized || child.topic.toLowerCase().includes(normalized) || String(child.desc || "").toLowerCase().includes(normalized) || child.visibleItems.length > 0);
 
-  return <ArticleBlock title="GraphRAG 论文结构预览">
+  return <ArticleBlock title="图谱增强检索（GraphRAG）论文结构预览">
     <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
       <div className="font-medium text-[var(--text-primary)]">📄 {mindMap.root}{showCitations(mindMap.rootCitationIndexes)}</div>
       <input value={query} onChange={(event) => setQuery(event.target.value)} aria-label="搜索论文链路" placeholder="搜索章节、主题或证据…" className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-2 py-1.5 text-xs outline-none focus:border-[var(--primary)]" />
@@ -310,12 +310,12 @@ function ArticleWikiNavigator({ mindMap, showCitations }: { mindMap: AIMindMap; 
       </details>)}
       {branches.length === 0 && <div className="rounded-lg bg-[var(--bg-elevated)] px-3 py-2 text-[var(--text-tertiary)]">没有匹配的链路节点</div>}
     </div>
-    <p className="mt-2 text-[10px] text-[var(--text-muted)]">右侧同步生成可交互知识图谱；保存后将通过实体入口、关系邻域和文档引用参与 GraphRAG 检索，避免只靠语义相似度误召回。</p>
+    <p className="mt-2 text-[10px] text-[var(--text-muted)]">右侧同步生成可交互知识图谱；保存后将通过实体入口、关系邻域和文档引用参与图谱增强检索，避免只靠语义相似度误召回。</p>
   </ArticleBlock>;
 }
 
 function AudioOverviewCard({ audio, speech, showCitations }: { audio: AudioOverview; speech: ReturnType<typeof useScriptSpeech>; showCitations: (indexes?: number[]) => React.ReactNode }) {
-  return <ArticleBlock title={`Audio Overview · ${audio.title}`}>
+  return <ArticleBlock title={`音频概览 · ${audio.title}`}>
     <p className="mb-2 text-[var(--text-tertiary)]">{audio.intro}</p>
     {audio.audioUrl ? <audio className="mb-3 w-full" controls preload="none" src={audio.audioUrl}>你的浏览器不支持音频播放。</audio> : <div className="mb-3 flex gap-2"><button type="button" onClick={speech.toggle} disabled={!speech.supported} className="rounded-lg bg-[var(--primary)] px-3 py-1.5 text-xs font-semibold text-black disabled:opacity-40">{speech.state === "playing" ? "暂停" : speech.state === "paused" ? "继续" : "播放"}</button><button type="button" onClick={speech.stop} className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs">停止</button></div>}
     <div className="max-h-48 space-y-2 overflow-y-auto pr-1">{audio.segments.map((segment, index) => <button type="button" key={index} onClick={() => speech.playFrom(index)} className={`block w-full rounded-lg p-2 text-left ${speech.currentIndex === index ? "bg-[var(--primary-subtle)] ring-1 ring-[var(--primary)]" : "bg-[var(--bg-elevated)]"}`}><strong>{segment.speaker}：</strong>{segment.text}{showCitations(segment.citationIndexes)}</button>)}</div>

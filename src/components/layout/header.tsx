@@ -160,7 +160,7 @@ export function Header() {
 
         {/* Universe link */}
         <Link
-          href="/universe"
+          href={`/universe?mode=${currentMode}`}
           className="flex items-center gap-1 px-2 py-1.5 rounded-[var(--radius-sm)] text-xs no-underline"
           style={{
             background: "transparent",
