@@ -2,6 +2,7 @@ const puppeteer = require("puppeteer");
 
 const baseUrl = (process.env.MINDGROW_BASE_URL || "https://yunzhixu620-stack.github.io/mindgrow/").replace(/\/$/, "");
 const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+const cacheBuster = `auth-fix-${Date.now()}`;
 const results = [];
 
 async function check(name, task) {
@@ -20,7 +21,7 @@ async function check(name, task) {
   const page = await browser.newPage();
 
   await page.setViewport({ width: 1440, height: 900 });
-  await page.goto(`${baseUrl}/`, { waitUntil: "networkidle2", timeout: 60000 });
+  await page.goto(`${baseUrl}/?v=${cacheBuster}`, { waitUntil: "networkidle2", timeout: 60000 });
 
   await check("secure login screen renders", async () => {
     await page.waitForFunction(() => document.body.innerText.includes("你的私有 AI 知识工作区"), { timeout: 30000 });
@@ -36,9 +37,14 @@ async function check(name, task) {
   });
 
   await check("expired confirmation links show a recovery path", async () => {
-    await page.goto(`${baseUrl}/#error=access_denied&error_code=otp_expired`, { waitUntil: "networkidle2", timeout: 60000 });
-    await page.waitForFunction(() => document.body.innerText.includes("确认链接已失效"), { timeout: 30000 });
-    if (await page.evaluate(() => window.location.hash.length > 0)) throw new Error("Expired auth error was not removed from the URL");
+    const callbackPage = await browser.newPage();
+    try {
+      await callbackPage.goto(`${baseUrl}/?v=${cacheBuster}#error=access_denied&error_code=otp_expired`, { waitUntil: "networkidle2", timeout: 60000 });
+      await callbackPage.waitForFunction(() => document.body.innerText.includes("确认链接已失效"), { timeout: 30000 });
+      if (await callbackPage.evaluate(() => window.location.hash.length > 0)) throw new Error("Expired auth error was not removed from the URL");
+    } finally {
+      await callbackPage.close();
+    }
   });
 
   await check("production API is healthy and anonymous data is denied", async () => {
