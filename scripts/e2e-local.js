@@ -171,6 +171,15 @@ const clickByText = async (page, selector, text) => {
 
   await page.screenshot({ path: path.join(artifactDir, "mobile-map.png"), fullPage: true });
 
+  await check("knowledge universe renders a single application header", async () => {
+    await page.setViewport({ width: 1440, height: 900 });
+    await page.goto(`${BASE_URL}/universe`, { waitUntil: "networkidle0", timeout: 30000 });
+    const headerCount = await page.$$eval("header", (headers) => headers.length);
+    if (headerCount !== 1) throw new Error(`Expected one application header, got ${headerCount}`);
+    const hasBackButton = await page.evaluate(() => document.body.innerText.includes("返回知识导图"));
+    if (!hasBackButton) throw new Error("Universe navigation is incomplete");
+  });
+
   await check("SEO guide is indexable and readable", async () => {
     await page.setViewport({ width: 1440, height: 900 });
     await page.goto(`${BASE_URL}/guide`, { waitUntil: "networkidle0", timeout: 30000 });
