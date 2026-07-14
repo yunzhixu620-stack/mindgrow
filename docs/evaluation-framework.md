@@ -49,7 +49,7 @@
 
 ## 5. V8 已执行验证
 
-- 本地完整路径 10/10：含真实两页 PDF、本地文字提取、页码引用、Audio Overview、导图保存和移动端。
+- 本地完整路径 11/11：含真实两页 PDF、本地文字提取、页码引用、Audio Overview、大图渐进展示、导图保存和移动端。
 - 公网未登录路径 6/6：登录/注册、API 健康、匿名数据拒绝、移动端、指南、robots/sitemap。
 - 后端未登录冒烟 5/5：CORS、API 8.0.0、模型/Supabase 健康、knowledge/workspace/audio 匿名 401。
 - Supabase 审计：`source_documents=true`、`node_citations=true`、anon/authenticated 表权限 0。

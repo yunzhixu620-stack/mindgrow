@@ -40,6 +40,10 @@ function MindGrowNode({ data, selected }: NodeProps) {
   const desc = data.nodeDesc as string;
   const highlighted = data.highlighted as boolean;
   const childCount = (data.childCount as number) || 0;
+  const descendantCount = (data.descendantCount as number) || childCount;
+  const collapsed = data.collapsed as boolean;
+  const showDetails = data.showDetails as boolean;
+  const horizontal = data.direction === "horizontal";
   const branchIndex = data.branchIndex as number || 0;
   const citations = (data.citations || []) as KnowledgeNode["citations"];
   const borderColor = branchIndex > 0
@@ -59,7 +63,7 @@ function MindGrowNode({ data, selected }: NodeProps) {
   return (
     <div
       className={`
-        relative rounded-xl px-4 py-2.5 min-w-[100px] max-w-[240px]
+        relative rounded-xl px-3.5 py-2.5 min-w-[150px] max-w-[220px]
         text-center transition-all duration-200 cursor-grab active:cursor-grabbing
         ${selected ? "ring-2 ring-offset-1 ring-offset-[#0a0a0f]" : ""}
         ${highlighted ? "animate-pulse ring-2 ring-[#22d3a7] ring-offset-1 ring-offset-[#0a0a0f]" : ""}
@@ -73,18 +77,18 @@ function MindGrowNode({ data, selected }: NodeProps) {
     >
       <Handle
         type="target"
-        position={Position.Top}
+        position={horizontal ? Position.Left : Position.Top}
         className="!bg-transparent !w-2 !h-2 !border-2 !border-[#22d3a7]"
       />
-      <div className="text-[13px] font-medium leading-snug break-words">
+      <div className="line-clamp-3 text-[13px] font-medium leading-snug break-words" title={data.label as string}>
         {data.label as string}
       </div>
-      {desc && (
+      {showDetails && desc && (
         <div className="text-[10px] leading-relaxed mt-0.5 opacity-50 line-clamp-2 break-words">
           {desc}
         </div>
       )}
-      {citations && citations.length > 0 && (
+      {showDetails && citations && citations.length > 0 && (
         <div className="mt-1 flex flex-wrap justify-center gap-1" aria-label="节点引用">
           {citations.slice(0, 4).map((citation) => (
             <span key={`${citation.documentId || "source"}-${citation.index}`} title={`${citation.locator || "原文"}：${citation.quote}`} className="rounded bg-[#22d3a720] px-1.5 py-0.5 text-[9px] font-semibold text-[#7de8c9]">[{citation.index}]</span>
@@ -99,14 +103,19 @@ function MindGrowNode({ data, selected }: NodeProps) {
               AI
             </span>
           )}
-          {childCount > 0 && (
-            <span className="text-[10px] opacity-30">+{childCount}</span>
-          )}
+          {childCount > 0 && <button
+            type="button"
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={(event) => { event.stopPropagation(); (data.onToggleCollapse as ((id: string) => void) | undefined)?.(data.nodeId as string); }}
+            className={`nodrag rounded-full border px-2 py-0.5 text-[9px] font-semibold transition-colors ${collapsed ? "border-[#22d3a755] bg-[#22d3a722] text-[#7de8c9]" : "border-white/10 bg-white/5 text-white/50 hover:text-white"}`}
+            aria-label={collapsed ? `展开 ${descendantCount} 个子节点` : `收起 ${descendantCount} 个子节点`}
+            title={collapsed ? `展开 ${descendantCount} 个子节点` : `收起 ${descendantCount} 个子节点`}
+          >{collapsed ? `＋${descendantCount}` : `−${descendantCount}`}</button>}
         </div>
       )}
       <Handle
         type="source"
-        position={Position.Bottom}
+        position={horizontal ? Position.Right : Position.Bottom}
         className="!bg-transparent !w-2 !h-2 !border-2 !border-[#22d3a7]"
       />
     </div>
@@ -114,6 +123,45 @@ function MindGrowNode({ data, selected }: NodeProps) {
 }
 
 const nodeTypes = { mindGrowNode: MindGrowNode };
+
+function getOutlineCollapsedNodes(dbNodes: KnowledgeNode[], dbEdges: KnowledgeEdge[]) {
+  const childrenOf = new Map<string, string[]>();
+  const childSet = new Set<string>();
+  for (const edge of dbEdges) {
+    if (edge.relation !== "contains") continue;
+    childSet.add(edge.targetId);
+    const children = childrenOf.get(edge.sourceId) || [];
+    children.push(edge.targetId);
+    childrenOf.set(edge.sourceId, children);
+  }
+  const roots = dbNodes.filter((node) => !childSet.has(node.id));
+  const collapsed = new Set<string>();
+  const firstLevelByRoot = new Map<string, string[]>();
+  let outlineVisibleCount = roots.length;
+  for (const root of roots) {
+    const firstLevel = childrenOf.get(root.id) || [];
+    firstLevelByRoot.set(root.id, firstLevel);
+    outlineVisibleCount += firstLevel.length;
+    for (const child of firstLevel) {
+      if ((childrenOf.get(child) || []).length) collapsed.add(child);
+    }
+  }
+
+  // As knowledge accumulates, keep recent trees expanded and compress older trees to root cards.
+  // Expanding an older root reveals its first level while those branches remain safely folded.
+  const MAX_OUTLINE_NODES = 12;
+  if (roots.length > 1 && outlineVisibleCount > MAX_OUTLINE_NODES) {
+    const oldestRoots = [...roots].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    for (const root of oldestRoots) {
+      if (outlineVisibleCount <= MAX_OUTLINE_NODES) break;
+      const firstLevel = firstLevelByRoot.get(root.id) || [];
+      if (!firstLevel.length) continue;
+      collapsed.add(root.id);
+      outlineVisibleCount -= firstLevel.length;
+    }
+  }
+  return collapsed;
+}
 
 // ============================================================
 // Tree Layout
@@ -229,11 +277,32 @@ function buildGraph(
   direction: "vertical" | "horizontal",
   spacing: { h: number; v: number; tree: number },
   collapsed: Set<string>,
+  focusRootId: string | null,
+  showDetails: boolean,
+  onToggleCollapse: (nodeId: string) => void,
 ): { nodes: Node[]; edges: Edge[]; branchMap: Map<string, number> } {
+  const allChildrenOf = new Map<string, string[]>();
+  for (const edge of dbEdges) {
+    if (edge.relation !== "contains") continue;
+    const list = allChildrenOf.get(edge.sourceId) || [];
+    list.push(edge.targetId);
+    allChildrenOf.set(edge.sourceId, list);
+  }
+  const scopedIds = new Set<string>();
+  const collectSubtree = (nodeId: string) => {
+    if (scopedIds.has(nodeId)) return;
+    scopedIds.add(nodeId);
+    for (const child of allChildrenOf.get(nodeId) || []) collectSubtree(child);
+  };
+  if (focusRootId && dbNodes.some((node) => node.id === focusRootId)) collectSubtree(focusRootId);
+  else dbNodes.forEach((node) => scopedIds.add(node.id));
+  const scopedNodes = dbNodes.filter((node) => scopedIds.has(node.id));
+  const scopedEdges = dbEdges.filter((edge) => scopedIds.has(edge.sourceId) && scopedIds.has(edge.targetId));
+
   const childCountMap = new Map<string, number>();
   const childrenOf = new Map<string, string[]>();
 
-  for (const edge of dbEdges) {
+  for (const edge of scopedEdges) {
     if (edge.relation === "contains") {
       childCountMap.set(edge.sourceId, (childCountMap.get(edge.sourceId) || 0) + 1);
       const list = childrenOf.get(edge.sourceId) || [];
@@ -243,38 +312,48 @@ function buildGraph(
   }
 
   const childSet = new Set<string>();
-  for (const edge of dbEdges) {
+  for (const edge of scopedEdges) {
     if (edge.relation === "contains") childSet.add(edge.targetId);
   }
-  const roots = dbNodes.filter((n) => !childSet.has(n.id));
+  const roots = scopedNodes.filter((n) => !childSet.has(n.id));
   const branchMap = new Map<string, number>();
   let branchIdx = 0;
 
+  const paintBranch = (nodeId: string, colorIndex: number) => {
+    branchMap.set(nodeId, colorIndex);
+    for (const child of childrenOf.get(nodeId) || []) paintBranch(child, colorIndex);
+  };
   for (const root of roots) {
-    branchMap.set(root.id, branchIdx);
-    branchIdx++;
+    branchMap.set(root.id, 0);
     const kids = childrenOf.get(root.id) || [];
     for (const kid of kids) {
-      branchMap.set(kid, branchIdx);
-      branchIdx++;
+      paintBranch(kid, ++branchIdx);
     }
   }
 
-  const positions = layoutTree(dbNodes, dbEdges, {
-    direction, nodeWidth: 180, nodeHeight: 80, hGap: spacing.h, vGap: spacing.v, tree: spacing.tree,
+  const positions = layoutTree(scopedNodes, scopedEdges, {
+    direction, nodeWidth: 210, nodeHeight: 84, hGap: spacing.h, vGap: spacing.v, tree: spacing.tree,
   }, collapsed);
 
   // Collect all visible IDs (respecting collapse)
   const childrenOfAll = new Map<string, string[]>();
   const childSetAll = new Set<string>();
-  for (const edge of dbEdges) {
+  for (const edge of scopedEdges) {
     if (edge.relation === "contains") { childSetAll.add(edge.targetId); const l = childrenOfAll.get(edge.sourceId) || []; l.push(edge.targetId); childrenOfAll.set(edge.sourceId, l); }
   }
   const visibleIds = new Set<string>();
   function collectVisible(nid: string) { visibleIds.add(nid); if (collapsed.has(nid)) return; for (const c of childrenOfAll.get(nid) || []) collectVisible(c); }
   for (const root of roots) collectVisible(root.id);
 
-  const nodes: Node[] = dbNodes.filter(n => visibleIds.has(n.id)).map((dbNode) => {
+  const descendantCount = new Map<string, number>();
+  const countDescendants = (nodeId: string): number => {
+    if (descendantCount.has(nodeId)) return descendantCount.get(nodeId) || 0;
+    const count = (childrenOfAll.get(nodeId) || []).reduce((sum, child) => sum + 1 + countDescendants(child), 0);
+    descendantCount.set(nodeId, count);
+    return count;
+  };
+
+  const nodes: Node[] = scopedNodes.filter(n => visibleIds.has(n.id)).map((dbNode) => {
     const pos = positions.get(dbNode.id) || { x: 0, y: 0 };
     return {
       id: dbNode.id,
@@ -288,14 +367,19 @@ function buildGraph(
         confidence: dbNode.confidence,
         highlighted: dbNode.id === highlightedNodeId || searchResults.includes(dbNode.id),
         childCount: childCountMap.get(dbNode.id) || 0,
+        descendantCount: countDescendants(dbNode.id),
         branchIndex: branchMap.get(dbNode.id) || 0,
         collapsed: collapsed.has(dbNode.id),
+        direction,
+        showDetails,
+        nodeId: dbNode.id,
+        onToggleCollapse,
         citations: dbNode.citations || [],
       },
     };
   });
 
-  const edges: Edge[] = dbEdges
+  const edges: Edge[] = scopedEdges
     .filter(e => visibleIds.has(e.sourceId) && visibleIds.has(e.targetId))
     .map((dbEdge) => {
     const isRelation = dbEdge.relation !== "contains";
@@ -305,7 +389,7 @@ function buildGraph(
       id: dbEdge.id,
       source: dbEdge.sourceId,
       target: dbEdge.targetId,
-      type: "default",
+      type: isRelation ? "default" : "smoothstep",
       animated: isRelation,
       style: {
         stroke: isRelation ? "#f472b688" : `${edgeColor}44`,
@@ -410,7 +494,7 @@ export function MindMapPanel() {
     setSearchResults,
     contextMenu, setContextMenu,
     collapsedNodes,
-    toggleCollapse,
+    toggleCollapse, setCollapsedNodes,
     pushHistory, undo, redo,
     showHelp, setShowHelp,
   } = useMindGrowStore();
@@ -423,8 +507,12 @@ export function MindMapPanel() {
   const [showSpacing, setShowSpacing] = useState(false);
   const [showToolbar, setShowToolbar] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
+  const [viewMode, setViewMode] = useState<"outline" | "all" | "custom">("all");
+  const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
+  const [showNodeDetails, setShowNodeDetails] = useState(true);
   const reactFlowInstance = useRef<ReactFlowInstance | null>(null);
   const editInputRef = useRef<HTMLInputElement>(null);
+  const initializedLargeMapRef = useRef<string | null>(null);
 
   // Detect mobile
   useEffect(() => {
@@ -466,10 +554,70 @@ export function MindMapPanel() {
 
   const sv = useMemo(() => ({ compact: { h: 16, v: 30, tree: 100 }, normal: { h: 30, v: 50, tree: 200 }, wide: { h: 55, v: 80, tree: 400 } }[spacing]), [spacing]);
 
+  const refitGraph = useCallback(() => {
+    window.setTimeout(() => {
+      reactFlowInstance.current?.fitView({
+        padding: isMobile ? 0.14 : 0.24,
+        minZoom: isMobile ? 0.45 : 0.55,
+        maxZoom: 1.05,
+        duration: 320,
+      });
+    }, 80);
+  }, [isMobile]);
+
+  const handleToggleBranch = useCallback((nodeId: string) => {
+    toggleCollapse(nodeId);
+    setViewMode("custom");
+    refitGraph();
+  }, [toggleCollapse, refitGraph]);
+
+  const showOutline = useCallback(() => {
+    setFocusedNodeId(null);
+    setDirection("horizontal");
+    setCollapsedNodes(getOutlineCollapsedNodes(storeNodes, storeEdges));
+    setViewMode("outline");
+    refitGraph();
+  }, [setCollapsedNodes, storeNodes, storeEdges, refitGraph]);
+
+  const showAllNodes = useCallback(() => {
+    setFocusedNodeId(null);
+    setCollapsedNodes(new Set<string>());
+    setViewMode("all");
+    refitGraph();
+  }, [setCollapsedNodes, refitGraph]);
+
+  // Large maps open as a readable outline instead of shrinking every node into one viewport.
+  useEffect(() => {
+    if (!currentMapId || storeNodes.length < 14) {
+      const smallMapKey = currentMapId ? `${currentMapId}:small:${storeNodes[0]?.id || "empty"}` : null;
+      if (currentMapId && initializedLargeMapRef.current !== smallMapKey) {
+        initializedLargeMapRef.current = smallMapKey;
+        setViewMode("all");
+        setFocusedNodeId(null);
+      }
+      return;
+    }
+    const childIds = new Set(storeEdges.filter((edge) => edge.relation === "contains").map((edge) => edge.targetId));
+    const rootSignature = storeNodes.filter((node) => !childIds.has(node.id)).map((node) => node.id).sort().join(",");
+    const largeMapKey = `${currentMapId}:large:${rootSignature}`;
+    if (initializedLargeMapRef.current === largeMapKey) return;
+    initializedLargeMapRef.current = largeMapKey;
+    setDirection("horizontal");
+    setFocusedNodeId(null);
+    setCollapsedNodes(getOutlineCollapsedNodes(storeNodes, storeEdges));
+    setViewMode("outline");
+    refitGraph();
+  }, [currentMapId, storeNodes, storeEdges, setCollapsedNodes, refitGraph]);
+
   const graph = useMemo(
-    () => buildGraph(storeNodes, storeEdges, highlightedNodeId, searchResults, direction, sv, collapsedNodes),
-    [storeNodes, storeEdges, highlightedNodeId, searchResults, direction, sv, collapsedNodes],
+    () => buildGraph(
+      storeNodes, storeEdges, highlightedNodeId, searchResults, direction, sv,
+      collapsedNodes, focusedNodeId, showNodeDetails, handleToggleBranch,
+    ),
+    [storeNodes, storeEdges, highlightedNodeId, searchResults, direction, sv, collapsedNodes, focusedNodeId, showNodeDetails, handleToggleBranch],
   );
+
+  const hiddenNodeCount = Math.max(0, storeNodes.length - graph.nodes.length);
 
   const [flowNodes, setFlowNodes, onNodesChange] = useNodesState(graph.nodes);
   const [flowEdges, setFlowEdges, onEdgesChange] = useEdgesState(graph.edges);
@@ -542,6 +690,12 @@ export function MindMapPanel() {
       if (e.key === "?") { e.preventDefault(); setShowHelp(true); }
       if (e.key === "Escape") {
         if (editingNode) { setEditingNode(null); return; }
+        if (focusedNodeId) {
+          setFocusedNodeId(null);
+          setViewMode("custom");
+          refitGraph();
+          return;
+        }
         setShowSearch(false);
         setLocalSearch("");
         setSearchResults([]);
@@ -551,7 +705,7 @@ export function MindMapPanel() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [flowNodes, removeNode, currentMapId, setStoreNodes, setStoreEdges, setSearchResults, editingNode, pushHistory, undo, redo, setContextMenu, setShowHelp]);
+  }, [flowNodes, removeNode, currentMapId, setStoreNodes, setStoreEdges, setSearchResults, editingNode, focusedNodeId, refitGraph, pushHistory, undo, redo, setContextMenu, setShowHelp]);
 
   // Reload after edit/delete from context menu
   const reloadMap = useCallback(() => {
@@ -622,6 +776,19 @@ export function MindMapPanel() {
     }
     setContextMenu(null);
   }, [contextMenu, flowNodes, setContextMenu]);
+
+  // Context menu: isolate one branch so dense maps can be read without unrelated nodes.
+  const handleCtxSubtreeFocus = useCallback(() => {
+    if (!contextMenu) return;
+    const nextCollapsed = new Set(collapsedNodes);
+    nextCollapsed.delete(contextMenu.nodeId);
+    setCollapsedNodes(nextCollapsed);
+    setFocusedNodeId(contextMenu.nodeId);
+    setDirection("horizontal");
+    setViewMode("custom");
+    setContextMenu(null);
+    refitGraph();
+  }, [contextMenu, collapsedNodes, setCollapsedNodes, setContextMenu, refitGraph]);
 
   // Context menu: edit
   const handleCtxEdit = useCallback(() => {
@@ -736,11 +903,12 @@ export function MindMapPanel() {
   }
 
   const isVertical = direction === "vertical";
+  const focusedNode = focusedNodeId ? storeNodes.find((node) => node.id === focusedNodeId) : null;
 
   return (
     <div className="flex-1 bg-[var(--background)] relative">
       {/* Top toolbar */}
-      <div className={`absolute z-50 flex gap-1.5 ${isMobile ? 'right-3 flex-col items-end' : 'left-3'}`} style={{ top: isMobile ? "max(calc(env(safe-area-inset-top) + 12px), 32px)" : "12px" }}>
+      <div className={`absolute z-50 flex gap-1.5 ${isMobile ? 'right-3 flex-col items-end' : 'left-3 right-3 flex-wrap'}`} style={{ top: isMobile ? "max(calc(env(safe-area-inset-top) + 12px), 32px)" : "12px" }}>
         {/* Mobile: toggle toolbar */}
         {isMobile && (
           <button
@@ -755,6 +923,31 @@ export function MindMapPanel() {
 
         {(!isMobile || showToolbar) && (
           <>
+            <div className="flex gap-0 bg-[var(--card)] border border-[var(--border)] rounded-xl p-1">
+              <button
+                onClick={showOutline}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+                  viewMode === "outline" ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+                }`}
+                title="只显示主题和主要分支"
+              >主干 {graph.nodes.length}/{storeNodes.length}</button>
+              <button
+                onClick={showAllNodes}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+                  viewMode === "all" ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+                }`}
+                title="展开全部节点，可拖动画布浏览"
+              >全部 {storeNodes.length}</button>
+            </div>
+
+            {focusedNode && (
+              <button
+                onClick={() => { setFocusedNodeId(null); setViewMode("custom"); refitGraph(); }}
+                className="max-w-[190px] truncate rounded-xl border border-[#22d3a755] bg-[#22d3a715] px-3 py-2 text-xs font-medium text-[#7de8c9] transition-colors hover:bg-[#22d3a725] cursor-pointer"
+                title={`返回全图：${focusedNode.content}`}
+              >← 返回全图 · {focusedNode.content}</button>
+            )}
+
             <div className="flex gap-0 bg-[var(--card)] border border-[var(--border)] rounded-xl p-1">
               <button
                 onClick={() => setDirection("vertical")}
@@ -876,11 +1069,15 @@ export function MindMapPanel() {
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" /></svg>
             定位此节点
           </button>
+          <button onClick={handleCtxSubtreeFocus} className="w-full px-3 py-2 text-xs text-left text-[var(--foreground)] hover:bg-[var(--muted)] transition-colors cursor-pointer flex items-center gap-2">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 4h6v6H4zM14 14h6v6h-6z" /><path d="M10 7h4a3 3 0 0 1 3 3v4" /></svg>
+            聚焦此分支
+          </button>
           <button onClick={handleCtxEdit} className="w-full px-3 py-2 text-xs text-left text-[var(--foreground)] hover:bg-[var(--muted)] transition-colors cursor-pointer flex items-center gap-2">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
             编辑内容
           </button>
-          <button onClick={() => { if (contextMenu) { toggleCollapse(contextMenu.nodeId); setContextMenu(null); } }} className="w-full px-3 py-2 text-xs text-left text-[var(--foreground)] hover:bg-[var(--muted)] transition-colors cursor-pointer flex items-center gap-2">
+          <button onClick={() => { if (contextMenu) { handleToggleBranch(contextMenu.nodeId); setContextMenu(null); } }} className="w-full px-3 py-2 text-xs text-left text-[var(--foreground)] hover:bg-[var(--muted)] transition-colors cursor-pointer flex items-center gap-2">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg>
             {contextMenu && collapsedNodes.has(contextMenu.nodeId) ? "展开子节点" : "折叠子节点"}
           </button>
@@ -921,6 +1118,12 @@ export function MindMapPanel() {
 
       {showHelp && <HelpPanel onClose={() => setShowHelp(false)} />}
 
+      {hiddenNodeCount > 0 && (
+        <div className="pointer-events-none absolute bottom-4 left-3 z-40 rounded-xl border border-[var(--border)] bg-[var(--card)]/95 px-3 py-2 text-[11px] text-[var(--muted-foreground)] shadow-lg backdrop-blur">
+          当前显示 {graph.nodes.length}/{storeNodes.length} 个节点 · 点击节点上的 ＋N 展开
+        </div>
+      )}
+
       <ReactFlow
         nodes={flowNodes}
         edges={flowEdges}
@@ -930,9 +1133,10 @@ export function MindMapPanel() {
         nodeTypes={nodeTypes}
         onInit={(instance) => { reactFlowInstance.current = instance; }}
         fitView
-        fitViewOptions={{ padding: isMobile ? 0.1 : 0.3 }}
-        minZoom={isMobile ? 0.05 : 0.1}
+        fitViewOptions={{ padding: isMobile ? 0.14 : 0.24, minZoom: isMobile ? 0.45 : 0.55, maxZoom: 1.05 }}
+        minZoom={isMobile ? 0.15 : 0.2}
         maxZoom={2}
+        onMoveEnd={(_, viewport) => setShowNodeDetails(viewport.zoom >= 0.72)}
         selectionOnDrag={false}
         panOnDrag={[0, 2]}
         panOnScroll={false}

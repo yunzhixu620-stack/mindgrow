@@ -85,7 +85,28 @@ const clickByText = async (page, selector, text) => {
     await page.waitForFunction(() => Array.from(document.querySelectorAll("button")).some((button) => button.textContent.includes("添加") && button.textContent.includes("节点")));
     await clickByText(page, "button", "添加");
     await page.waitForFunction(() => document.body.innerText.includes("思维导图已更新"));
-    await page.waitForFunction(() => document.querySelectorAll(".react-flow__node").length > 13);
+    await page.waitForFunction(() => {
+      const allButton = Array.from(document.querySelectorAll("button")).find((button) => /^全部 \d+$/.test(button.textContent.trim()));
+      if (!allButton) return false;
+      const total = Number(allButton.textContent.match(/\d+/)?.[0] || 0);
+      return total >= 14 && document.querySelectorAll(".react-flow__node").length < total;
+    });
+  });
+
+  await check("large map uses progressive disclosure", async () => {
+    const before = await page.$$eval(".react-flow__node", (nodes) => nodes.length);
+    await page.screenshot({ path: path.join(artifactDir, "desktop-large-map-outline.png"), fullPage: true });
+    const expand = await page.$('button[aria-label^="展开 "]');
+    if (!expand) throw new Error("No branch expansion control found");
+    await expand.click();
+    await page.waitForFunction((previous) => document.querySelectorAll(".react-flow__node").length > previous, {}, before);
+
+    await clickByText(page, "button", "全部");
+    await page.waitForFunction(() => {
+      const allButton = Array.from(document.querySelectorAll("button")).find((button) => /^全部 \d+$/.test(button.textContent.trim()));
+      const total = Number(allButton?.textContent.match(/\d+/)?.[0] || 0);
+      return total > 0 && document.querySelectorAll(".react-flow__node").length === total;
+    });
   });
 
   await check("new map persists after reload", async () => {

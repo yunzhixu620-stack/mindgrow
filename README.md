@@ -28,7 +28,7 @@ npm run test:e2e:local
 npm run test:backend
 ```
 
-- `test:e2e:local` 覆盖真实两页 PDF、页码引用、Audio Overview、会议助手、知识问答与移动端等 10 条完整路径。
+- `test:e2e:local` 覆盖真实两页 PDF、页码引用、Audio Overview、会议助手、知识问答、大图渐进展示与移动端等 11 条完整路径。
 - `test:e2e:public` 覆盖生产登录、匿名拒绝、健康状态、移动端和 SEO。
 - `test:backend` 默认执行不需要账号的安全冒烟；设置 `MINDGROW_ACCESS_TOKEN`（可选 `MINDGROW_WORKSPACE_ID`）后会创建并删除带引用的临时知识库，验证生产租户写入。
 
@@ -72,6 +72,7 @@ NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=<public publishable key>
 - `fc-proxy/index.js`：阿里云函数后端、健康检查、模型与知识库代理。
 - `supabase-schema.sql`：服务端专用、关闭匿名访问的数据库结构。
 - `src/lib/pdf-text.ts`：浏览器本地 PDF 文字与页码提取。
+- `docs/product-and-technology-overview.md`：产品定位、信息压缩策略和完整技术栈概览。
 - `docs/competitive-analysis-v8.md`：国际竞品、SaaS 场景与公平评测方案。
 - `scripts/`：端到端和线上后端冒烟测试。
 - `docs/`：产品、评测、SEO、On-call 与上线说明。
