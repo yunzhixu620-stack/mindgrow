@@ -6,6 +6,7 @@ import type { MindMap } from "@/types";
 import { apiFetch } from "@/lib/client-api";
 import { Category } from "@/types";
 import { TemplateBrowser } from "@/components/template/template-browser";
+import { MODE_LIBRARY_CONFIG, isMapForMode, modeLibraryDescription } from "@/lib/mode-libraries";
 
 interface LibrarySearchMatch {
   id: string;
@@ -231,6 +232,7 @@ export function Sidebar() {
     setCategories,
     setSearchResults,
     setHighlightedNodeId,
+    currentMode,
   } = useMindGrowStore();
 
   const [contextMenu, setContextMenu] = useState<{
@@ -347,7 +349,8 @@ export function Sidebar() {
           action: "createMap",
           name: newName.trim(),
           color: newColor,
-          categoryId: newCategoryId,
+          categoryId: currentMode === "knowledge" ? newCategoryId : null,
+          description: currentMode === "knowledge" ? "" : modeLibraryDescription(currentMode),
         }),
       });
       if (res.ok) {
@@ -380,7 +383,7 @@ export function Sidebar() {
     } catch (e) {
       console.error("Failed to create map:", e);
     }
-  }, [newName, newColor, newCategoryId, setCurrentMapId]);
+  }, [newName, newColor, newCategoryId, currentMode, setCurrentMapId]);
 
   const handleSwitch = useCallback(async (mapId: string) => {
     setCurrentMapId(mapId);
@@ -423,13 +426,14 @@ export function Sidebar() {
         useMindGrowStore.getState().setMaps(allMaps);
       }
       if (map.id === currentMapId) {
-        handleSwitch("map_default");
+        const fallback = maps.find((candidate) => candidate.id !== map.id && isMapForMode(candidate, currentMode));
+        if (fallback) handleSwitch(fallback.id);
       }
     } catch (e) {
       console.error("Failed to delete map:", e);
     }
     setContextMenu(null);
-  }, [contextMenu, currentMapId, handleSwitch]);
+  }, [contextMenu, currentMapId, handleSwitch, maps, currentMode]);
 
   const handleClear = useCallback(async () => {
     if (!contextMenu) return;
@@ -567,11 +571,14 @@ export function Sidebar() {
     setContextMenu(null);
   }, [setCategories]);
 
-  // Group maps by category
-  const uncategorizedMaps = maps.filter((m) => !m.categoryId);
-  const categorizedMaps = categories.map((cat) => ({
+  // Each product board only exposes its own libraries. This prevents a click
+  // on an article/meeting card from racing the mode switch back to knowledge.
+  const visibleMaps = maps.filter((map) => isMapForMode(map, currentMode));
+  const visibleSearchResults = librarySearchResults.filter((result) => isMapForMode(result.map, currentMode));
+  const uncategorizedMaps = visibleMaps.filter((m) => !m.categoryId);
+  const categorizedMaps = (currentMode === "knowledge" ? categories : []).map((cat) => ({
     category: cat,
-    maps: maps.filter((m) => m.categoryId === cat.id),
+    maps: visibleMaps.filter((m) => m.categoryId === cat.id),
   }));
 
   const MAP_COLORS = ["#22d3a7", "#38bdf8", "#818cf8", "#f472b6", "#fb923c", "#a3e635", "#e879f9", "#f87171"];
@@ -594,7 +601,7 @@ export function Sidebar() {
     <div className="w-[240px] min-w-[220px] border-r border-[var(--border)] bg-[var(--card)] flex flex-col h-full">
       {/* Header */}
       <div className="px-3 py-3 border-b border-[var(--border)] flex items-center justify-between">
-        <span className="text-xs font-semibold text-[var(--muted-foreground)] uppercase tracking-wider">知识库</span>
+        <span className="text-xs font-semibold text-[var(--muted-foreground)] uppercase tracking-wider">{MODE_LIBRARY_CONFIG[currentMode].defaultName}</span>
         <div className="flex gap-1">
           {/* Prominent New Map button */}
           <button
@@ -607,7 +614,7 @@ export function Sidebar() {
             </svg>
           </button>
           {/* New Category button */}
-          <button
+          {currentMode === "knowledge" && <button
             onClick={() => setIsCreatingCategory(true)}
             className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--muted)] text-[var(--muted-foreground)] transition-colors cursor-pointer"
             title="新建文件夹"
@@ -615,9 +622,9 @@ export function Sidebar() {
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /><line x1="12" y1="11" x2="12" y2="17" /><line x1="9" y1="14" x2="15" y2="14" />
             </svg>
-          </button>
+          </button>}
           {/* Template Center button */}
-          <button
+          {currentMode === "knowledge" && <button
             onClick={() => setShowTemplates(true)}
             className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--muted)] text-[var(--muted-foreground)] transition-colors cursor-pointer"
             title="模板中心"
@@ -625,7 +632,7 @@ export function Sidebar() {
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
             </svg>
-          </button>
+          </button>}
           <button
             onClick={() => setSidebarOpen(false)}
             className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--muted)] text-[var(--muted-foreground)] transition-colors cursor-pointer"
@@ -646,8 +653,8 @@ export function Sidebar() {
             value={librarySearch}
             onChange={(event) => setLibrarySearch(event.target.value)}
             onKeyDown={(event) => { if (event.key === "Escape") setLibrarySearch(""); }}
-            placeholder="搜索全部知识库..."
-            aria-label="搜索全部知识库"
+            placeholder={currentMode === "knowledge" ? "搜索全部知识库..." : `搜索${MODE_LIBRARY_CONFIG[currentMode].shortLabel}库...`}
+            aria-label={currentMode === "knowledge" ? "搜索全部知识库" : `搜索${MODE_LIBRARY_CONFIG[currentMode].shortLabel}库`}
             className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-base)] py-2 pl-8 pr-8 text-xs text-[var(--foreground)] outline-none transition-colors placeholder:text-[var(--muted-foreground)] focus:border-[var(--primary)]"
           />
           {librarySearch ? (
@@ -667,18 +674,18 @@ export function Sidebar() {
         {librarySearch.trim() ? (
           <div className="space-y-1 px-2">
             <div className="flex items-center justify-between px-1 pb-1 text-[10px] text-[var(--muted-foreground)]">
-              <span>{isSearchingLibrary ? "正在搜索名称、描述和节点…" : `命中 ${librarySearchResults.length} 个知识库`}</span>
-              {!isSearchingLibrary && librarySearchResults.length > 0 && <span>点击进入并高亮</span>}
+              <span>{isSearchingLibrary ? "正在搜索名称、描述和节点…" : `命中 ${visibleSearchResults.length} 个${MODE_LIBRARY_CONFIG[currentMode].shortLabel}库`}</span>
+              {!isSearchingLibrary && visibleSearchResults.length > 0 && <span>点击进入并高亮</span>}
             </div>
             {librarySearchError && (
               <div className="rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2 text-[10px] text-red-400">{librarySearchError}</div>
             )}
-            {!isSearchingLibrary && !librarySearchError && librarySearchResults.length === 0 && (
+            {!isSearchingLibrary && !librarySearchError && visibleSearchResults.length === 0 && (
               <div className="rounded-lg border border-dashed border-[var(--border)] px-3 py-5 text-center text-[11px] text-[var(--muted-foreground)]">
                 没有找到相关知识库或节点
               </div>
             )}
-            {librarySearchResults.map((result) => (
+            {visibleSearchResults.map((result) => (
               <button
                 key={result.map.id}
                 onClick={() => handleSearchResultSelect(result)}
@@ -758,7 +765,7 @@ export function Sidebar() {
               ))}
             </div>
             {/* Category picker */}
-            {categories.length > 0 && (
+            {currentMode === "knowledge" && categories.length > 0 && (
               <select
                 value={newCategoryId || ""}
                 onChange={(e) => setNewCategoryId(e.target.value || null)}
@@ -789,7 +796,7 @@ export function Sidebar() {
         )}
 
         {/* Create new category inline */}
-        {isCreatingCategory && (
+        {currentMode === "knowledge" && isCreatingCategory && (
           <div className="px-3 py-2 space-y-2 border-t border-[var(--border)] mt-1 pt-2">
             <div className="flex items-center gap-2">
               <div className="relative icon-picker-area">
@@ -927,7 +934,7 @@ export function Sidebar() {
         </div>
       )}
       {/* Template Browser */}
-      {showTemplates && (
+      {currentMode === "knowledge" && showTemplates && (
         <TemplateBrowser
           onSelect={async (template) => {
             setShowTemplates(false);

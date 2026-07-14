@@ -4,6 +4,7 @@ import { useCallback, useState } from "react";
 import { apiFetch } from "@/lib/client-api";
 import { useMindGrowStore } from "@/store/mindgrow-store";
 import { useSpeechInput } from "@/hooks/use-speech-input";
+import { mindMapToPreviewGraph } from "@/lib/mindmap-preview";
 import type { AIMindMap, Citation } from "@/types";
 
 interface CitedText { text: string; citationIndexes: number[] }
@@ -54,6 +55,11 @@ export function MeetingAssistant() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "生成失败");
       setResult(data);
+      if (data.mindMap) {
+        const preview = mindMapToPreviewGraph(data.mindMap, "meeting", data.citations || []);
+        setNodes(preview.nodes);
+        setEdges(preview.edges);
+      }
     } catch (error) { setNotice(error instanceof Error ? error.message : "生成失败"); }
     finally { setBusy(false); }
   }
@@ -89,8 +95,8 @@ export function MeetingAssistant() {
   const showCitations = (indexes: number[] = []) => <span className="ml-1 inline-flex flex-wrap gap-1 align-middle">{indexes.map((index) => <button key={index} type="button" onClick={() => setSelectedCitation(citationByIndex.get(index) || null)} aria-label={`查看会议引用 ${index}`} className="rounded bg-[var(--primary-subtle)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--primary-hover)] hover:ring-1 hover:ring-[var(--primary)]">[{index}]</button>)}</span>;
 
   return (
-    <section className="h-full w-full overflow-y-auto bg-[var(--background)]" data-mode-library-id={currentMapId}>
-      <div className="mx-auto max-w-6xl p-4 md:p-8">
+    <section className="h-full w-full overflow-y-auto bg-[var(--background)]" data-mode-library-id={currentMapId} data-testid="meeting-content-workspace">
+      <div className="mx-auto max-w-6xl p-4">
         <div className="mb-6 flex flex-col gap-3 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4 md:flex-row md:items-center md:justify-between">
           <div><h2 className="text-lg font-semibold">🎯 会议助手</h2><p className="mt-1 text-xs text-[var(--text-tertiary)]">实时口述或粘贴会议原文，提取决议、行动项和风险；内容只进入会议板块。</p></div>
           <div className="rounded-xl border border-sky-400/30 bg-sky-400/10 px-3 py-2 text-xs text-sky-200"><span className="font-semibold">独立会议知识库</span><span className="mx-2 opacity-40">·</span>{currentMap?.name || "会议知识库"}<span className="mx-2 opacity-40">·</span>{nodeCount} 节点</div>

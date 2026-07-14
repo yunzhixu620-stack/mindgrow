@@ -17,7 +17,7 @@ const PORT = Number.parseInt(process.env.FC_SERVER_PORT || process.env.PORT || '
 // into a false 503. Transient 429/5xx responses are retried below.
 const UPSTREAM_TIMEOUT_MS = Number.parseInt(process.env.UPSTREAM_TIMEOUT_MS || '45000', 10);
 const AUTH_REQUIRED = process.env.AUTH_REQUIRED !== 'false';
-const API_VERSION = '9.0.0';
+const API_VERSION = '10.0.0';
 const DASHSCOPE_AUDIO_ENDPOINT = process.env.DASHSCOPE_AUDIO_ENDPOINT || 'https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer';
 const ALLOWED_ORIGINS = new Set(
   (process.env.ALLOWED_ORIGINS || 'https://yunzhixu620-stack.github.io')
@@ -410,6 +410,28 @@ function tokenize(value) {
   return [...terms];
 }
 
+const GRAPH_STOP_TERMS = new Set([
+  '什么', '如何', '怎么', '哪些', '哪个', '是否', '论文', '文章', '方法', '模型', '结果', '内容', '研究',
+  'the', 'and', 'for', 'with', 'from', 'that', 'this', 'what', 'which', 'how', 'paper', 'model', 'method',
+]);
+
+function queryAnchors(value) {
+  return tokenize(value)
+    .filter((term) => term.length >= 2 && !GRAPH_STOP_TERMS.has(term))
+    .sort((left, right) => {
+      const leftSpecific = /[a-z0-9_-]/i.test(left) ? 1 : 0;
+      const rightSpecific = /[a-z0-9_-]/i.test(right) ? 1 : 0;
+      return rightSpecific - leftSpecific || right.length - left.length;
+    })
+    .slice(0, 18);
+}
+
+function anchorCoverage(anchors, value) {
+  if (!anchors.length) return 0;
+  const haystack = String(value || '').toLowerCase();
+  return anchors.filter((anchor) => haystack.includes(anchor)).length / anchors.length;
+}
+
 function contentSimilarity(left, right) {
   const a = String(left || '').trim().toLowerCase();
   const b = String(right || '').trim().toLowerCase();
@@ -443,6 +465,7 @@ function inFilter(values) {
 async function retrieveNodeEvidence(question, mapId, workspaceId) {
   const workspace = encodeURIComponent(workspaceId);
   const map = encodeURIComponent(mapId);
+  const anchors = queryAnchors(question);
   let seeds = [];
   try {
     const result = await supabaseRequest('POST', 'rpc/search_knowledge_nodes', {
@@ -462,36 +485,71 @@ async function retrieveNodeEvidence(question, mapId, workspaceId) {
   }
   if (seeds.length === 0) return [];
 
-  const seedIds = seeds.slice(0, 8).map((node) => node.id);
-  const filter = inFilter(seedIds);
-  const edges = await supabaseRequest(
+  seeds = seeds
+    .map((node) => ({ ...node, seed: true, graphDepth: 0, anchorScore: anchorCoverage(anchors, `${node.content || ''} ${node.desc || ''}`) }))
+    .sort((left, right) => (right.anchorScore - left.anchorScore) || (Number(right.score || 0) - Number(left.score || 0)))
+    .slice(0, 10);
+  const seedIds = seeds.map((node) => node.id);
+  const seedSet = new Set(seedIds);
+  const firstEdges = await supabaseRequest(
     'GET',
-    `edges?workspace_id=eq.${workspace}&map_id=eq.${map}&or=(source_id.in.${filter},target_id.in.${filter})&select=source_id,target_id,relation&limit=80`,
+    `edges?workspace_id=eq.${workspace}&map_id=eq.${map}&or=(source_id.in.${inFilter(seedIds)},target_id.in.${inFilter(seedIds)})&select=source_id,target_id,relation,weight&limit=120`,
   );
-  const neighborIds = new Set();
-  (Array.isArray(edges) ? edges : []).forEach((edge) => {
-    if (!seedIds.includes(edge.source_id)) neighborIds.add(edge.source_id);
-    if (!seedIds.includes(edge.target_id)) neighborIds.add(edge.target_id);
+  const firstNeighborIds = new Set();
+  (Array.isArray(firstEdges) ? firstEdges : []).forEach((edge) => {
+    if (!seedSet.has(edge.source_id)) firstNeighborIds.add(edge.source_id);
+    if (!seedSet.has(edge.target_id)) firstNeighborIds.add(edge.target_id);
   });
 
+  // GraphRAG local search expands two bounded hops. The first hop captures
+  // parent/child evidence; the second hop captures sibling and cross-paper
+  // `relates_to` context without flooding the answer model with the full graph.
+  let secondEdges = [];
+  if (firstNeighborIds.size > 0) {
+    const firstIds = [...firstNeighborIds].slice(0, 24);
+    secondEdges = await supabaseRequest(
+      'GET',
+      `edges?workspace_id=eq.${workspace}&map_id=eq.${map}&or=(source_id.in.${inFilter(firstIds)},target_id.in.${inFilter(firstIds)})&select=source_id,target_id,relation,weight&limit=160`,
+    );
+  }
+
+  const secondNeighborIds = new Set();
+  (Array.isArray(secondEdges) ? secondEdges : []).forEach((edge) => {
+    if (!seedSet.has(edge.source_id) && !firstNeighborIds.has(edge.source_id)) secondNeighborIds.add(edge.source_id);
+    if (!seedSet.has(edge.target_id) && !firstNeighborIds.has(edge.target_id)) secondNeighborIds.add(edge.target_id);
+  });
+
+  const allNeighborIds = [...firstNeighborIds, ...[...secondNeighborIds].slice(0, 24)].slice(0, 48);
   let neighbors = [];
-  if (neighborIds.size > 0) {
-    const ids = [...neighborIds].slice(0, 20);
+  if (allNeighborIds.length > 0) {
     const rows = await supabaseRequest(
       'GET',
-      `nodes?workspace_id=eq.${workspace}&map_id=eq.${map}&id=in.${inFilter(ids)}&status=eq.active&select=id,content,desc,type&limit=20`,
+      `nodes?workspace_id=eq.${workspace}&map_id=eq.${map}&id=in.${inFilter(allNeighborIds)}&status=eq.active&select=id,content,desc,type&limit=48`,
     );
-    neighbors = (Array.isArray(rows) ? rows : []).map((node) => ({ ...node, score: 0.15, expanded: true }));
+    neighbors = (Array.isArray(rows) ? rows : []).map((node) => {
+      const graphDepth = firstNeighborIds.has(node.id) ? 1 : 2;
+      const connectedEdge = [...(Array.isArray(firstEdges) ? firstEdges : []), ...(Array.isArray(secondEdges) ? secondEdges : [])]
+        .find((edge) => edge.source_id === node.id || edge.target_id === node.id);
+      return {
+        ...node,
+        score: graphDepth === 1 ? 0.24 : 0.12,
+        anchorScore: anchorCoverage(anchors, `${node.content || ''} ${node.desc || ''}`),
+        expanded: true,
+        graphDepth,
+        graphRelation: connectedEdge ? connectedEdge.relation : 'relates_to',
+      };
+    }).sort((left, right) => (right.anchorScore - left.anchorScore) || (left.graphDepth - right.graphDepth));
   }
 
   const deduplicated = new Map();
   [...seeds, ...neighbors].forEach((node) => {
     if (!deduplicated.has(node.id)) deduplicated.set(node.id, node);
   });
-  return [...deduplicated.values()].slice(0, 20);
+  return [...deduplicated.values()].slice(0, 32);
 }
 
 async function retrieveDocumentEvidence(question, mapId, workspaceId) {
+  const anchors = queryAnchors(question);
   let embedding = null;
   try {
     const vectors = await dashscopeEmbeddings([question]);
@@ -513,7 +571,10 @@ async function retrieveDocumentEvidence(question, mapId, workspaceId) {
       desc: String(item.locator || ''),
       type: 'detail',
       score: Number(item.score || 0),
+      anchorScore: anchorCoverage(anchors, `${item.document_title || ''} ${item.content || ''}`),
       sourceKind: 'document_chunk',
+      documentId: String(item.document_id || ''),
+      documentTitle: String(item.document_title || '来源文档'),
       citations: [{
         index: Number(item.chunk_index || 0) + 1,
         quote: String(item.content || '').slice(0, 1400),
@@ -525,9 +586,9 @@ async function retrieveDocumentEvidence(question, mapId, workspaceId) {
         sourceType: String(item.source_type || 'text'),
       }],
     })).filter((item) => item.content);
-    if (candidates.length < 2) return candidates.slice(0, 12);
-    const reranked = await dashscopeRerank(question, candidates.map((item) => item.content), 12);
-    if (!reranked || reranked.length === 0) return candidates.slice(0, 12);
+    if (candidates.length < 2) return candidates.slice(0, 18);
+    const reranked = await dashscopeRerank(question, candidates.map((item) => `${item.documentTitle}\n${item.content}`), 18);
+    if (!reranked || reranked.length === 0) return candidates.slice(0, 18);
     return reranked.map((rank) => {
       const candidate = candidates[rank.index];
       return candidate ? { ...candidate, rerankScore: rank.score } : null;
@@ -539,15 +600,64 @@ async function retrieveDocumentEvidence(question, mapId, workspaceId) {
 }
 
 async function retrieveGraphEvidence(question, mapId, workspaceId) {
-  const results = await Promise.all([
+  const [documentEvidence, graphNodes] = await Promise.all([
     retrieveDocumentEvidence(question, mapId, workspaceId),
     retrieveNodeEvidence(question, mapId, workspaceId),
   ]);
+
+  // The node→citation→document bridge is the graph-conditioned part of the
+  // retrieval. Chunks connected to the query subgraph are promoted; merely
+  // vector-similar chunks from unrelated papers remain as bounded fallbacks.
+  let citationsByNode = new Map();
+  try {
+    citationsByNode = await loadNodeCitations(workspaceId, mapId, graphNodes.map((node) => node.id));
+  } catch (error) {
+    console.warn('Graph citation bridge unavailable', { code: error.publicCode || 'GRAPH_CITATION_UNAVAILABLE' });
+  }
+  graphNodes.forEach((node) => { node.citations = citationsByNode.get(node.id) || []; });
+  const graphDocumentIds = new Set();
+  graphNodes.forEach((node) => (node.citations || []).forEach((citation) => {
+    if (citation.documentId) graphDocumentIds.add(citation.documentId);
+  }));
+  const graphLabelsByDocument = new Map();
+  graphNodes.forEach((node) => (node.citations || []).forEach((citation) => {
+    if (!citation.documentId) return;
+    const labels = graphLabelsByDocument.get(citation.documentId) || [];
+    if (!labels.includes(node.content)) labels.push(node.content);
+    graphLabelsByDocument.set(citation.documentId, labels.slice(0, 6));
+  }));
+
+  const scoredChunks = documentEvidence.map((item, index) => {
+    const graphLinked = graphDocumentIds.has(item.documentId);
+    const graphLabels = graphLabelsByDocument.get(item.documentId) || [];
+    const semanticScore = Number.isFinite(Number(item.rerankScore)) ? Number(item.rerankScore) : Math.max(0, 1 - index / Math.max(documentEvidence.length, 1));
+    return {
+      ...item,
+      graphLinked,
+      graphLabels,
+      graphScore: semanticScore + (graphLinked ? 0.32 : 0) + Number(item.anchorScore || 0) * 0.18,
+      desc: `${item.desc || ''}${graphLabels.length ? ` · 图谱路径：${graphLabels.join(' → ')}` : ''}`,
+    };
+  }).sort((left, right) => right.graphScore - left.graphScore);
+
+  const linkedChunks = scoredChunks.filter((item) => item.graphLinked);
+  const unlinkedChunks = scoredChunks.filter((item) => !item.graphLinked);
+  const graphConditionedChunks = linkedChunks.length >= 2
+    ? [...linkedChunks.slice(0, 12), ...unlinkedChunks.slice(0, 4)]
+    : scoredChunks.slice(0, 16);
   const deduplicated = new Map();
-  [...results[0], ...results[1]].forEach((item) => {
+  [...graphConditionedChunks, ...graphNodes].forEach((item) => {
     if (!deduplicated.has(item.id)) deduplicated.set(item.id, item);
   });
-  return [...deduplicated.values()].slice(0, 20);
+  const evidence = [...deduplicated.values()].slice(0, 24);
+  evidence.trace = {
+    mode: 'hybrid_graph_rag',
+    seedNodes: graphNodes.filter((node) => node.seed).length,
+    expandedNodes: graphNodes.filter((node) => node.expanded).length,
+    graphDocuments: graphDocumentIds.size,
+    candidateChunks: documentEvidence.length,
+  };
+  return evidence;
 }
 
 function deterministicEvidenceAnswer(evidence, intent) {
@@ -569,6 +679,7 @@ function deterministicEvidenceAnswer(evidence, intent) {
       abstained: false,
       coverage: evidence.some((node) => node.expanded) ? 'partial' : 'direct',
       missingInformation: [],
+      retrievalTrace: evidence.trace || null,
     },
   };
 }
@@ -590,6 +701,7 @@ async function answerQuestion(input, mapId, intent, workspaceId, history) {
         sources: [],
         grounded: true,
         abstained: true,
+        retrievalTrace: evidence.trace || null,
       },
     };
   }
@@ -608,6 +720,7 @@ async function answerQuestion(input, mapId, intent, workspaceId, history) {
         abstained: true,
         coverage: 'partial',
         missingInformation: ['原始 PDF 表格列坐标或可靠的制表位'],
+        retrievalTrace: evidence.trace || null,
       },
     };
   }
@@ -649,6 +762,7 @@ async function answerQuestion(input, mapId, intent, workspaceId, history) {
           abstained: true,
           coverage: 'partial',
           missingInformation: Array.isArray(parsed.missingInformation) ? parsed.missingInformation.map(String).slice(0, 8) : ['缺少直接支持该结论的来源'],
+          retrievalTrace: evidence.trace || null,
         },
       };
     }
@@ -667,6 +781,7 @@ async function answerQuestion(input, mapId, intent, workspaceId, history) {
         abstained: false,
         coverage: parsed.coverage === 'complete' ? 'complete' : 'partial',
         missingInformation: Array.isArray(parsed.missingInformation) ? parsed.missingInformation.map(String).slice(0, 8) : [],
+        retrievalTrace: evidence.trace || null,
       },
     };
   } catch (error) {
@@ -1475,12 +1590,29 @@ async function createGraph(workspaceId, mapId, mindMap, source, document, source
     edges.push(created);
     allEdges.push(created);
   };
+  const addRelation = (id, sourceId, targetId, weight) => {
+    if (sourceId === targetId) return;
+    if (allEdges.some((edge) => (
+      ((edge.source_id === sourceId && edge.target_id === targetId) || (edge.source_id === targetId && edge.target_id === sourceId))
+      && edge.relation === 'relates_to'
+    ))) return;
+    const created = { id, workspace_id: workspaceId, source_id: sourceId, target_id: targetId, relation: 'relates_to', weight, map_id: mapId, created_at: now };
+    edges.push(created);
+    allEdges.push(created);
+  };
+  const sharedAnchorCount = (left, right) => {
+    const leftTerms = new Set(queryAnchors(left));
+    return queryAnchors(right).filter((term) => leftTerms.has(term)).length;
+  };
 
   const topics = allNodes.filter((node) => node.type === 'topic');
   const requestedTopic = placement && Number(placement.confidence) >= 0.45 ? String(placement.targetTopic || '') : '';
   let root = requestedTopic ? topics.find((node) => node.content === requestedTopic) : null;
   if (!root) {
-    const similarRoot = bestSimilar(mindMap.root, topics, 0.42);
+    // A low semantic threshold merges papers that discuss similar subjects but
+    // make different claims. GraphRAG needs stable entities, so reuse only a
+    // highly similar root and let explicit relates_to edges connect concepts.
+    const similarRoot = bestSimilar(mindMap.root, topics, 0.78);
     root = similarRoot ? similarRoot.node : null;
   }
   if (root) {
@@ -1497,7 +1629,7 @@ async function createGraph(workspaceId, mapId, mindMap, source, document, source
 
   (mindMap.children || []).forEach((child, childIndex) => {
     const rootChildren = directChildIds(root.id);
-    const similarChild = bestSimilar(child.topic, allNodes.filter((node) => rootChildren.has(node.id)), 0.66);
+    const similarChild = bestSimilar(child.topic, allNodes.filter((node) => rootChildren.has(node.id)), 0.82);
     let childNode = similarChild ? similarChild.node : null;
     if (childNode) {
       reusedNodes.add(childNode.id);
@@ -1507,11 +1639,20 @@ async function createGraph(workspaceId, mapId, mindMap, source, document, source
       allNodes.push(childNode);
       addContains(`edge_${seed}_c${childIndex}`, root.id, childNode.id, 1);
     }
+    const relatedConcepts = allNodes
+      .filter((node) => node.type === 'concept' && node.id !== childNode.id && !rootChildren.has(node.id))
+      .map((node) => ({ node, score: contentSimilarity(child.topic, node.content), shared: sharedAnchorCount(child.topic, node.content) }))
+      .filter((item) => item.score >= 0.84 && item.shared >= 2)
+      .sort((left, right) => right.score - left.score)
+      .slice(0, 2);
+    relatedConcepts.forEach((item, relationIndex) => {
+      addRelation(`edge_${seed}_r${childIndex}_${relationIndex}`, childNode.id, item.node.id, item.score);
+    });
     citationPlan.set(childNode.id, normalizeCitationIndexes(child.citationIndexes));
 
     (child.items || []).forEach((item, itemIndex) => {
       const childChildren = directChildIds(childNode.id);
-      const similarDetail = bestSimilar(item, allNodes.filter((node) => childChildren.has(node.id)), 0.72);
+      const similarDetail = bestSimilar(item, allNodes.filter((node) => childChildren.has(node.id)), 0.86);
       const existingDetail = similarDetail ? similarDetail.node : null;
       const itemIndexes = child.itemCitationIndexes && child.itemCitationIndexes[itemIndex];
       if (existingDetail) {
@@ -1999,4 +2140,6 @@ module.exports = {
   isTableQuestion,
   hasReliableTableLayout,
   canonicalDocumentHash,
+  queryAnchors,
+  anchorCoverage,
 };

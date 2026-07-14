@@ -5,6 +5,7 @@ import { apiFetch } from "@/lib/client-api";
 import { extractPdfText } from "@/lib/pdf-text";
 import { useScriptSpeech, type SpeechSegment } from "@/hooks/use-script-speech";
 import { useMindGrowStore } from "@/store/mindgrow-store";
+import { mindMapToPreviewGraph } from "@/lib/mindmap-preview";
 import type { AIMindMap, Citation } from "@/types";
 
 interface CitedText { text: string; citationIndexes: number[] }
@@ -56,6 +57,13 @@ interface ArticleQaMessage {
   role: "user" | "assistant";
   content: string;
   sources?: ArticleQaSource[];
+  retrievalTrace?: {
+    mode: string;
+    seedNodes: number;
+    expandedNodes: number;
+    graphDocuments: number;
+    candidateChunks: number;
+  };
 }
 
 export function ArticleParser() {
@@ -114,6 +122,11 @@ export function ArticleParser() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "解析失败");
       setResult(data);
+      if (data.mindMap) {
+        const preview = mindMapToPreviewGraph(data.mindMap, "article", data.citations || []);
+        setNodes(preview.nodes);
+        setEdges(preview.edges);
+      }
     } catch (error) { setNotice(error instanceof Error ? error.message : "解析失败"); }
     finally { setBusy(false); }
   }
@@ -193,6 +206,7 @@ export function ArticleParser() {
         role: "assistant",
         content: data.reply || "知识库中暂时没有足够证据回答这个问题。",
         sources: Array.isArray(data.sources) ? data.sources : [],
+        retrievalTrace: data.retrievalTrace,
       }]);
     } catch (error) {
       setQaMessages((messages) => [...messages, {
@@ -213,8 +227,8 @@ export function ArticleParser() {
   );
 
   return (
-    <section className="h-full w-full overflow-y-auto bg-[var(--background)]" data-mode-library-id={currentMapId}>
-      <div className="mx-auto max-w-5xl p-4 md:p-8">
+    <section className="h-full w-full overflow-y-auto bg-[var(--background)]" data-mode-library-id={currentMapId} data-testid="article-content-workspace">
+      <div className="mx-auto max-w-5xl p-4">
       <div className="mb-6 flex flex-col gap-3 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4 md:flex-row md:items-center md:justify-between"><div><h2 className="text-lg font-semibold">📄 文章解析</h2><p className="mt-1 text-xs text-[var(--text-tertiary)]">支持公开网页、粘贴正文和 PDF；要点、导图节点与音频脚本均可回到原文引用，内容只进入文章板块。</p></div><div className="rounded-xl border border-violet-400/30 bg-violet-400/10 px-3 py-2 text-xs text-violet-200"><span className="font-semibold">独立文章知识库</span><span className="mx-2 opacity-40">·</span>{currentMap?.name || "文章知识库"}<span className="mx-2 opacity-40">·</span>{nodeCount} 节点</div></div>
       <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4">
       <div className="space-y-3">
@@ -250,6 +264,7 @@ export function ArticleParser() {
         {qaMessages.length > 0 && <div className="mb-3 max-h-[420px] space-y-3 overflow-y-auto rounded-xl bg-[var(--background)] p-3">
           {qaMessages.map((message) => <div key={message.id} className={message.role === "user" ? "ml-8 rounded-xl bg-[var(--primary)] px-3 py-2 text-sm text-black" : "mr-8 rounded-xl bg-[var(--bg-elevated)] px-3 py-2 text-sm"}>
             <div className="whitespace-pre-wrap leading-relaxed">{message.content}</div>
+            {message.role === "assistant" && message.retrievalTrace && <div className="mt-2 rounded-lg border border-violet-400/20 bg-violet-400/5 px-2 py-1.5 text-[10px] text-violet-200" data-testid="graphrag-trace">GraphRAG · {message.retrievalTrace.seedNodes} 个入口节点 → {message.retrievalTrace.expandedNodes} 个邻域节点 · 关联 {message.retrievalTrace.graphDocuments} 篇来源 · 重排 {message.retrievalTrace.candidateChunks} 个证据块</div>}
             {message.role === "assistant" && message.sources && message.sources.length > 0 && <div className="mt-2 space-y-1.5 border-t border-[var(--border)] pt-2">
               {message.sources.map((source) => <details key={`${message.id}-${source.id}-${source.index}`} className="rounded-lg bg-[var(--card)] px-2 py-1.5 text-[11px]">
                 <summary className="cursor-pointer text-[var(--primary-hover)]">[{source.index}] {source.title}{source.locator ? ` · ${source.locator}` : ""}</summary>
@@ -279,7 +294,7 @@ function ArticleWikiNavigator({ mindMap, showCitations }: { mindMap: AIMindMap; 
     visibleItems: child.items.map((item, index) => ({ item, index })).filter(({ item }) => !normalized || item.toLowerCase().includes(normalized)),
   })).filter((child) => !normalized || child.topic.toLowerCase().includes(normalized) || String(child.desc || "").toLowerCase().includes(normalized) || child.visibleItems.length > 0);
 
-  return <ArticleBlock title="Repo Wiki 论文链路">
+  return <ArticleBlock title="GraphRAG 论文结构预览">
     <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
       <div className="font-medium text-[var(--text-primary)]">📄 {mindMap.root}{showCitations(mindMap.rootCitationIndexes)}</div>
       <input value={query} onChange={(event) => setQuery(event.target.value)} aria-label="搜索论文链路" placeholder="搜索章节、主题或证据…" className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-2 py-1.5 text-xs outline-none focus:border-[var(--primary)]" />
@@ -295,7 +310,7 @@ function ArticleWikiNavigator({ mindMap, showCitations }: { mindMap: AIMindMap; 
       </details>)}
       {branches.length === 0 && <div className="rounded-lg bg-[var(--bg-elevated)] px-3 py-2 text-[var(--text-tertiary)]">没有匹配的链路节点</div>}
     </div>
-    <p className="mt-2 text-[10px] text-[var(--text-muted)]">保存后，相似主题会复用已有节点形成跨论文链接；每一级都保留可展开的原文证据。</p>
+    <p className="mt-2 text-[10px] text-[var(--text-muted)]">右侧同步生成可交互知识图谱；保存后将通过实体入口、关系邻域和文档引用参与 GraphRAG 检索，避免只靠语义相似度误召回。</p>
   </ArticleBlock>;
 }
 

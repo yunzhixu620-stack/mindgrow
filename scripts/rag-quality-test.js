@@ -14,6 +14,8 @@ const {
   isTableQuestion,
   hasReliableTableLayout,
   canonicalDocumentHash,
+  queryAnchors,
+  anchorCoverage,
 } = require("../fc-proxy/index.js");
 
 const root = path.join(__dirname, "..", "tests", "fixtures", "papers");
@@ -73,6 +75,13 @@ check("cross-document lexical recovery distinguishes the target paper", () => {
   const indexes = bestCitationIndexes("LayoutLMv3 masked image modeling and word patch alignment", merged, 6);
   const selected = indexes.map((index) => merged.find((chunk) => chunk.index === index));
   assert(selected.some((chunk) => chunk && chunk.document === "layoutlmv3"));
+});
+
+check("GraphRAG anchors preserve discriminative paper and metric terms", () => {
+  const anchors = queryAnchors("DPR 在 Natural Questions 的 top-20 accuracy 数值");
+  assert(anchors.includes("dpr"));
+  assert(anchors.some((item) => item.includes("top-20") || item.includes("accuracy")));
+  assert(anchorCoverage(anchors, "Dense Passage Retrieval DPR Natural Questions top-20 accuracy") > anchorCoverage(anchors, "RAG Wikipedia generation model"));
 });
 
 check("invalid citation ids are rejected", () => {

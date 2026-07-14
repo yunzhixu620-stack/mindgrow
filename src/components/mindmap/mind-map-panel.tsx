@@ -22,6 +22,7 @@ import "reactflow/dist/style.css";
 import { useMindGrowStore } from "@/store/mindgrow-store";
 import { KnowledgeNode, KnowledgeEdge } from "@/types";
 import { apiFetch } from "@/lib/client-api";
+import { MODE_LIBRARY_CONFIG } from "@/lib/mode-libraries";
 
 // ============================================================
 // Branch color palette
@@ -512,6 +513,7 @@ export function MindMapPanel() {
     toggleCollapse, setCollapsedNodes,
     pushHistory, undo, redo,
     showHelp, setShowHelp,
+    currentMode,
   } = useMindGrowStore();
 
   const [direction, setDirection] = useState<"vertical" | "horizontal">("vertical");
@@ -901,21 +903,21 @@ export function MindMapPanel() {
   // Empty state
   if (storeNodes.length === 0) {
     return (
-      <div className="flex-1 flex items-center justify-center bg-[var(--background)]">
+      <div className="flex-1 min-w-0 flex items-center justify-center bg-[var(--background)]" data-testid="knowledge-graph-workspace" data-graph-mode={currentMode}>
         <div className="text-center space-y-6 max-w-[360px] px-4">
           <div className="text-6xl animate-pulse">🌱</div>
           <div>
-            <h2 className="text-lg font-semibold text-[var(--foreground)] mb-1">知识树还是一片空地</h2>
-            <p className="text-sm text-[var(--muted-foreground)]">在左侧输入知识碎片，我来帮你整理</p>
+            <h2 className="text-lg font-semibold text-[var(--foreground)] mb-1">{MODE_LIBRARY_CONFIG[currentMode].shortLabel}图谱还是一片空地</h2>
+            <p className="text-sm text-[var(--muted-foreground)]">{currentMode === "knowledge" ? "在中间输入知识碎片，我来帮你整理" : currentMode === "article" ? "解析文章后，这里会立即生成论文知识图谱" : "生成会议纪要后，这里会立即生成会议知识图谱"}</p>
           </div>
-          <div className="space-y-2">
+          {currentMode === "knowledge" && <div className="space-y-2">
             <p className="text-[10px] text-[var(--muted-foreground)] uppercase tracking-wider font-medium">或者试试这些话题</p>
             <div className="flex flex-wrap gap-2 justify-center">
               {SUGGESTED_TOPICS.map((t) => (
                 <button key={t} onClick={() => { const el = document.querySelector('textarea'); if (el) { (el as any).value = t; el.dispatchEvent(new Event('input', { bubbles: true })); el.focus(); } }} className="text-xs text-[var(--muted-foreground)] bg-[var(--bg-hover)] hover:text-[var(--primary)] hover:bg-[var(--primary-subtle)] border border-[var(--border)] px-3 py-1.5 rounded-full transition-all cursor-pointer">{t}</button>
               ))}
             </div>
-          </div>
+          </div>}
         </div>
       </div>
     );
@@ -925,7 +927,7 @@ export function MindMapPanel() {
   const focusedNode = focusedNodeId ? storeNodes.find((node) => node.id === focusedNodeId) : null;
 
   return (
-    <div className="flex-1 bg-[var(--background)] relative">
+    <div className="flex-1 min-w-0 bg-[var(--background)] relative" data-testid="knowledge-graph-workspace" data-graph-mode={currentMode}>
       {/* Top toolbar */}
       <div className={`absolute z-50 flex gap-1.5 ${isMobile ? 'right-3 flex-col items-end' : 'left-3 right-3 flex-wrap'}`} style={{ top: isMobile ? "max(calc(env(safe-area-inset-top) + 12px), 32px)" : "12px" }}>
         {/* Mobile: toggle toolbar */}
@@ -942,6 +944,7 @@ export function MindMapPanel() {
 
         {(!isMobile || showToolbar) && (
           <>
+            <div className="rounded-xl border border-[var(--primary-border)] bg-[var(--primary-subtle)] px-3 py-2 text-xs font-semibold text-[var(--primary-hover)]">{MODE_LIBRARY_CONFIG[currentMode].emoji} {MODE_LIBRARY_CONFIG[currentMode].shortLabel}知识图谱</div>
             <div className="flex gap-0 bg-[var(--card)] border border-[var(--border)] rounded-xl p-1">
               <button
                 onClick={showOutline}

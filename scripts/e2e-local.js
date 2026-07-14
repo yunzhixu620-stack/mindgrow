@@ -20,6 +20,7 @@ fs.writeFileSync(pdfPath, Buffer.from(pdf.output("arraybuffer")));
 
 const results = [];
 let meetingLibraryId = "";
+let articleLibraryId = "";
 const check = async (name, task) => {
   try {
     await task();
@@ -225,7 +226,8 @@ const clickByText = async (page, selector, text) => {
     await clickByText(page, "button", "会议助手");
     await page.waitForSelector('[data-testid="meeting-workspace"]');
     await page.waitForSelector('textarea[placeholder*="会议记录"]');
-    if (await page.$(".react-flow")) throw new Error("Knowledge-fragment mind map leaked into the meeting board");
+    const meetingGraph = await page.$('[data-testid="knowledge-graph-workspace"][data-graph-mode="meeting"]');
+    if (!meetingGraph) throw new Error("Meeting knowledge graph workspace is missing");
     meetingLibraryId = await page.$eval("[data-mode-library-id]", (element) => element.getAttribute("data-mode-library-id"));
     const meetingLibrary = await page.evaluate((mapId) => {
       const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
@@ -235,6 +237,7 @@ const clickByText = async (page, selector, text) => {
     await page.type('textarea[placeholder*="会议记录"]', "今天讨论知识助手发布计划。决定本周完成登录测试。小王负责回归验证，周五前完成。风险是文章解析接口可能超时。");
     await clickByText(page, "button", "生成结构化会议纪要");
     await page.waitForFunction(() => document.body.innerText.includes("会议摘要"));
+    await page.waitForFunction(() => document.querySelectorAll(".react-flow__node").length >= 3);
     await clickByText(page, "button", "保存到会议知识库");
     await page.waitForFunction(() => document.body.innerText.includes("会议知识节点"));
     const savedMeetingNodes = await page.evaluate((mapId) => JSON.parse(localStorage.getItem("mindgrow.local.v2")).nodes[mapId]?.length || 0, meetingLibraryId);
@@ -246,8 +249,9 @@ const clickByText = async (page, selector, text) => {
   await check("article parser extracts and saves a knowledge map", async () => {
     await clickByText(page, "button", "文章解析");
     await page.waitForSelector('[data-testid="article-workspace"]');
-    if (await page.$(".react-flow")) throw new Error("Knowledge-fragment mind map leaked into the article board");
-    const articleLibraryId = await page.$eval("[data-mode-library-id]", (element) => element.getAttribute("data-mode-library-id"));
+    const articleGraph = await page.$('[data-testid="knowledge-graph-workspace"][data-graph-mode="article"]');
+    if (!articleGraph) throw new Error("Article knowledge graph workspace is missing");
+    articleLibraryId = await page.$eval("[data-mode-library-id]", (element) => element.getAttribute("data-mode-library-id"));
     if (!articleLibraryId || articleLibraryId === meetingLibraryId) throw new Error("Article and meeting boards share the same knowledge library");
     const articleLibrary = await page.evaluate((mapId) => {
       const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
@@ -261,13 +265,38 @@ const clickByText = async (page, selector, text) => {
     await clickByText(page, "button", "解析文章");
     await page.waitForFunction(() => document.body.innerText.includes("核心要点"));
     await page.waitForFunction(() => document.body.innerText.includes("[1]"));
-    await page.waitForFunction(() => document.body.innerText.includes("Repo Wiki 论文链路"));
+    await page.waitForFunction(() => document.body.innerText.includes("GraphRAG 论文结构预览"));
+    await page.waitForFunction(() => document.querySelectorAll(".react-flow__node").length >= 3);
     if (!await page.$('input[aria-label="搜索论文链路"]')) throw new Error("Paper link navigator search is missing");
     if (!await page.$('textarea[aria-label="向文章知识库提问"]')) throw new Error("Article-library Q&A input is missing");
     await clickByText(page, "button", "生成 Audio Overview");
     await page.waitForFunction(() => document.body.innerText.includes("Audio Overview ·"));
     await clickByText(page, "button", "保存到文章知识库");
     await page.waitForFunction(() => document.body.innerText.includes("文章知识节点"));
+  });
+
+  await check("article project cards keep the latest navigation target", async () => {
+    await page.click('button[title="新建知识库"]');
+    await page.waitForSelector('input[placeholder="知识库名称..."]');
+    await page.type('input[placeholder="知识库名称..."]', "论文图谱测试库");
+    await clickByText(page, "button", "创建");
+    await page.waitForFunction(() => document.body.innerText.includes("论文图谱测试库"));
+    const targetMapId = await page.evaluate(() => {
+      const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+      return state.maps.find((map) => map.name === "论文图谱测试库")?.id || "";
+    });
+    if (!targetMapId) throw new Error("New article project was not created");
+    const cards = await page.$$("button");
+    const oldCard = await Promise.all(cards.map(async (button) => ({ button, text: await button.evaluate((element) => element.textContent.trim()) })))
+      .then((items) => items.find((item) => item.text.includes("文章知识库") && !item.text.includes("独立文章知识库"))?.button);
+    const newCard = await Promise.all(cards.map(async (button) => ({ button, text: await button.evaluate((element) => element.textContent.trim()) })))
+      .then((items) => items.find((item) => item.text.includes("论文图谱测试库"))?.button);
+    if (!oldCard || !newCard) throw new Error("Article project cards are missing");
+    await oldCard.click();
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    await newCard.click();
+    await page.waitForFunction((expected) => document.querySelector("[data-mode-library-id]")?.getAttribute("data-mode-library-id") === expected, {}, targetMapId);
+    if (!await page.$('[data-testid="knowledge-graph-workspace"][data-graph-mode="article"]')) throw new Error("Article graph disappeared after project navigation");
   });
 
   await check("real research PDF preserves pages and reports visual structures", async () => {
@@ -296,11 +325,13 @@ const clickByText = async (page, selector, text) => {
     if (!hasTextarea) throw new Error("Mobile chat input missing");
     await clickByText(page, "button", "会议");
     await page.waitForFunction(() => document.body.innerText.includes("独立会议知识库"));
-    const meetingHasMapTab = await page.$$eval("button", (buttons) => buttons.some((button) => button.textContent.includes("导图")));
-    if (meetingHasMapTab || await page.$(".react-flow")) throw new Error("Mobile meeting board still exposes the knowledge map");
+    const meetingHasMapTab = await page.$$eval("button", (buttons) => buttons.some((button) => button.textContent.includes("图谱")));
+    if (!meetingHasMapTab || await page.$(".react-flow")) throw new Error("Mobile meeting graph tab behavior is incorrect");
+    await clickByText(page, "button", "图谱");
+    await page.waitForSelector('[data-testid="knowledge-graph-workspace"][data-graph-mode="meeting"]');
     await clickByText(page, "button", "知识");
     await page.waitForSelector('textarea[aria-label="输入知识或向知识库提问"]');
-    await clickByText(page, "button", "导图");
+    await clickByText(page, "button", "图谱");
     await page.waitForSelector(".react-flow");
     await page.waitForSelector(".mindgrow-minimap");
     await page.waitForFunction(() => document.body.innerText.includes("当前显示") && document.body.innerText.includes("点击节点上的 ＋N 展开"));

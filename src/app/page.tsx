@@ -56,6 +56,7 @@ export default function Home() {
   const activeModeRef = useRef<AppMode>("knowledge");
   const lastMapByModeRef = useRef<Partial<Record<AppMode, string>>>({ knowledge: "map_default" });
   const provisioningModeRef = useRef<AppMode | null>(null);
+  const mapLoadRequestRef = useRef(0);
 
   // Detect mobile
   useEffect(() => {
@@ -145,6 +146,7 @@ export default function Home() {
 
   const handleSwitchMap = useCallback(async (mapId: string) => {
     if (mapId === currentMapId) { setDrawerOpen(false); return; }
+    const requestId = ++mapLoadRequestRef.current;
     saveChatHistory();
     setCurrentMapId(mapId);
     setDrawerOpen(false);
@@ -152,6 +154,7 @@ export default function Home() {
       const res = await apiFetch(`/api/knowledge?mapId=${mapId}`);
       if (res.ok) {
         const { nodes, edges } = await res.json();
+        if (requestId !== mapLoadRequestRef.current) return;
         setNodes(nodes || []);
         setEdges(edges || []);
       }
@@ -305,9 +308,11 @@ export default function Home() {
   // Load data when map changes (desktop only, mobile handles in handleSwitchMap)
   useEffect(() => {
     if (isMobile) return;
+    const requestId = ++mapLoadRequestRef.current;
     apiFetch(`/api/knowledge?mapId=${currentMapId}`)
       .then((r) => r.json())
       .then((data) => {
+        if (requestId !== mapLoadRequestRef.current) return;
         setNodes(data.nodes || []);
         setEdges(data.edges || []);
       })
@@ -376,14 +381,14 @@ export default function Home() {
             {MODE_LIBRARY_CONFIG[mode].emoji} {MODE_LIBRARY_CONFIG[mode].shortLabel}
           </button>
           ))}
-          {currentMode === "knowledge" && <button
+          <button
               onClick={() => setMobileTab("map")}
               className={`flex-1 py-3 text-xs font-medium transition-all cursor-pointer ${
                 mobileTab === "map" ? "text-[var(--primary)] border-b-2 border-[var(--primary)]" : "text-[var(--muted-foreground)]"
               }`}
             >
-              🌿 导图
-            </button>}
+              🌐 图谱
+            </button>
         </div>
 
         {/* Drawer backdrop + panel */}
@@ -762,18 +767,13 @@ export default function Home() {
     );
   }
 
-  // Meeting and article are independent product boards. They intentionally do
-  // not render the knowledge-fragment chat or its live mind-map canvas.
-  if (currentMode !== "knowledge") {
-    return <main className="flex h-full w-full overflow-hidden" data-testid={`${currentMode}-workspace`}>{activeModePanel}</main>;
-  }
-
-  // Desktop knowledge workspace
+  // All product boards share the same library → content → graph workspace.
+  // Meeting and article keep isolated libraries but reuse the map interaction.
   return (
-    <main className="flex h-full w-full overflow-hidden">
-      <div className="flex h-full">
-        <Sidebar />
-        <ChatPanel />
+    <main className="flex h-full w-full overflow-hidden" data-testid={`${currentMode}-workspace`}>
+      <Sidebar />
+      <div className={currentMode === "knowledge" ? "flex h-full shrink-0" : "h-full w-[clamp(360px,36vw,520px)] shrink-0 border-r border-[var(--border)]"}>
+        {currentMode === "knowledge" ? <ChatPanel /> : activeModePanel}
       </div>
       <MindMapPanel />
     </main>
