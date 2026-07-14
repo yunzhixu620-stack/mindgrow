@@ -16,6 +16,7 @@ const {
   canonicalDocumentHash,
   queryAnchors,
   anchorCoverage,
+  retrieveEvidence,
 } = require("../fc-proxy/index.js");
 
 const root = path.join(__dirname, "..", "tests", "fixtures", "papers");
@@ -82,6 +83,17 @@ check("GraphRAG anchors preserve discriminative paper and metric terms", () => {
   assert(anchors.includes("dpr"));
   assert(anchors.some((item) => item.includes("top-20") || item.includes("accuracy")));
   assert(anchorCoverage(anchors, "Dense Passage Retrieval DPR Natural Questions top-20 accuracy") > anchorCoverage(anchors, "RAG Wikipedia generation model"));
+});
+
+check("GraphRAG acronym fallback finds the correct entity node", () => {
+  const nodes = [
+    { id: "rag", content: "Retrieval-Augmented Generation", desc: "Uses DPR as a retriever" },
+    { id: "dpr", content: "Dense Passage Retriever (DPR)", desc: "Dual BERT query and passage encoders" },
+    { id: "layout", content: "LayoutLMv3", desc: "Document AI" },
+  ];
+  const matches = retrieveEvidence("DPR 的双编码器由哪些部分组成", nodes);
+  assert(matches.length > 0);
+  assert.strictEqual(matches[0].node.id, "dpr");
 });
 
 check("invalid citation ids are rejected", () => {

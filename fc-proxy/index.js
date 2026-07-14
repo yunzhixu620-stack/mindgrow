@@ -449,9 +449,14 @@ function retrieveEvidence(question, nodes) {
   const queryTerms = tokenize(question);
   return nodes
     .map((node) => {
-      const haystack = `${node.content || ''} ${node.desc || ''}`.toLowerCase();
-      const matches = queryTerms.filter((term) => haystack.includes(term));
-      return { node, score: matches.length / Math.max(queryTerms.length, 1) };
+      const title = String(node.content || '').toLowerCase();
+      const description = String(node.desc || '').toLowerCase();
+      const titleMatches = queryTerms.filter((term) => title.includes(term));
+      const descriptionMatches = queryTerms.filter((term) => description.includes(term) && !title.includes(term));
+      // Entity/title matches are stronger graph-entry evidence than a passing
+      // mention in another paper's description.
+      const score = (titleMatches.length * 2 + descriptionMatches.length) / Math.max(queryTerms.length * 2, 1);
+      return { node, score };
     })
     .filter((result) => result.score > 0)
     .sort((a, b) => b.score - a.score)
@@ -480,6 +485,14 @@ async function retrieveNodeEvidence(question, mapId, workspaceId) {
   } catch (error) {
     // V6 deployments can still answer while the V7 search migration is being applied.
     console.warn('Indexed retrieval unavailable; using bounded fallback', { code: error.publicCode || 'SEARCH_UNAVAILABLE' });
+    const nodes = await supabaseRequest('GET', `nodes?workspace_id=eq.${workspace}&map_id=eq.${map}&status=eq.active&select=id,content,desc,type&order=updated_at.desc&limit=500`);
+    seeds = retrieveEvidence(question, Array.isArray(nodes) ? nodes : []).map(({ node, score }) => ({ ...node, score }));
+  }
+  // PostgreSQL language dictionaries can legitimately return an empty set for
+  // acronyms such as DPR/WPA or mixed Chinese-English queries. Empty is not a
+  // reliable "no graph entity" signal, so run the same bounded anchor fallback
+  // that is used when the RPC is unavailable.
+  if (seeds.length === 0) {
     const nodes = await supabaseRequest('GET', `nodes?workspace_id=eq.${workspace}&map_id=eq.${map}&status=eq.active&select=id,content,desc,type&order=updated_at.desc&limit=500`);
     seeds = retrieveEvidence(question, Array.isArray(nodes) ? nodes : []).map(({ node, score }) => ({ ...node, score }));
   }
@@ -2142,4 +2155,5 @@ module.exports = {
   canonicalDocumentHash,
   queryAnchors,
   anchorCoverage,
+  retrieveEvidence,
 };
