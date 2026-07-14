@@ -382,8 +382,24 @@ function classifyInput(input) {
   const value = input.trim();
   if (/^(\/|删除|清空|重命名|delete|clear|rename)\b/i.test(value)) return 'command';
   if (/^(你好|您好|嗨|hello|hi|hey)[!！,.，。\s]*$/i.test(value)) return 'chitchat';
-  if (/[?？]$/.test(value) || /^(什么|为什么|如何|怎么|哪些|哪个|是否|能否|请问|who|what|when|where|why|how|is|are|can|does)\b/i.test(value)) return 'question';
+  if (/[?？]/.test(value)
+    || /^(什么|为什么|如何|怎么|哪些|哪个|哪种|是否|能否|请问|请给出|解释|比较)/i.test(value)
+    || /^(who|what|when|where|why|how|which|is|are|can|does)\b/i.test(value)) return 'question';
   return 'knowledge';
+}
+
+function needsConversationalContext(input) {
+  const value = String(input || '').trim();
+  return /(^|[，。！？?\s])(它|其|这个|那个|该方法|该模型|该论文|这篇|那篇|前者|后者|上述|这种|这个方法|这个模型)/i.test(value);
+}
+
+function isTableQuestion(input) {
+  const value = String(input || '');
+  return /(表格|表中|table|分数|数值|指标|score|accuracy|bleu|rouge|f1|mAP|ANLS|exact match|\bEM\b)/i.test(value);
+}
+
+function hasReliableTableLayout(evidence) {
+  return (Array.isArray(evidence) ? evidence : []).some((item) => item && item.sourceKind === 'document_chunk' && /\t/.test(String(item.content || '')));
 }
 
 function tokenize(value) {
@@ -559,8 +575,10 @@ function deterministicEvidenceAnswer(evidence, intent) {
 
 async function answerQuestion(input, mapId, intent, workspaceId, history) {
   const contextMessages = (Array.isArray(history) ? history : []).slice(-8);
-  const recentUserContext = contextMessages.filter((item) => item.role === 'user').slice(-2).map((item) => item.content).join(' ');
-  const retrievalQuery = recentUserContext ? `${recentUserContext}\n当前问题：${input}` : input;
+  const lastUserContext = contextMessages.filter((item) => item.role === 'user').slice(-1).map((item) => item.content)[0] || '';
+  const retrievalQuery = lastUserContext && needsConversationalContext(input)
+    ? `${lastUserContext}\n追问：${input}`
+    : input;
   const evidence = await retrieveGraphEvidence(retrievalQuery, mapId, workspaceId);
   if (evidence.length === 0) {
     return {
@@ -572,6 +590,24 @@ async function answerQuestion(input, mapId, intent, workspaceId, history) {
         sources: [],
         grounded: true,
         abstained: true,
+      },
+    };
+  }
+  if (isTableQuestion(input) && !hasReliableTableLayout(evidence)) {
+    return {
+      status: 200,
+      data: {
+        intent,
+        type: 'answer',
+        reply: '已定位到相关表格页，但当前材料的文本层没有保留足够的列边界，无法可靠区分相邻任务中的同名指标。为避免把其他列的数字当成答案，我暂不返回数值；请上传原始 PDF 重新解析后再提问。',
+        sources: evidence.filter((node) => node.sourceKind === 'document_chunk').slice(0, 3).map((node, index) => {
+          const citation = Array.isArray(node.citations) ? node.citations[0] : null;
+          return { id: node.id, title: citation && citation.title ? citation.title : node.content, index: index + 1, quote: citation ? citation.quote : '', locator: citation ? citation.locator : '', sourceUrl: citation ? citation.sourceUrl : '' };
+        }),
+        grounded: true,
+        abstained: true,
+        coverage: 'partial',
+        missingInformation: ['原始 PDF 表格列坐标或可靠的制表位'],
       },
     };
   }
@@ -591,17 +627,31 @@ async function answerQuestion(input, mapId, intent, workspaceId, history) {
     const raw = await dashscopeChat([
       {
         role: 'system',
-        content: '你是严格基于证据回答的知识助手。只返回 JSON：{"answer":"回答当前问题的结论","usedSourceIds":["证据ID"],"coverage":"complete|partial","missingInformation":["缺失信息"]}。可用最近对话理解“它/前者/后者/这个方法”等指代，但事实只能来自证据；不得使用证据之外的信息；证据不足时必须说明缺失，不得猜测。',
+        content: '你是严格基于证据回答的知识助手。只返回 JSON：{"answer":"回答当前问题的结论","usedSourceIds":["证据ID"],"coverage":"complete|partial","missingInformation":["缺失信息"]}。可用最近对话理解“它/前者/后者/这个方法”等指代，但事实只能来自证据；不得使用证据之外的信息；证据不足时必须说明缺失，不得猜测。处理表格数值时必须按表头从左到右先确定任务、再确定指标、最后定位模型行；相邻任务出现同名指标时不得串列。若无法从同一证据块确认表头与数据行，就明确说明表格结构不足，不得选取看似接近的数字。',
       },
       {
         role: 'user',
         content: `最近对话：${JSON.stringify(contextMessages)}\n当前问题：${input}\n证据：${JSON.stringify(evidence.map((node) => ({ id: node.id, content: node.content, description: node.desc || '', citations: node.citations || [] })))}`,
       },
-    ], 'qwen-plus', 900, 0.1);
+    ], isTableQuestion(input) ? 'qwen-max' : 'qwen-plus', 900, 0.1);
     const parsed = JSON.parse(stripJsonFence(raw));
     if (!parsed || typeof parsed.answer !== 'string' || !Array.isArray(parsed.usedSourceIds)) throw new Error('Invalid answer schema');
     const usedIds = [...new Set(parsed.usedSourceIds.map(String))].filter((id) => allowedIds.has(id));
-    if (usedIds.length === 0) throw new Error('Answer has no valid citations');
+    if (usedIds.length === 0) {
+      return {
+        status: 200,
+        data: {
+          intent,
+          type: 'answer',
+          reply: parsed.answer || '当前知识库中没有足够证据回答这个问题。',
+          sources: [],
+          grounded: true,
+          abstained: true,
+          coverage: 'partial',
+          missingInformation: Array.isArray(parsed.missingInformation) ? parsed.missingInformation.map(String).slice(0, 8) : ['缺少直接支持该结论的来源'],
+        },
+      };
+    }
     const used = usedIds.map((id) => evidence.find((node) => node.id === id)).filter(Boolean);
     return {
       status: 200,
@@ -635,7 +685,7 @@ async function handleChat(body, context) {
   if (!input) return { status: 400, data: { error: 'Input is required', code: 'INVALID_INPUT' } };
   if (input.length > 10000) return { status: 413, data: { error: 'Input is too long', code: 'INPUT_TOO_LARGE' } };
 
-  const intent = { type: classifyInput(input), confidence: 0.9 };
+  const intent = { type: body && body.intent === 'question' ? 'question' : classifyInput(input), confidence: 0.9 };
   if (intent.type === 'chitchat') {
     return { status: 200, data: { intent, type: 'chitchat', reply: '你好，我可以帮你整理知识、检索已保存内容，并给出可追溯证据。' } };
   }
@@ -851,6 +901,23 @@ function normalizeSpaces(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
+function normalizeDocumentLayout(value) {
+  return String(value || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[ \f\v]+/g, ' ')
+    .replace(/ *\t+ */g, '\t')
+    .replace(/ *\n */g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function canonicalDocumentHash(chunks) {
+  const stable = (Array.isArray(chunks) ? chunks : [])
+    .map((item, index) => `${Number.isFinite(Number(item && item.index)) ? Number(item.index) : index + 1}:${normalizeSpaces((item && (item.content || item.quote)) || '')}`)
+    .join('\n');
+  return crypto.createHash('sha256').update(stable).digest('hex');
+}
+
 function sourcePages(content) {
   const text = String(content || '').replace(/\r\n?/g, '\n');
   const marker = /^[ \t]*\[(?:第\s*(\d+)\s*页|PAGE\s*(\d+))\][ \t]*$/gim;
@@ -902,8 +969,8 @@ function buildDocumentChunks(content, sourceType, fileName) {
   });
   return chunks.slice(0, 120).map((chunk, index) => ({
     index: index + 1,
-    quote: normalizeSpaces(chunk.content).slice(0, 1400),
-    content: normalizeSpaces(chunk.content).slice(0, 4000),
+    quote: normalizeDocumentLayout(chunk.content).slice(0, 1400),
+    content: normalizeDocumentLayout(chunk.content).slice(0, 4000),
     locator: chunk.page ? `第 ${chunk.page} 页` : `第 ${chunk.paragraph} 段`,
     pageNumber: chunk.page,
     chunkIndex: index,
@@ -1374,7 +1441,7 @@ async function createDocumentChunkRows(workspaceId, mapId, documentId, chunks) {
       'POST',
       'document_chunks?on_conflict=document_id,chunk_index',
       normalized.slice(index, index + 20),
-      'resolution=ignore-duplicates,return=minimal',
+      'resolution=merge-duplicates,return=minimal',
     );
   }
   return { count: normalized.length, embedded, status: embedded === normalized.length ? 'ready' : (embedded ? 'partial' : 'keyword_only') };
@@ -1466,10 +1533,9 @@ async function createGraph(workspaceId, mapId, mindMap, source, document, source
   let chunkIndex = { count: 0, embedded: 0, status: 'not_requested' };
   if (document && Array.isArray(sourceCitations) && sourceCitations.length > 0) {
     const allowedTypes = new Set(['url', 'pdf', 'text', 'meeting']);
-    const contentHash = crypto.createHash('sha256').update(
-      (Array.isArray(documentChunks) && documentChunks.length ? documentChunks : sourceCitations)
-        .map((item) => `${item.index}:${item.content || item.quote || ''}`).join('\n'),
-    ).digest('hex');
+    const contentHash = canonicalDocumentHash(
+      Array.isArray(documentChunks) && documentChunks.length ? documentChunks : sourceCitations,
+    );
     const existingDocuments = await supabaseRequest('GET', `source_documents?workspace_id=eq.${workspace}&map_id=eq.${map}&content_hash=eq.${contentHash}&select=id&limit=1`);
     const existingDocument = Array.isArray(existingDocuments) ? existingDocuments[0] : null;
     const documentId = existingDocument && existingDocument.id ? existingDocument.id : `doc_${seed}`;
@@ -1926,5 +1992,11 @@ module.exports = {
   citationAudit,
   normalizedMindMap,
   normalizeCitationIndexes,
+  normalizeDocumentLayout,
   sourcePages,
+  classifyInput,
+  needsConversationalContext,
+  isTableQuestion,
+  hasReliableTableLayout,
+  canonicalDocumentHash,
 };

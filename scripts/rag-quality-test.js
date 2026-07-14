@@ -8,6 +8,12 @@ const {
   citationAudit,
   normalizeCitationIndexes,
   sourcePages,
+  classifyInput,
+  needsConversationalContext,
+  normalizeDocumentLayout,
+  isTableQuestion,
+  hasReliableTableLayout,
+  canonicalDocumentHash,
 } = require("../fc-proxy/index.js");
 
 const root = path.join(__dirname, "..", "tests", "fixtures", "papers");
@@ -40,10 +46,17 @@ check("long papers use bounded non-empty chunks", () => {
   });
 });
 
+check("table rows keep line and column boundaries inside evidence chunks", () => {
+  const table = normalizeDocumentLayout("Task\tMetric A\tMetric B\nModel\t21.4\t44.2");
+  assert(table.includes("\t") && table.includes("\n"));
+  const [chunk] = buildDocumentChunks("[PAGE 1]\nTask\tMetric A\tMetric B\nModel\t21.4\t44.2", "pdf", "table.pdf");
+  assert(chunk.quote.includes("\t") && chunk.quote.includes("\n"));
+});
+
 check("every stored citation is a verbatim source span", () => {
   all.forEach((paper) => {
     const normalized = paper.content.replace(/\s+/g, " ").trim();
-    assert(paper.chunks.every((chunk) => normalized.includes(chunk.quote)), paper.key);
+    assert(paper.chunks.every((chunk) => normalized.includes(chunk.quote.replace(/\s+/g, " ").trim())), paper.key);
   });
 });
 
@@ -80,6 +93,33 @@ check("meeting evidence keeps corrected dates and negative decisions traceable",
   const citations = buildMeetingCitations(transcript);
   assert(citations.some((item) => item.quote.includes("7月21日")));
   assert(citations.some((item) => item.quote.includes("没有批准")));
+});
+
+check("Chinese questions remain retrieval questions when punctuation follows the question mark", () => {
+  assert.strictEqual(classifyInput("哪种双编码器方法报告了提升？请给出论文名和数值。"), "question");
+  assert.strictEqual(classifyInput("请给出 DPR 相对 BM25 的 top-20 accuracy"), "question");
+});
+
+check("conversation context is used only for real follow-up references", () => {
+  assert.strictEqual(needsConversationalContext("它使用的图像编码结构是什么？"), true);
+  assert.strictEqual(needsConversationalContext("RAG-Sequence 在 MS-MARCO 的 Bleu-1 是多少？"), false);
+});
+
+check("numeric table questions route to table-aware answer verification", () => {
+  assert.strictEqual(isTableQuestion("RAG-Sequence 的 MS-MARCO Bleu-1 分数是多少？"), true);
+  assert.strictEqual(isTableQuestion("Word-Patch Alignment 起什么作用？"), false);
+});
+
+check("flattened tables abstain while column-preserving evidence remains answerable", () => {
+  assert.strictEqual(hasReliableTableLayout([{ sourceKind: "document_chunk", content: "Model 21.4 44.2" }]), false);
+  assert.strictEqual(hasReliableTableLayout([{ sourceKind: "document_chunk", content: "Model\t21.4\t44.2" }]), true);
+});
+
+check("document deduplication ignores layout-only whitespace changes", () => {
+  assert.strictEqual(
+    canonicalDocumentHash([{ index: 1, content: "Header  A B\nRow  1 2" }]),
+    canonicalDocumentHash([{ index: 1, content: "Header A B Row 1 2" }]),
+  );
 });
 
 const artifactDir = path.join(__dirname, "..", "artifacts");

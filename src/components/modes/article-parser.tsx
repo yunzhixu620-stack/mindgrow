@@ -182,6 +182,7 @@ export function ArticleParser() {
         body: JSON.stringify({
           input: question,
           mapId: currentMapId,
+          intent: "question",
           history: priorMessages.slice(-8).map((message) => ({ role: message.role, content: message.content })),
         }),
       });
