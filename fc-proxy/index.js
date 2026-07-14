@@ -642,11 +642,15 @@ async function retrieveGraphEvidence(question, mapId, workspaceId) {
   const bestSeedTitleScore = seedTitleScores.length ? Math.max(...seedTitleScores) : 0;
   const primaryGraphDocumentIds = new Set();
   if (bestSeedTitleScore > 0) {
-    graphNodes
-      .filter((node) => node.seed && Number(node.titleAnchorScore || 0) >= bestSeedTitleScore)
-      .forEach((node) => (node.citations || []).forEach((citation) => {
+    const strongestSeeds = graphNodes.filter((node) => node.seed && Number(node.titleAnchorScore || 0) >= bestSeedTitleScore);
+    // Prefer a root/topic entity over a same-named child mention in another
+    // paper. Example: the DPR paper root outranks a DPR concept inside RAG.
+    const primarySeeds = strongestSeeds.some((node) => node.type === 'topic')
+      ? strongestSeeds.filter((node) => node.type === 'topic')
+      : strongestSeeds;
+    primarySeeds.forEach((node) => (node.citations || []).forEach((citation) => {
         if (citation.documentId) primaryGraphDocumentIds.add(citation.documentId);
-      }));
+    }));
   }
   const graphLabelsByDocument = new Map();
   graphNodes.forEach((node) => (node.citations || []).forEach((citation) => {
