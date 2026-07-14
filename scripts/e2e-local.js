@@ -237,6 +237,8 @@ const clickByText = async (page, selector, text) => {
     await page.waitForFunction(() => document.body.innerText.includes("会议摘要"));
     await clickByText(page, "button", "保存到会议知识库");
     await page.waitForFunction(() => document.body.innerText.includes("会议知识节点"));
+    const savedMeetingNodes = await page.evaluate((mapId) => JSON.parse(localStorage.getItem("mindgrow.local.v2")).nodes[mapId]?.length || 0, meetingLibraryId);
+    if (savedMeetingNodes === 0) throw new Error("Meeting result was saved outside the meeting library");
     const microphone = await page.$('button[aria-label="开始语音输入"]');
     if (!microphone) throw new Error("Meeting microphone control missing");
   });
@@ -249,9 +251,10 @@ const clickByText = async (page, selector, text) => {
     if (!articleLibraryId || articleLibraryId === meetingLibraryId) throw new Error("Article and meeting boards share the same knowledge library");
     const articleLibrary = await page.evaluate((mapId) => {
       const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
-      return state.maps.find((map) => map.id === mapId);
+      return { map: state.maps.find((map) => map.id === mapId), nodes: state.nodes[mapId] || [] };
     }, articleLibraryId);
-    if (!articleLibrary?.description.includes("[MindGrow:article]")) throw new Error("Article board did not enter its own knowledge library");
+    if (!articleLibrary?.map?.description.includes("[MindGrow:article]")) throw new Error("Article board did not enter its own knowledge library");
+    if (articleLibrary.nodes.some((node) => node.content.includes("知识助手发布计划"))) throw new Error("Meeting content leaked into the article library");
     const fileInput = await page.waitForSelector('input[type="file"][accept*="pdf"]');
     await fileInput.uploadFile(pdfPath);
     await page.waitForFunction(() => document.body.innerText.includes("已读取 2 页"));

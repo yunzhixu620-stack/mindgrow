@@ -62,6 +62,60 @@ function fetchJSON(method, targetUrl, headers, body) {
   });
 }
 
+// Chat completions can take longer than a serverless gateway's idle window.
+// Consume the OpenAI-compatible SSE stream as it arrives so the connection
+// stays active, while still returning one validated JSON string to callers.
+function fetchChatStream(targetUrl, headers, body) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(targetUrl);
+    const postData = JSON.stringify({ ...(body || {}), stream: true });
+    const request = https.request({
+      hostname: parsed.hostname,
+      port: parsed.port || 443,
+      path: `${parsed.pathname}${parsed.search}`,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(headers || {}),
+        'Content-Length': Buffer.byteLength(postData),
+      },
+    }, (response) => {
+      let buffer = '';
+      let content = '';
+      response.setEncoding('utf8');
+      const consumeLine = (line) => {
+        const trimmed = String(line || '').trim();
+        if (!trimmed.startsWith('data:')) return;
+        const data = trimmed.slice(5).trim();
+        if (!data || data === '[DONE]') return;
+        try {
+          const event = JSON.parse(data);
+          const delta = event && event.choices && event.choices[0] && event.choices[0].delta;
+          if (delta && typeof delta.content === 'string') content += delta.content;
+        } catch (_) { /* wait for the next complete SSE line */ }
+      };
+      response.on('data', (chunk) => {
+        buffer += chunk;
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() || '';
+        lines.forEach(consumeLine);
+      });
+      response.on('end', () => {
+        if (buffer) consumeLine(buffer);
+        resolve({ status: response.statusCode || 502, content, headers: response.headers });
+      });
+    });
+    request.setTimeout(UPSTREAM_TIMEOUT_MS, () => {
+      const error = new Error('Upstream stream timed out');
+      error.code = 'UPSTREAM_TIMEOUT';
+      request.destroy(error);
+    });
+    request.on('error', reject);
+    request.write(postData);
+    request.end();
+  });
+}
+
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -245,27 +299,32 @@ async function handleWorkspaces(req, user) {
 
 async function dashscopeChat(messages, model, maxTokens, temperature) {
   if (!DASHSCOPE_KEY) throw dependencyError('model');
-  let response;
-  try {
-    response = await fetchJSONWithRetry('POST', 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', {
-      Authorization: `Bearer ${DASHSCOPE_KEY}`,
-    }, {
-      model: model || 'qwen-turbo',
-      messages,
-      max_tokens: maxTokens || 500,
-      temperature: temperature === undefined ? 0.3 : temperature,
-    }, 3);
-  } catch (error) {
-    console.error('DashScope request error', { code: error.code || 'UNKNOWN' });
-    throw dependencyError('model');
+  const target = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
+  const payload = {
+    model: model || 'qwen-turbo',
+    messages,
+    max_tokens: maxTokens || 500,
+    temperature: temperature === undefined ? 0.3 : temperature,
+    response_format: { type: 'json_object' },
+    enable_thinking: false,
+  };
+  let lastStatus = 0;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await fetchChatStream(target, { Authorization: `Bearer ${DASHSCOPE_KEY}` }, payload);
+      lastStatus = response.status;
+      if (response.status >= 200 && response.status < 300 && response.content) return response.content;
+      if (response.status !== 429 && response.status < 500) break;
+    } catch (error) {
+      console.error('DashScope stream error', { code: error.code || 'UNKNOWN' });
+      // An idle timeout has already consumed most of the function window; a
+      // second long attempt would only be killed by the gateway.
+      if (error.code === 'UPSTREAM_TIMEOUT') break;
+    }
+    if (attempt === 0) await wait(450 + Math.floor(Math.random() * 120));
   }
-  if (response.status < 200 || response.status >= 300 || !response.body || !Array.isArray(response.body.choices)) {
-    console.error('DashScope request failed', { status: response.status });
-    throw dependencyError('model', response.status);
-  }
-  return response.body.choices[0] && response.body.choices[0].message
-    ? response.body.choices[0].message.content
-    : '';
+  console.error('DashScope stream failed', { status: lastStatus || 'NETWORK' });
+  throw dependencyError('model', lastStatus || undefined);
 }
 
 async function dashscopeEmbeddings(texts) {
@@ -1247,8 +1306,25 @@ async function loadNodeCitations(workspaceId, mapId, nodeIds) {
 }
 
 async function assertOwnedMap(workspaceId, mapId) {
-  const rows = await supabaseRequest('GET', `maps?workspace_id=eq.${encodeURIComponent(workspaceId)}&id=eq.${encodeURIComponent(mapId)}&select=id&limit=1`);
+  const rows = await supabaseRequest('GET', `maps?workspace_id=eq.${encodeURIComponent(workspaceId)}&id=eq.${encodeURIComponent(mapId)}&select=id,description&limit=1`);
   if (!Array.isArray(rows) || !rows[0]) throw requestError(404, 'MAP_NOT_FOUND', 'Knowledge map not found');
+  return rows[0];
+}
+
+async function resolveMapForSource(workspaceId, requestedMapId, source) {
+  const requested = await assertOwnedMap(workspaceId, requestedMapId);
+  const marker = source === 'meeting' ? '[MindGrow:meeting]' : source === 'article' ? '[MindGrow:article]' : '';
+  if (!marker || String(requested.description || '').includes(marker)) return requestedMapId;
+
+  // A rapid board switch can leave a stale map id in a mounted client for one
+  // render. Never let that contaminate another product library: resolve the
+  // first board-owned map on the server and tell the client which map was used.
+  const candidates = await supabaseRequest(
+    'GET',
+    `maps?workspace_id=eq.${encodeURIComponent(workspaceId)}&description=like.*${encodeURIComponent(marker)}*&select=id&order=created_at.asc&limit=1`,
+  );
+  if (Array.isArray(candidates) && candidates[0] && candidates[0].id) return String(candidates[0].id);
+  throw requestError(409, 'MODE_LIBRARY_MISMATCH', 'The selected product library is not ready; reopen this board and retry');
 }
 
 async function assertOwnedCategory(workspaceId, categoryId) {
@@ -1688,7 +1764,8 @@ async function handleKnowledge(req, context) {
   }
 
   if (body.mindMap && body.mindMap.root) {
-    const mapId = String(body.mapId || context.defaultMapId);
+    const requestedMapId = String(body.mapId || context.defaultMapId);
+    const mapId = await resolveMapForSource(workspaceId, requestedMapId, String(body.source || ''));
     const graph = await createGraph(
       workspaceId,
       mapId,
@@ -1714,6 +1791,7 @@ async function handleKnowledge(req, context) {
         indexedChunks: graph.chunkIndex ? graph.chunkIndex.count : 0,
         embeddedChunks: graph.chunkIndex ? graph.chunkIndex.embedded : 0,
         indexStatus: graph.chunkIndex ? graph.chunkIndex.status : 'not_requested',
+        mapId,
       },
     };
   }

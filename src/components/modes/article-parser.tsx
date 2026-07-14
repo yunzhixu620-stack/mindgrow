@@ -61,6 +61,7 @@ interface ArticleQaMessage {
 export function ArticleParser() {
   const currentMapId = useMindGrowStore((state) => state.currentMapId);
   const currentMap = useMindGrowStore((state) => state.maps.find((map) => map.id === state.currentMapId));
+  const setCurrentMapId = useMindGrowStore((state) => state.setCurrentMapId);
   const nodeCount = useMindGrowStore((state) => state.nodes.length);
   const setNodes = useMindGrowStore((state) => state.setNodes);
   const setEdges = useMindGrowStore((state) => state.setEdges);
@@ -156,7 +157,9 @@ export function ArticleParser() {
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "保存失败");
-      const reload = await apiFetch(`/api/knowledge?mapId=${encodeURIComponent(currentMapId)}`);
+      const savedMapId = String(data.mapId || currentMapId);
+      if (savedMapId !== currentMapId) setCurrentMapId(savedMapId);
+      const reload = await apiFetch(`/api/knowledge?mapId=${encodeURIComponent(savedMapId)}`);
       const graph = await reload.json();
       if (reload.ok) { setNodes(graph.nodes || []); setEdges(graph.edges || []); }
       setNotice(`已保存 ${data.totalNodes || 0} 个文章知识节点、${data.totalCitations || 0} 条节点引用和 ${data.indexedChunks || 0} 个检索分块${data.indexStatus === "ready" ? "（向量索引就绪）" : data.indexStatus ? `（${data.indexStatus}）` : ""}`);
