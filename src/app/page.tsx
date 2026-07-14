@@ -8,8 +8,16 @@ import { useMindGrowStore } from "@/store/mindgrow-store";
 import type { MindMap } from "@/types";
 import { apiFetch } from "@/lib/client-api";
 import { TemplateBrowser } from "@/components/template/template-browser";
+import { useAuth } from "@/components/auth/auth-provider";
+import { WorkspaceMenu } from "@/components/auth/workspace-menu";
+import { MeetingAssistant } from "@/components/modes/meeting-assistant";
+import { ArticleParser } from "@/components/modes/article-parser";
+import { IS_LOCAL_MODE } from "@/lib/client-api";
 
 export default function Home() {
+  const { currentWorkspace } = useAuth();
+  const currentWorkspaceId = currentWorkspace?.id;
+  const currentWorkspaceDefaultMapId = currentWorkspace?.defaultMapId;
   const {
     currentMapId,
     setCurrentMapId,
@@ -21,6 +29,8 @@ export default function Home() {
     maps,
     categories,
     setCategories,
+    currentMode,
+    setCurrentMode,
   } = useMindGrowStore();
   const [mobileTab, setMobileTab] = useState<"chat" | "map">("chat");
   const [isMobile, setIsMobile] = useState(false);
@@ -85,6 +95,7 @@ export default function Home() {
 
   // Load maps & categories on mount
   useEffect(() => {
+    if (!IS_LOCAL_MODE && !currentWorkspaceId) return;
     Promise.all([
       apiFetch("/api/knowledge?action=maps").then((r) => r.json()),
       apiFetch("/api/knowledge?action=categories").then((r) => r.json()),
@@ -94,7 +105,16 @@ export default function Home() {
         setCategories(categories || []);
       })
       .catch(() => {});
-  }, [setMaps, setCategories]);
+  }, [setMaps, setCategories, currentWorkspaceId]);
+
+  useEffect(() => {
+    if (!currentWorkspaceDefaultMapId) return;
+    setMaps([]);
+    setCategories([]);
+    setNodes([]);
+    setEdges([]);
+    setCurrentMapId(currentWorkspaceDefaultMapId);
+  }, [currentWorkspaceId, currentWorkspaceDefaultMapId, setMaps, setCategories, setNodes, setEdges, setCurrentMapId]);
 
   const reloadAll = useCallback(async () => {
     try {
@@ -166,11 +186,11 @@ export default function Home() {
         body: JSON.stringify({ action: "deleteMap", mapId: map.id }),
       });
       await reloadAll();
-      if (map.id === currentMapId) handleSwitchMap("map_default");
+      if (map.id === currentMapId) handleSwitchMap(maps.find((item) => item.isDefault)?.id || currentWorkspaceDefaultMapId || "map_default");
     } catch (e) { console.error(e); }
     setActionSheet("none");
     setContextMenu(null);
-  }, [currentMapId, handleSwitchMap, reloadAll]);
+  }, [currentMapId, handleSwitchMap, reloadAll, maps, currentWorkspaceDefaultMapId]);
 
   const handleCreateCategory = useCallback(async () => {
     if (!newCategoryName.trim()) { setIsCreatingCategory(false); return; }
@@ -245,14 +265,17 @@ export default function Home() {
             </svg>
           </button>
 
+          {(["knowledge", "meeting", "article"] as const).map((mode) => (
           <button
-            onClick={() => setMobileTab("chat")}
+            key={mode}
+            onClick={() => { setCurrentMode(mode); setMobileTab("chat"); }}
             className={`flex-1 py-3 text-xs font-medium transition-all cursor-pointer ${
-              mobileTab === "chat" ? "text-[var(--primary)] border-b-2 border-[var(--primary)]" : "text-[var(--muted-foreground)]"
+              mobileTab === "chat" && currentMode === mode ? "text-[var(--primary)] border-b-2 border-[var(--primary)]" : "text-[var(--muted-foreground)]"
             }`}
           >
-            💬 对话
+            {mode === "knowledge" ? "💡 知识" : mode === "meeting" ? "🎯 会议" : "📄 文章"}
           </button>
+          ))}
           <button
             onClick={() => setMobileTab("map")}
             className={`flex-1 py-3 text-xs font-medium transition-all cursor-pointer ${
@@ -274,6 +297,7 @@ export default function Home() {
               {/* Drawer header */}
               <div className="px-4 py-3 border-b border-[var(--border)] flex items-center justify-between shrink-0">
                 <span className="text-xs font-semibold text-[var(--muted-foreground)] uppercase tracking-wider">知识库</span>
+                <WorkspaceMenu compact />
                 <div className="flex gap-1">
                   {/* Prominent create buttons */}
                   <button
@@ -593,7 +617,7 @@ export default function Home() {
         {/* Content */}
         <div className="flex-1 overflow-hidden flex flex-col">
           {mobileTab === "chat" ? (
-            <ChatPanel />
+            currentMode === "meeting" ? <MeetingAssistant /> : currentMode === "article" ? <ArticleParser /> : <ChatPanel />
           ) : (
             <MindMapPanel />
           )}
@@ -643,7 +667,7 @@ export default function Home() {
     <main className="flex h-full w-full overflow-hidden">
       <div className="flex h-full">
         <Sidebar />
-        <ChatPanel />
+        {currentMode === "meeting" ? <MeetingAssistant /> : currentMode === "article" ? <ArticleParser /> : <ChatPanel />}
       </div>
       <MindMapPanel />
     </main>

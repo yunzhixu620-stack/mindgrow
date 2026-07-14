@@ -4,12 +4,15 @@
 
 const http = require('http');
 const https = require('https');
+const dns = require('dns').promises;
+const net = require('net');
 
 const DASHSCOPE_KEY = process.env.MINDGROW_API_KEY || '';
 const SUPABASE_URL = (process.env.SUPABASE_URL || '').replace(/\/$/, '');
 const SUPABASE_KEY = process.env.SUPABASE_KEY || '';
 const PORT = Number.parseInt(process.env.FC_SERVER_PORT || process.env.PORT || '9000', 10);
 const UPSTREAM_TIMEOUT_MS = Number.parseInt(process.env.UPSTREAM_TIMEOUT_MS || '12000', 10);
+const AUTH_REQUIRED = process.env.AUTH_REQUIRED !== 'false';
 const ALLOWED_ORIGINS = new Set(
   (process.env.ALLOWED_ORIGINS || 'https://yunzhixu620-stack.github.io')
     .split(',')
@@ -85,6 +88,133 @@ async function supabaseRequest(method, path, body, prefer) {
   }
 }
 
+function requestError(statusCode, publicCode, message) {
+  const error = new Error(message || publicCode);
+  error.statusCode = statusCode;
+  error.publicCode = publicCode;
+  return error;
+}
+
+async function authenticateUser(req) {
+  if (!AUTH_REQUIRED) return { id: 'local_test_user', email: 'local@mindgrow.test' };
+  const authorization = String(req.headers.authorization || '');
+  const match = authorization.match(/^Bearer\s+(.+)$/i);
+  if (!match) throw requestError(401, 'AUTH_REQUIRED', 'Sign in is required');
+
+  let response;
+  try {
+    response = await fetchJSON('GET', `${SUPABASE_URL}/auth/v1/user`, {
+      apikey: SUPABASE_KEY,
+      Authorization: `Bearer ${match[1]}`,
+    });
+  } catch (_) {
+    throw requestError(503, 'AUTH_UNAVAILABLE', 'Authentication service is unavailable');
+  }
+  if (response.status !== 200 || !response.body || !response.body.id) {
+    throw requestError(401, 'INVALID_SESSION', 'The session is invalid or expired');
+  }
+  return { id: String(response.body.id), email: String(response.body.email || '') };
+}
+
+function workspaceIdForUser(userId) {
+  return `ws_${String(userId).replace(/[^a-zA-Z0-9]/g, '')}`;
+}
+
+function defaultMapIdForWorkspace(workspaceId) {
+  return `map_${workspaceId}_default`;
+}
+
+async function createWorkspace(user, name) {
+  const workspaceId = workspaceIdForUser(user.id);
+  const now = new Date().toISOString();
+  const workspace = {
+    id: workspaceId,
+    name: String(name || '我的工作区').trim().slice(0, 80) || '我的工作区',
+    owner_id: user.id,
+    created_at: now,
+    updated_at: now,
+  };
+  await supabaseRequest('POST', 'workspaces?on_conflict=id', workspace, 'resolution=ignore-duplicates,return=minimal');
+  await supabaseRequest('POST', 'workspace_members?on_conflict=workspace_id,user_id', {
+    workspace_id: workspaceId,
+    user_id: user.id,
+    role: 'owner',
+    created_at: now,
+  }, 'resolution=ignore-duplicates,return=minimal');
+
+  const defaultMapId = defaultMapIdForWorkspace(workspaceId);
+  await supabaseRequest('POST', 'maps?on_conflict=id', {
+    id: defaultMapId,
+    workspace_id: workspaceId,
+    name: '默认知识库',
+    description: '我的第一个 AI 知识图谱',
+    color: '#22d3a7',
+    is_default: true,
+    node_count: 0,
+    created_at: now,
+    updated_at: now,
+  }, 'resolution=ignore-duplicates,return=minimal');
+  return { ...workspace, role: 'owner', defaultMapId };
+}
+
+async function listUserWorkspaces(user) {
+  const userId = encodeURIComponent(user.id);
+  const memberships = await supabaseRequest('GET', `workspace_members?user_id=eq.${userId}&select=workspace_id,role&order=created_at.asc`);
+  if (!Array.isArray(memberships) || memberships.length === 0) {
+    return [await createWorkspace(user)];
+  }
+  const workspaceIds = memberships.map((item) => item.workspace_id).filter(Boolean);
+  const filter = `(${workspaceIds.map((id) => encodeURIComponent(id)).join(',')})`;
+  const workspaces = await supabaseRequest('GET', `workspaces?id=in.${filter}&select=id,name,owner_id,created_at,updated_at`);
+  const rows = Array.isArray(workspaces) ? workspaces : [];
+  return rows.map((workspace) => {
+    const membership = memberships.find((item) => item.workspace_id === workspace.id);
+    return {
+      id: workspace.id,
+      name: workspace.name,
+      ownerId: workspace.owner_id,
+      role: membership ? membership.role : 'viewer',
+      defaultMapId: defaultMapIdForWorkspace(workspace.id),
+      createdAt: workspace.created_at,
+      updatedAt: workspace.updated_at,
+    };
+  });
+}
+
+async function resolveWorkspace(req, user) {
+  const workspaces = await listUserWorkspaces(user);
+  const requested = String(req.headers['x-workspace-id'] || '');
+  const selected = requested
+    ? workspaces.find((workspace) => workspace.id === requested)
+    : workspaces[0];
+  if (!selected) throw requestError(403, 'WORKSPACE_FORBIDDEN', 'You do not have access to this workspace');
+  return selected;
+}
+
+async function handleWorkspaces(req, user) {
+  if (req.method === 'GET') {
+    const workspaces = await listUserWorkspaces(user);
+    return { status: 200, data: { user, workspaces } };
+  }
+  if (req.method !== 'POST') {
+    return { status: 405, data: { error: 'Method not allowed', code: 'METHOD_NOT_ALLOWED' } };
+  }
+  const body = await readBody(req);
+  if (body.action !== 'create') {
+    return { status: 400, data: { error: 'Unknown action', code: 'INVALID_INPUT' } };
+  }
+  const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const workspaceId = `ws_${suffix}`;
+  const now = new Date().toISOString();
+  const name = String(body.name || '').trim().slice(0, 80);
+  if (!name) return { status: 400, data: { error: 'Workspace name is required', code: 'INVALID_INPUT' } };
+  await supabaseRequest('POST', 'workspaces', { id: workspaceId, name, owner_id: user.id, created_at: now, updated_at: now }, 'return=minimal');
+  await supabaseRequest('POST', 'workspace_members', { workspace_id: workspaceId, user_id: user.id, role: 'owner', created_at: now }, 'return=minimal');
+  const defaultMapId = defaultMapIdForWorkspace(workspaceId);
+  await supabaseRequest('POST', 'maps', { id: defaultMapId, workspace_id: workspaceId, name: '默认知识库', description: '', color: '#22d3a7', is_default: true, node_count: 0, created_at: now, updated_at: now }, 'return=minimal');
+  return { status: 201, data: { workspace: { id: workspaceId, name, ownerId: user.id, role: 'owner', defaultMapId, createdAt: now, updatedAt: now } } };
+}
+
 async function dashscopeChat(messages, model, maxTokens, temperature) {
   if (!DASHSCOPE_KEY) throw dependencyError('model');
   let response;
@@ -143,11 +273,83 @@ function retrieveEvidence(question, nodes) {
     .slice(0, 5);
 }
 
-async function answerQuestion(input, mapId, intent) {
-  const id = encodeURIComponent(mapId || 'map_default');
-  const nodes = await supabaseRequest('GET', `nodes?map_id=eq.${id}&status=eq.active&select=id,content,desc,type`);
-  if (!Array.isArray(nodes)) throw dependencyError('knowledge_store');
-  const evidence = retrieveEvidence(input, nodes);
+function inFilter(values) {
+  return `(${values.map((value) => encodeURIComponent(String(value))).join(',')})`;
+}
+
+async function retrieveGraphEvidence(question, mapId, workspaceId) {
+  const workspace = encodeURIComponent(workspaceId);
+  const map = encodeURIComponent(mapId);
+  let seeds = [];
+  try {
+    const result = await supabaseRequest('POST', 'rpc/search_knowledge_nodes', {
+      p_workspace_id: workspaceId,
+      p_map_id: mapId,
+      p_query: question,
+      p_limit: 12,
+    });
+    if (Array.isArray(result)) {
+      seeds = result.map((node) => ({ ...node, desc: node.description || '', score: Number(node.score || 0) }));
+    }
+  } catch (error) {
+    // V6 deployments can still answer while the V7 search migration is being applied.
+    console.warn('Indexed retrieval unavailable; using bounded fallback', { code: error.publicCode || 'SEARCH_UNAVAILABLE' });
+    const nodes = await supabaseRequest('GET', `nodes?workspace_id=eq.${workspace}&map_id=eq.${map}&status=eq.active&select=id,content,desc,type&order=updated_at.desc&limit=500`);
+    seeds = retrieveEvidence(question, Array.isArray(nodes) ? nodes : []).map(({ node, score }) => ({ ...node, score }));
+  }
+  if (seeds.length === 0) return [];
+
+  const seedIds = seeds.slice(0, 8).map((node) => node.id);
+  const filter = inFilter(seedIds);
+  const edges = await supabaseRequest(
+    'GET',
+    `edges?workspace_id=eq.${workspace}&map_id=eq.${map}&or=(source_id.in.${filter},target_id.in.${filter})&select=source_id,target_id,relation&limit=80`,
+  );
+  const neighborIds = new Set();
+  (Array.isArray(edges) ? edges : []).forEach((edge) => {
+    if (!seedIds.includes(edge.source_id)) neighborIds.add(edge.source_id);
+    if (!seedIds.includes(edge.target_id)) neighborIds.add(edge.target_id);
+  });
+
+  let neighbors = [];
+  if (neighborIds.size > 0) {
+    const ids = [...neighborIds].slice(0, 20);
+    const rows = await supabaseRequest(
+      'GET',
+      `nodes?workspace_id=eq.${workspace}&map_id=eq.${map}&id=in.${inFilter(ids)}&status=eq.active&select=id,content,desc,type&limit=20`,
+    );
+    neighbors = (Array.isArray(rows) ? rows : []).map((node) => ({ ...node, score: 0.15, expanded: true }));
+  }
+
+  const deduplicated = new Map();
+  [...seeds, ...neighbors].forEach((node) => {
+    if (!deduplicated.has(node.id)) deduplicated.set(node.id, node);
+  });
+  return [...deduplicated.values()].slice(0, 20);
+}
+
+function deterministicEvidenceAnswer(evidence, intent) {
+  const lines = evidence.slice(0, 12).map((node, index) => {
+    const description = node.desc ? `：${node.desc}` : '';
+    return `${index + 1}. **${node.content}**${description} 〔来源 ${index + 1}〕`;
+  });
+  return {
+    status: 200,
+    data: {
+      intent,
+      type: 'answer',
+      reply: `根据当前知识库，找到以下直接相关证据：\n\n${lines.join('\n')}\n\n以上结论仅基于已保存内容；如需更完整结论，请继续补充资料。`,
+      sources: evidence.slice(0, 12).map((node, index) => ({ id: node.id, title: node.content, index: index + 1 })),
+      grounded: true,
+      abstained: false,
+      coverage: evidence.some((node) => node.expanded) ? 'partial' : 'direct',
+      missingInformation: [],
+    },
+  };
+}
+
+async function answerQuestion(input, mapId, intent, workspaceId) {
+  const evidence = await retrieveGraphEvidence(input, mapId, workspaceId);
   if (evidence.length === 0) {
     return {
       status: 200,
@@ -161,26 +363,47 @@ async function answerQuestion(input, mapId, intent) {
       },
     };
   }
-  const lines = evidence.map(({ node }, index) => {
-    const description = node.desc ? `：${node.desc}` : '';
-    return `${index + 1}. **${node.content}**${description} 〔来源 ${index + 1}〕`;
-  });
-  return {
-    status: 200,
-    data: {
-      intent,
-      type: 'answer',
-      reply: `根据当前知识库，找到以下直接相关证据：\n\n${lines.join('\n')}\n\n以上结论仅基于已保存内容；如需更完整结论，请继续补充资料。`,
-      sources: evidence.map(({ node }, index) => ({ id: node.id, title: node.content, index: index + 1 })),
-      grounded: true,
-      abstained: false,
-    },
-  };
+  if (!DASHSCOPE_KEY) return deterministicEvidenceAnswer(evidence, intent);
+
+  const allowedIds = new Set(evidence.map((node) => node.id));
+  try {
+    const raw = await dashscopeChat([
+      {
+        role: 'system',
+        content: '你是严格基于证据回答的知识助手。只返回 JSON：{"answer":"结论","usedSourceIds":["节点ID"],"coverage":"complete|partial","missingInformation":["缺失信息"]}。不得使用证据之外的信息；证据不足时必须说明缺失，不得猜测。',
+      },
+      {
+        role: 'user',
+        content: `问题：${input}\n证据：${JSON.stringify(evidence.map((node) => ({ id: node.id, content: node.content, description: node.desc || '' })))}`,
+      },
+    ], 'qwen-plus', 900, 0.1);
+    const parsed = JSON.parse(stripJsonFence(raw));
+    if (!parsed || typeof parsed.answer !== 'string' || !Array.isArray(parsed.usedSourceIds)) throw new Error('Invalid answer schema');
+    const usedIds = [...new Set(parsed.usedSourceIds.map(String))].filter((id) => allowedIds.has(id));
+    if (usedIds.length === 0) throw new Error('Answer has no valid citations');
+    const used = usedIds.map((id) => evidence.find((node) => node.id === id)).filter(Boolean);
+    return {
+      status: 200,
+      data: {
+        intent,
+        type: 'answer',
+        reply: parsed.answer,
+        sources: used.map((node, index) => ({ id: node.id, title: node.content, index: index + 1 })),
+        grounded: true,
+        abstained: false,
+        coverage: parsed.coverage === 'complete' ? 'complete' : 'partial',
+        missingInformation: Array.isArray(parsed.missingInformation) ? parsed.missingInformation.map(String).slice(0, 8) : [],
+      },
+    };
+  } catch (error) {
+    console.warn('Grounded answer validation failed; using deterministic answer', { message: error.message });
+    return deterministicEvidenceAnswer(evidence, intent);
+  }
 }
 
-async function handleChat(body) {
+async function handleChat(body, context) {
   const input = body && typeof body.input === 'string' ? body.input.trim() : '';
-  const mapId = body && body.mapId ? String(body.mapId) : 'map_default';
+  const mapId = body && body.mapId ? String(body.mapId) : context.defaultMapId;
   if (!input) return { status: 400, data: { error: 'Input is required', code: 'INVALID_INPUT' } };
   if (input.length > 10000) return { status: 413, data: { error: 'Input is too long', code: 'INPUT_TOO_LARGE' } };
 
@@ -191,7 +414,7 @@ async function handleChat(body) {
   if (intent.type === 'command') {
     return { status: 200, data: { intent, type: 'command', reply: '为了避免误操作，请使用界面中的重命名、清空或删除按钮执行管理操作。' } };
   }
-  if (intent.type === 'question') return answerQuestion(input, mapId, intent);
+  if (intent.type === 'question') return answerQuestion(input, mapId, intent, context.workspaceId);
 
   const generated = await dashscopeChat([
     {
@@ -212,7 +435,8 @@ async function handleChat(body) {
   let placement = null;
   try {
     const id = encodeURIComponent(mapId);
-    const nodes = await supabaseRequest('GET', `nodes?map_id=eq.${id}&status=eq.active&select=content,type`);
+    const workspace = encodeURIComponent(context.workspaceId);
+    const nodes = await supabaseRequest('GET', `nodes?workspace_id=eq.${workspace}&map_id=eq.${id}&status=eq.active&select=content,type&limit=200`);
     const topics = Array.isArray(nodes) ? nodes.filter((node) => node.type === 'topic').map((node) => node.content).slice(0, 50) : [];
     if (topics.length > 0) {
       const placementText = await dashscopeChat([
@@ -236,6 +460,214 @@ async function handleChat(body) {
     '确认后可将这些节点保存到当前知识库。',
   ].join('\n');
   return { status: 200, data: { intent, reply, type: 'knowledge', placement, mindMap } };
+}
+
+function isPrivateAddress(address) {
+  if (!address) return true;
+  if (net.isIPv4(address)) {
+    const parts = address.split('.').map(Number);
+    return parts[0] === 10
+      || parts[0] === 127
+      || parts[0] === 0
+      || (parts[0] === 169 && parts[1] === 254)
+      || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31)
+      || (parts[0] === 192 && parts[1] === 168)
+      || (parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127)
+      || parts[0] >= 224;
+  }
+  if (net.isIPv6(address)) {
+    const normalized = address.toLowerCase();
+    return normalized === '::1'
+      || normalized === '::'
+      || normalized.startsWith('fc')
+      || normalized.startsWith('fd')
+      || normalized.startsWith('fe8')
+      || normalized.startsWith('fe9')
+      || normalized.startsWith('fea')
+      || normalized.startsWith('feb');
+  }
+  return true;
+}
+
+async function assertPublicUrl(targetUrl) {
+  let parsed;
+  try { parsed = new URL(targetUrl); } catch (_) { throw requestError(400, 'INVALID_URL', '请输入有效的文章网址'); }
+  if (!['http:', 'https:'].includes(parsed.protocol)) throw requestError(400, 'INVALID_URL', '仅支持 http 或 https 网址');
+  if (parsed.username || parsed.password) throw requestError(400, 'INVALID_URL', '网址不能包含账号信息');
+  const hostname = parsed.hostname.toLowerCase();
+  if (hostname === 'localhost' || hostname.endsWith('.local')) throw requestError(400, 'URL_NOT_ALLOWED', '不允许访问内网地址');
+  const records = await dns.lookup(hostname, { all: true });
+  if (!records.length || records.some((record) => isPrivateAddress(record.address))) {
+    throw requestError(400, 'URL_NOT_ALLOWED', '不允许访问内网地址');
+  }
+  return parsed;
+}
+
+async function fetchArticleText(targetUrl, redirects) {
+  const parsed = await assertPublicUrl(targetUrl);
+  const transport = parsed.protocol === 'https:' ? https : http;
+  return new Promise((resolve, reject) => {
+    const request = transport.request({
+      hostname: parsed.hostname,
+      port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+      path: `${parsed.pathname}${parsed.search}`,
+      method: 'GET',
+      headers: {
+        Accept: 'text/html,text/plain,application/xhtml+xml',
+        'Accept-Encoding': 'identity',
+        'User-Agent': 'MindGrow-Article-Parser/1.0',
+      },
+    }, (response) => {
+      const status = response.statusCode || 502;
+      if (status >= 300 && status < 400 && response.headers.location) {
+        response.resume();
+        if ((redirects || 0) >= 3) return reject(requestError(400, 'TOO_MANY_REDIRECTS', '文章网址重定向次数过多'));
+        const next = new URL(response.headers.location, parsed).toString();
+        return fetchArticleText(next, (redirects || 0) + 1).then(resolve, reject);
+      }
+      if (status < 200 || status >= 300) {
+        response.resume();
+        return reject(requestError(422, 'ARTICLE_FETCH_FAILED', `文章页面返回 ${status}`));
+      }
+      const contentType = String(response.headers['content-type'] || '').toLowerCase();
+      if (!contentType.includes('text/html') && !contentType.includes('text/plain') && !contentType.includes('application/xhtml+xml')) {
+        response.resume();
+        return reject(requestError(415, 'UNSUPPORTED_ARTICLE_TYPE', '该网址不是可解析的网页文章'));
+      }
+      const chunks = [];
+      let size = 0;
+      response.on('data', (chunk) => {
+        size += chunk.length;
+        if (size > 1024 * 1024) {
+          response.destroy(requestError(413, 'ARTICLE_TOO_LARGE', '文章页面超过 1MB 限制'));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      response.on('end', () => resolve({ html: Buffer.concat(chunks).toString('utf8'), finalUrl: parsed.toString() }));
+      response.on('error', reject);
+    });
+    request.setTimeout(UPSTREAM_TIMEOUT_MS, () => request.destroy(requestError(504, 'ARTICLE_FETCH_TIMEOUT', '读取文章超时')));
+    request.on('error', reject);
+    request.end();
+  });
+}
+
+function decodeHtmlEntities(value) {
+  return String(value || '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)));
+}
+
+function htmlToReadableText(html) {
+  return decodeHtmlEntities(String(html || '')
+    .replace(/<(script|style|noscript|svg)[^>]*>[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<\/(p|div|article|section|h[1-6]|li|blockquote)>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, ' '))
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n\s*\n+/g, '\n')
+    .trim()
+    .slice(0, 120000);
+}
+
+function normalizedMindMap(value, fallbackTitle) {
+  if (!value || typeof value !== 'object') return null;
+  const root = String(value.root || fallbackTitle || '').trim().slice(0, 200);
+  if (!root) return null;
+  const children = (Array.isArray(value.children) ? value.children : []).slice(0, 16).map((child) => ({
+    topic: String((child && child.topic) || '要点').trim().slice(0, 200),
+    desc: String((child && child.desc) || '').trim().slice(0, 1000),
+    items: (Array.isArray(child && child.items) ? child.items : []).map(String).map((item) => item.trim()).filter(Boolean).slice(0, 20),
+  })).filter((child) => child.topic);
+  return { root, rootDesc: String(value.rootDesc || '').trim().slice(0, 1000), children, relatedTopics: [] };
+}
+
+function fallbackMindMap(title, text) {
+  const items = String(text || '').split(/[。！？!?\n]+/).map((item) => item.trim()).filter(Boolean).slice(0, 10);
+  return {
+    root: String(title || '整理结果').slice(0, 200),
+    rootDesc: items[0] || '',
+    children: items.slice(1).map((item, index) => ({ topic: `要点 ${index + 1}`, desc: item.slice(0, 500), items: [] })),
+    relatedTopics: [],
+  };
+}
+
+async function handleMeetingTool(body) {
+  const transcript = String(body.transcript || '').trim();
+  if (transcript.length < 10) return { status: 400, data: { error: '请至少输入 10 个字的会议内容', code: 'INVALID_INPUT' } };
+  if (transcript.length > 120000) return { status: 413, data: { error: '会议内容超过 12 万字限制', code: 'INPUT_TOO_LARGE' } };
+  const title = String(body.title || '会议纪要').trim().slice(0, 200);
+  const participants = String(body.participants || '').trim().slice(0, 2000);
+  const raw = await dashscopeChat([
+    {
+      role: 'system',
+      content: '你是严谨的会议助手。只返回 JSON：{"title":"","summary":"","topics":[{"title":"","details":[""]}],"decisions":[""],"actionItems":[{"task":"","owner":"","due":"","status":"待办"}],"risks":[""],"openQuestions":[""],"mindMap":{"root":"","rootDesc":"","children":[{"topic":"","desc":"","items":[""]}]}}。不得编造会议中未出现的人名、日期或结论；不确定字段留空。',
+    },
+    { role: 'user', content: `会议标题：${title}\n参会人：${participants || '未提供'}\n会议原文：\n${transcript}` },
+  ], 'qwen-plus', 2400, 0.1);
+  let parsed;
+  try { parsed = JSON.parse(stripJsonFence(raw)); } catch (_) { parsed = {}; }
+  const mindMap = normalizedMindMap(parsed.mindMap, title) || fallbackMindMap(title, transcript);
+  return {
+    status: 200,
+    data: {
+      title: String(parsed.title || title),
+      summary: String(parsed.summary || mindMap.rootDesc || ''),
+      topics: Array.isArray(parsed.topics) ? parsed.topics.slice(0, 20) : [],
+      decisions: Array.isArray(parsed.decisions) ? parsed.decisions.map(String).slice(0, 30) : [],
+      actionItems: Array.isArray(parsed.actionItems) ? parsed.actionItems.slice(0, 50) : [],
+      risks: Array.isArray(parsed.risks) ? parsed.risks.map(String).slice(0, 30) : [],
+      openQuestions: Array.isArray(parsed.openQuestions) ? parsed.openQuestions.map(String).slice(0, 30) : [],
+      mindMap,
+    },
+  };
+}
+
+async function handleArticleTool(body) {
+  let content = String(body.content || '').trim();
+  let sourceUrl = '';
+  if (!content && body.url) {
+    const fetched = await fetchArticleText(String(body.url), 0);
+    content = htmlToReadableText(fetched.html);
+    sourceUrl = fetched.finalUrl;
+  }
+  if (content.length < 50) return { status: 400, data: { error: '请粘贴至少 50 个字的文章，或输入可公开访问的网址', code: 'INVALID_INPUT' } };
+  if (content.length > 120000) content = content.slice(0, 120000);
+  const raw = await dashscopeChat([
+    {
+      role: 'system',
+      content: '你是忠于原文的文章解析助手。只返回 JSON：{"title":"","summary":"","keyPoints":[""],"arguments":[{"claim":"","evidence":""}],"questions":[""],"mindMap":{"root":"","rootDesc":"","children":[{"topic":"","desc":"","items":[""]}]}}。不得补充原文没有的事实；每个论点要保留原文证据或明确写“原文未给出”。',
+    },
+    { role: 'user', content: `文章来源：${sourceUrl || '用户粘贴'}\n文章正文：\n${content}` },
+  ], 'qwen-plus', 2600, 0.1);
+  let parsed;
+  try { parsed = JSON.parse(stripJsonFence(raw)); } catch (_) { parsed = {}; }
+  const inferredTitle = String(parsed.title || content.split('\n')[0] || '文章解析').slice(0, 200);
+  const mindMap = normalizedMindMap(parsed.mindMap, inferredTitle) || fallbackMindMap(inferredTitle, content);
+  return {
+    status: 200,
+    data: {
+      title: inferredTitle,
+      summary: String(parsed.summary || mindMap.rootDesc || ''),
+      keyPoints: Array.isArray(parsed.keyPoints) ? parsed.keyPoints.map(String).slice(0, 40) : [],
+      arguments: Array.isArray(parsed.arguments) ? parsed.arguments.slice(0, 40) : [],
+      questions: Array.isArray(parsed.questions) ? parsed.questions.map(String).slice(0, 30) : [],
+      mindMap,
+      sourceUrl,
+    },
+  };
+}
+
+async function handleTool(pathname, body) {
+  if (pathname.endsWith('/meeting')) return handleMeetingTool(body);
+  if (pathname.endsWith('/article')) return handleArticleTool(body);
+  return { status: 404, data: { error: 'Tool not found', code: 'NOT_FOUND' } };
 }
 
 function convertMap(row) {
@@ -278,22 +710,22 @@ function convertEdge(edge) {
   };
 }
 
-async function createGraph(mapId, mindMap, source) {
+async function createGraph(workspaceId, mapId, mindMap, source) {
   const now = new Date().toISOString();
   const seed = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
   const nodes = [];
   const edges = [];
   const rootId = `node_${seed}_r`;
-  nodes.push({ id: rootId, content: mindMap.root, desc: mindMap.rootDesc || '', type: 'topic', status: 'active', source, confidence: 1, map_id: mapId, created_at: now, updated_at: now });
+  nodes.push({ id: rootId, workspace_id: workspaceId, content: mindMap.root, desc: mindMap.rootDesc || '', type: 'topic', status: 'active', source, confidence: 1, map_id: mapId, created_at: now, updated_at: now });
 
   (mindMap.children || []).forEach((child, childIndex) => {
     const childId = `node_${seed}_c${childIndex}`;
-    nodes.push({ id: childId, content: child.topic, desc: child.desc || '', type: 'concept', status: 'active', source, confidence: 0.9, map_id: mapId, created_at: now, updated_at: now });
-    edges.push({ id: `edge_${seed}_c${childIndex}`, source_id: rootId, target_id: childId, relation: 'contains', weight: 1, map_id: mapId, created_at: now });
+    nodes.push({ id: childId, workspace_id: workspaceId, content: child.topic, desc: child.desc || '', type: 'concept', status: 'active', source, confidence: 0.9, map_id: mapId, created_at: now, updated_at: now });
+    edges.push({ id: `edge_${seed}_c${childIndex}`, workspace_id: workspaceId, source_id: rootId, target_id: childId, relation: 'contains', weight: 1, map_id: mapId, created_at: now });
     (child.items || []).forEach((item, itemIndex) => {
       const itemId = `node_${seed}_c${childIndex}i${itemIndex}`;
-      nodes.push({ id: itemId, content: item, desc: '', type: 'detail', status: 'active', source, confidence: 0.8, map_id: mapId, created_at: now, updated_at: now });
-      edges.push({ id: `edge_${seed}_c${childIndex}i${itemIndex}`, source_id: childId, target_id: itemId, relation: 'contains', weight: 0.8, map_id: mapId, created_at: now });
+      nodes.push({ id: itemId, workspace_id: workspaceId, content: item, desc: '', type: 'detail', status: 'active', source, confidence: 0.8, map_id: mapId, created_at: now, updated_at: now });
+      edges.push({ id: `edge_${seed}_c${childIndex}i${itemIndex}`, workspace_id: workspaceId, source_id: childId, target_id: itemId, relation: 'contains', weight: 0.8, map_id: mapId, created_at: now });
     });
   });
   await supabaseRequest('POST', 'nodes', nodes);
@@ -301,39 +733,42 @@ async function createGraph(mapId, mindMap, source) {
   return { nodes, edges };
 }
 
-async function updateMapNodeCount(mapId) {
+async function updateMapNodeCount(workspaceId, mapId) {
   const id = encodeURIComponent(mapId);
-  const nodes = await supabaseRequest('GET', `nodes?map_id=eq.${id}&status=eq.active&select=id`);
+  const workspace = encodeURIComponent(workspaceId);
+  const nodes = await supabaseRequest('GET', `nodes?workspace_id=eq.${workspace}&map_id=eq.${id}&status=eq.active&select=id`);
   const count = Array.isArray(nodes) ? nodes.length : 0;
-  await supabaseRequest('PATCH', `maps?id=eq.${id}`, { node_count: count, updated_at: new Date().toISOString() }, 'return=minimal');
+  await supabaseRequest('PATCH', `maps?workspace_id=eq.${workspace}&id=eq.${id}`, { node_count: count, updated_at: new Date().toISOString() }, 'return=minimal');
   return count;
 }
 
-async function handleKnowledge(req) {
+async function handleKnowledge(req, context) {
   const parsed = new URL(req.url, 'http://localhost');
   // Function Compute may still run an older Node.js runtime where
   // Object.fromEntries is unavailable. URLSearchParams#forEach works there.
   const query = {};
   parsed.searchParams.forEach((value, key) => { query[key] = value; });
+  const workspaceId = context.workspaceId;
+  const workspace = encodeURIComponent(workspaceId);
 
   if (req.method === 'GET') {
     if (query.action === 'maps') {
-      const rows = await supabaseRequest('GET', 'maps?select=*&order=is_default.desc,updated_at.desc');
+      const rows = await supabaseRequest('GET', `maps?workspace_id=eq.${workspace}&select=*&order=is_default.desc,updated_at.desc`);
       if (!Array.isArray(rows)) throw dependencyError('knowledge_store');
       return { status: 200, data: { maps: rows.map(convertMap) } };
     }
     if (query.action === 'categories') {
-      const rows = await supabaseRequest('GET', 'categories?select=*&order=sort_order.asc');
+      const rows = await supabaseRequest('GET', `categories?workspace_id=eq.${workspace}&select=*&order=sort_order.asc`);
       if (!Array.isArray(rows)) throw dependencyError('knowledge_store');
       return {
         status: 200,
         data: { categories: rows.map((category) => ({ id: category.id, name: category.name, icon: category.icon || '📁', color: category.color || '#22d3a7', sortOrder: category.sort_order || 0, createdAt: category.created_at })) },
       };
     }
-    const mapId = encodeURIComponent(String(query.mapId || 'map_default'));
+    const mapId = encodeURIComponent(String(query.mapId || context.defaultMapId));
     const [nodeRows, edgeRows] = await Promise.all([
-      supabaseRequest('GET', `nodes?map_id=eq.${mapId}&status=eq.active&select=*`),
-      supabaseRequest('GET', `edges?map_id=eq.${mapId}&select=*`),
+      supabaseRequest('GET', `nodes?workspace_id=eq.${workspace}&map_id=eq.${mapId}&status=eq.active&select=*&limit=2000`),
+      supabaseRequest('GET', `edges?workspace_id=eq.${workspace}&map_id=eq.${mapId}&select=*&limit=4000`),
     ]);
     if (!Array.isArray(nodeRows) || !Array.isArray(edgeRows)) throw dependencyError('knowledge_store');
     return { status: 200, data: { nodes: nodeRows.map(convertNode), edges: edgeRows.map(convertEdge) } };
@@ -343,13 +778,14 @@ async function handleKnowledge(req) {
     const nodeId = String(query.nodeId || '');
     if (!nodeId) return { status: 400, data: { error: 'nodeId is required', code: 'INVALID_INPUT' } };
     const id = encodeURIComponent(nodeId);
-    const rows = await supabaseRequest('GET', `nodes?id=eq.${id}&select=map_id&limit=1`);
+    const rows = await supabaseRequest('GET', `nodes?workspace_id=eq.${workspace}&id=eq.${id}&select=map_id&limit=1`);
     const mapId = Array.isArray(rows) && rows[0] ? rows[0].map_id : null;
-    await supabaseRequest('DELETE', `edges?source_id=eq.${id}`);
-    await supabaseRequest('DELETE', `edges?target_id=eq.${id}`);
-    await supabaseRequest('DELETE', `node_layouts?node_id=eq.${id}`);
-    await supabaseRequest('DELETE', `nodes?id=eq.${id}`);
-    if (mapId) await updateMapNodeCount(mapId);
+    if (!mapId) return { status: 404, data: { error: 'Node not found', code: 'NOT_FOUND' } };
+    await supabaseRequest('DELETE', `edges?workspace_id=eq.${workspace}&source_id=eq.${id}`);
+    await supabaseRequest('DELETE', `edges?workspace_id=eq.${workspace}&target_id=eq.${id}`);
+    await supabaseRequest('DELETE', `node_layouts?workspace_id=eq.${workspace}&node_id=eq.${id}`);
+    await supabaseRequest('DELETE', `nodes?workspace_id=eq.${workspace}&id=eq.${id}`);
+    await updateMapNodeCount(workspaceId, mapId);
     return { status: 200, data: { success: true } };
   }
 
@@ -358,11 +794,14 @@ async function handleKnowledge(req) {
     if (!body.nodeId) return { status: 400, data: { error: 'nodeId is required', code: 'INVALID_INPUT' } };
     const layout = {
       node_id: String(body.nodeId),
-      map_id: String(body.mapId || 'map_default'),
+      workspace_id: workspaceId,
+      map_id: String(body.mapId || context.defaultMapId),
       position_x: Number(body.positionX || 0),
       position_y: Number(body.positionY || 0),
       zoom_level: Number(body.zoomLevel || 1),
     };
+    const nodeRows = await supabaseRequest('GET', `nodes?workspace_id=eq.${workspace}&id=eq.${encodeURIComponent(layout.node_id)}&select=id&limit=1`);
+    if (!Array.isArray(nodeRows) || !nodeRows[0]) return { status: 404, data: { error: 'Node not found', code: 'NOT_FOUND' } };
     await supabaseRequest('POST', 'node_layouts?on_conflict=node_id,map_id', layout, 'resolution=merge-duplicates,return=minimal');
     return { status: 200, data: { success: true } };
   }
@@ -374,7 +813,7 @@ async function handleKnowledge(req) {
     ['content', 'desc', 'type', 'status', 'source', 'confidence'].forEach((field) => {
       if (body[field] !== undefined) updates[field] = body[field];
     });
-    const rows = await supabaseRequest('PATCH', `nodes?id=eq.${encodeURIComponent(String(body.nodeId))}`, updates, 'return=representation');
+    const rows = await supabaseRequest('PATCH', `nodes?workspace_id=eq.${workspace}&id=eq.${encodeURIComponent(String(body.nodeId))}`, updates, 'return=representation');
     const node = Array.isArray(rows) ? rows[0] : rows;
     if (!node) return { status: 404, data: { error: 'Node not found', code: 'NOT_FOUND' } };
     return { status: 200, data: { node: convertNode(node) } };
@@ -395,6 +834,7 @@ async function handleKnowledge(req) {
     }
     const map = {
       id,
+      workspace_id: workspaceId,
       name: body.name || (template && template.root) || '新知识库',
       description: body.description || (template && template.rootDesc) || '',
       color: body.color || '#22d3a7',
@@ -408,14 +848,14 @@ async function handleKnowledge(req) {
     let nodeCount = 0;
     if (template) {
       try {
-        const graph = await createGraph(id, template, 'template');
+        const graph = await createGraph(workspaceId, id, template, 'template');
         nodeCount = graph.nodes.length;
-        await supabaseRequest('PATCH', `maps?id=eq.${encodeURIComponent(id)}`, { node_count: nodeCount, updated_at: now }, 'return=minimal');
+        await supabaseRequest('PATCH', `maps?workspace_id=eq.${workspace}&id=eq.${encodeURIComponent(id)}`, { node_count: nodeCount, updated_at: now }, 'return=minimal');
       } catch (error) {
         try {
-          await supabaseRequest('DELETE', `edges?map_id=eq.${encodeURIComponent(id)}`);
-          await supabaseRequest('DELETE', `nodes?map_id=eq.${encodeURIComponent(id)}`);
-          await supabaseRequest('DELETE', `maps?id=eq.${encodeURIComponent(id)}`);
+          await supabaseRequest('DELETE', `edges?workspace_id=eq.${workspace}&map_id=eq.${encodeURIComponent(id)}`);
+          await supabaseRequest('DELETE', `nodes?workspace_id=eq.${workspace}&map_id=eq.${encodeURIComponent(id)}`);
+          await supabaseRequest('DELETE', `maps?workspace_id=eq.${workspace}&id=eq.${encodeURIComponent(id)}`);
         } catch (_) { /* best-effort rollback */ }
         throw error;
       }
@@ -426,23 +866,23 @@ async function handleKnowledge(req) {
 
   if (action === 'deleteMap') {
     const mapId = String(body.mapId || '');
-    if (!mapId || mapId === 'map_default') return { status: 400, data: { error: 'Cannot delete the default map', code: 'INVALID_INPUT' } };
+    if (!mapId || mapId === context.defaultMapId) return { status: 400, data: { error: 'Cannot delete the default map', code: 'INVALID_INPUT' } };
     const id = encodeURIComponent(mapId);
-    await supabaseRequest('DELETE', `node_layouts?map_id=eq.${id}`);
-    await supabaseRequest('DELETE', `edges?map_id=eq.${id}`);
-    await supabaseRequest('DELETE', `nodes?map_id=eq.${id}`);
-    await supabaseRequest('DELETE', `maps?id=eq.${id}`);
+    await supabaseRequest('DELETE', `node_layouts?workspace_id=eq.${workspace}&map_id=eq.${id}`);
+    await supabaseRequest('DELETE', `edges?workspace_id=eq.${workspace}&map_id=eq.${id}`);
+    await supabaseRequest('DELETE', `nodes?workspace_id=eq.${workspace}&map_id=eq.${id}`);
+    await supabaseRequest('DELETE', `maps?workspace_id=eq.${workspace}&id=eq.${id}`);
     return { status: 200, data: { success: true } };
   }
 
   if (action === 'clearMap') {
     const mapId = String(body.mapId || '');
-    if (!mapId || mapId === 'map_default') return { status: 400, data: { error: 'Cannot clear the default map', code: 'INVALID_INPUT' } };
+    if (!mapId || mapId === context.defaultMapId) return { status: 400, data: { error: 'Cannot clear the default map', code: 'INVALID_INPUT' } };
     const id = encodeURIComponent(mapId);
-    await supabaseRequest('DELETE', `node_layouts?map_id=eq.${id}`);
-    await supabaseRequest('DELETE', `edges?map_id=eq.${id}`);
-    await supabaseRequest('DELETE', `nodes?map_id=eq.${id}`);
-    await supabaseRequest('PATCH', `maps?id=eq.${id}`, { node_count: 0, updated_at: new Date().toISOString() }, 'return=minimal');
+    await supabaseRequest('DELETE', `node_layouts?workspace_id=eq.${workspace}&map_id=eq.${id}`);
+    await supabaseRequest('DELETE', `edges?workspace_id=eq.${workspace}&map_id=eq.${id}`);
+    await supabaseRequest('DELETE', `nodes?workspace_id=eq.${workspace}&map_id=eq.${id}`);
+    await supabaseRequest('PATCH', `maps?workspace_id=eq.${workspace}&id=eq.${id}`, { node_count: 0, updated_at: new Date().toISOString() }, 'return=minimal');
     return { status: 200, data: { success: true } };
   }
 
@@ -452,16 +892,16 @@ async function handleKnowledge(req) {
       ? { name: String(body.name || '').trim(), updated_at: new Date().toISOString() }
       : { category_id: body.categoryId || null, updated_at: new Date().toISOString() };
     if (action === 'renameMap' && !changes.name) return { status: 400, data: { error: 'name is required', code: 'INVALID_INPUT' } };
-    await supabaseRequest('PATCH', `maps?id=eq.${encodeURIComponent(String(body.mapId))}`, changes, 'return=minimal');
+    await supabaseRequest('PATCH', `maps?workspace_id=eq.${workspace}&id=eq.${encodeURIComponent(String(body.mapId))}`, changes, 'return=minimal');
     return { status: 200, data: { success: true } };
   }
 
   if (action === 'createCategory') {
     const id = `cat_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const now = new Date().toISOString();
-    const existing = await supabaseRequest('GET', 'categories?select=sort_order&order=sort_order.desc&limit=1');
+    const existing = await supabaseRequest('GET', `categories?workspace_id=eq.${workspace}&select=sort_order&order=sort_order.desc&limit=1`);
     const nextOrder = Array.isArray(existing) && existing[0] ? Number(existing[0].sort_order || 0) + 1 : 0;
-    const category = { id, name: String(body.name || '新文件夹').trim(), icon: body.icon || '📁', color: body.color || '#22d3a7', sort_order: nextOrder, created_at: now };
+    const category = { id, workspace_id: workspaceId, name: String(body.name || '新文件夹').trim(), icon: body.icon || '📁', color: body.color || '#22d3a7', sort_order: nextOrder, created_at: now };
     const rows = await supabaseRequest('POST', 'categories', category, 'return=representation');
     const created = Array.isArray(rows) ? rows[0] : rows;
     return { status: 201, data: { category: { id, name: created.name, icon: created.icon, color: created.color, sortOrder: created.sort_order, createdAt: created.created_at } } };
@@ -470,21 +910,21 @@ async function handleKnowledge(req) {
   if (action === 'deleteCategory') {
     if (!body.categoryId) return { status: 400, data: { error: 'categoryId is required', code: 'INVALID_INPUT' } };
     const id = encodeURIComponent(String(body.categoryId));
-    await supabaseRequest('PATCH', `maps?category_id=eq.${id}`, { category_id: null }, 'return=minimal');
-    await supabaseRequest('DELETE', `categories?id=eq.${id}`);
+    await supabaseRequest('PATCH', `maps?workspace_id=eq.${workspace}&category_id=eq.${id}`, { category_id: null }, 'return=minimal');
+    await supabaseRequest('DELETE', `categories?workspace_id=eq.${workspace}&id=eq.${id}`);
     return { status: 200, data: { success: true } };
   }
 
   if (action === 'renameCategory') {
     if (!body.categoryId || !String(body.name || '').trim()) return { status: 400, data: { error: 'categoryId and name are required', code: 'INVALID_INPUT' } };
-    await supabaseRequest('PATCH', `categories?id=eq.${encodeURIComponent(String(body.categoryId))}`, { name: String(body.name).trim() }, 'return=minimal');
+    await supabaseRequest('PATCH', `categories?workspace_id=eq.${workspace}&id=eq.${encodeURIComponent(String(body.categoryId))}`, { name: String(body.name).trim() }, 'return=minimal');
     return { status: 200, data: { success: true } };
   }
 
   if (body.mindMap && body.mindMap.root) {
-    const mapId = String(body.mapId || 'map_default');
-    const graph = await createGraph(mapId, body.mindMap, body.source || 'ai_generated');
-    await updateMapNodeCount(mapId);
+    const mapId = String(body.mapId || context.defaultMapId);
+    const graph = await createGraph(workspaceId, mapId, body.mindMap, body.source || 'ai_generated');
+    await updateMapNodeCount(workspaceId, mapId);
     return {
       status: 201,
       data: {
@@ -536,7 +976,7 @@ function setCorsHeaders(req, res) {
   }
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Request-Id');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Request-Id, X-Workspace-Id');
 }
 
 const server = http.createServer(async (req, res) => {
@@ -573,11 +1013,25 @@ const server = http.createServer(async (req, res) => {
     }
 
     let result;
-    if (pathname === '/api/chat' || pathname === '/mindgrow/api/chat') {
+    const user = await authenticateUser(req);
+    if (pathname === '/api/workspaces' || pathname === '/mindgrow/api/workspaces') {
+      result = await handleWorkspaces(req, user);
+    } else if (pathname === '/api/tools/meeting' || pathname === '/mindgrow/api/tools/meeting'
+      || pathname === '/api/tools/article' || pathname === '/mindgrow/api/tools/article') {
       if (req.method !== 'POST') result = { status: 405, data: { error: 'Method not allowed', code: 'METHOD_NOT_ALLOWED' } };
-      else result = await handleChat(await readBody(req));
+      else {
+        await resolveWorkspace(req, user);
+        result = await handleTool(pathname, await readBody(req));
+      }
+    } else if (pathname === '/api/chat' || pathname === '/mindgrow/api/chat') {
+      if (req.method !== 'POST') result = { status: 405, data: { error: 'Method not allowed', code: 'METHOD_NOT_ALLOWED' } };
+      else {
+        const workspace = await resolveWorkspace(req, user);
+        result = await handleChat(await readBody(req), { user, workspaceId: workspace.id, defaultMapId: workspace.defaultMapId });
+      }
     } else if (pathname === '/api/knowledge' || pathname === '/mindgrow/api/knowledge') {
-      result = await handleKnowledge(req);
+      const workspace = await resolveWorkspace(req, user);
+      result = await handleKnowledge(req, { user, workspaceId: workspace.id, defaultMapId: workspace.defaultMapId });
     } else {
       result = { status: 404, data: { error: 'Not found', code: 'NOT_FOUND' } };
     }

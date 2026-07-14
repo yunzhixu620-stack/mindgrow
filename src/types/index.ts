@@ -4,7 +4,7 @@ export interface KnowledgeNode {
   desc?: string;
   type: "topic" | "concept" | "detail" | "question";
   status: "active" | "archived" | "merged";
-  source: "manual" | "auto_complete" | "article" | "ai_generated";
+  source: "manual" | "auto_complete" | "article" | "meeting" | "ai_generated" | "template";
   confidence: number;
   createdAt: string;
   updatedAt: string;

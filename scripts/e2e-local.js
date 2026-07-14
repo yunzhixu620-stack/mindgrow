@@ -89,6 +89,28 @@ const clickByText = async (page, selector, text) => {
     await page.waitForFunction(() => document.body.innerText.includes("检索评测空间"));
   });
 
+  await check("meeting assistant generates and saves structured minutes", async () => {
+    await clickByText(page, "button", "会议助手");
+    await page.waitForSelector('textarea[placeholder*="会议记录"]');
+    await page.type('textarea[placeholder*="会议记录"]', "今天讨论知识助手发布计划。决定本周完成登录测试。小王负责回归验证，周五前完成。风险是文章解析接口可能超时。");
+    await clickByText(page, "button", "生成结构化会议纪要");
+    await page.waitForFunction(() => document.body.innerText.includes("会议摘要"));
+    await clickByText(page, "button", "保存到当前思维导图");
+    await page.waitForFunction(() => document.body.innerText.includes("会议知识节点"));
+    const microphone = await page.$('button[aria-label="开始语音输入"]');
+    if (!microphone) throw new Error("Meeting microphone control missing");
+  });
+
+  await check("article parser extracts and saves a knowledge map", async () => {
+    await clickByText(page, "button", "文章解析");
+    await page.waitForSelector('textarea[placeholder*="文章正文"]');
+    await page.type('textarea[placeholder*="文章正文"]', "检索增强生成需要先从知识库中找到相关证据，再让模型组织答案。系统必须保留来源引用，并在证据不足时明确拒答。随着知识规模增长，应使用分层摘要、混合检索和图邻居扩展，避免把整个知识库一次性放进上下文。最后还要通过固定评测集验证召回率与引用准确率。");
+    await clickByText(page, "button", "解析文章");
+    await page.waitForFunction(() => document.body.innerText.includes("核心要点"));
+    await clickByText(page, "button", "保存到当前思维导图");
+    await page.waitForFunction(() => document.body.innerText.includes("文章知识节点"));
+  });
+
   await check("mobile chat and map tabs have no horizontal overflow", async () => {
     await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true });
     await page.reload({ waitUntil: "networkidle0" });
@@ -124,7 +146,11 @@ const clickByText = async (page, selector, text) => {
   });
 
   await page.screenshot({ path: path.join(artifactDir, "seo-guide.png"), fullPage: true });
-  await browser.close();
+  await Promise.race([
+    browser.close(),
+    new Promise((resolve) => setTimeout(resolve, 5000)),
+  ]);
+  if (browser.process() && !browser.process().killed) browser.process().kill();
 
   const failed = results.filter((result) => !result.ok);
   console.log(`\n${results.length - failed.length}/${results.length} checks passed`);

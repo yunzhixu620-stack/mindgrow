@@ -3,11 +3,12 @@
 import { useState, useEffect } from "react";
 import { useMindGrowStore, type AppMode } from "@/store/mindgrow-store";
 import Link from "next/link";
+import { WorkspaceMenu } from "@/components/auth/workspace-menu";
 
-const MODES: { key: AppMode; label: string; emoji: string; tooltip: string; comingSoon?: boolean }[] = [
-  { key: "meeting", label: "会议助手", emoji: "🎯", tooltip: "整理会议记录，提取决议和行动项", comingSoon: true },
+const MODES: { key: AppMode; label: string; emoji: string; tooltip: string }[] = [
+  { key: "meeting", label: "会议助手", emoji: "🎯", tooltip: "整理会议记录，提取决议和行动项" },
   { key: "knowledge", label: "知识碎片", emoji: "💡", tooltip: "整合零散知识点，构建知识体系" },
-  { key: "article", label: "文章解析", emoji: "📄", tooltip: "解析文章内容，提炼核心观点", comingSoon: true },
+  { key: "article", label: "文章解析", emoji: "📄", tooltip: "解析文章内容，提炼核心观点" },
 ];
 
 export function Header() {
@@ -66,9 +67,8 @@ export function Header() {
             {MODES.map((mode) => (
               <button
                 key={mode.key}
-                onClick={() => { if (!mode.comingSoon) setCurrentMode(mode.key); }}
-                disabled={mode.comingSoon}
-                aria-disabled={mode.comingSoon}
+                onClick={() => setCurrentMode(mode.key)}
+                title={mode.tooltip}
                 className="relative flex items-center gap-1.5 px-3 py-1 rounded-[var(--radius-sm)] text-xs font-medium border-none bg-transparent cursor-pointer whitespace-nowrap group"
                 style={{
                   color: currentMode === mode.key ? "#fff" : "var(--text-tertiary)",
@@ -90,17 +90,6 @@ export function Header() {
               >
                 <span style={{ fontSize: 10, opacity: 0.7 }}>{mode.emoji}</span>
                 {mode.label}
-                {mode.comingSoon && (
-                  <span
-                    className="text-[9px] px-1 py-0 rounded-full ml-0.5 font-normal"
-                    style={{
-                      background: currentMode === mode.key ? "rgba(255,255,255,0.2)" : "var(--bg-hover)",
-                      color: currentMode === mode.key ? "rgba(255,255,255,0.8)" : "var(--text-muted)",
-                    }}
-                  >
-                    即将推出
-                  </span>
-                )}
               </button>
             ))}
           </div>
@@ -109,6 +98,7 @@ export function Header() {
 
       {/* Right: Actions */}
       <div className="flex items-center gap-1">
+        <WorkspaceMenu />
         {/* Layout direction toggle - desktop only */}
         {!isMobile && (
           <button

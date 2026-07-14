@@ -12,6 +12,7 @@
     "test:backend": "node scripts/backend-smoke.js"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.110.3",
     "html-to-image": "^1.11.13",
     "jspdf": "^4.2.1",
     "next": "^15.5.16",

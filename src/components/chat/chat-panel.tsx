@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useMindGrowStore } from "@/store/mindgrow-store";
 import { ChatMessage, AIMindMap } from "@/types";
 import { apiFetch, IS_LOCAL_MODE } from "@/lib/client-api";
+import { useSpeechInput } from "@/hooks/use-speech-input";
 
 // ============================================================
 // Simple Markdown renderer
@@ -308,6 +309,10 @@ export function ChatPanel() {
   } = useMindGrowStore();
 
   const [input, setInput] = useState("");
+  const appendSpeech = useCallback((text: string) => {
+    setInput((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}${text}`);
+  }, []);
+  const speech = useSpeechInput(appendSpeech);
   const [confirming, setConfirming] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [cloudStatus, setCloudStatus] = useState<"checking" | "connected" | "offline">(
@@ -574,6 +579,15 @@ export function ChatPanel() {
             }}
           />
           <button
+            type="button"
+            onClick={speech.toggle}
+            aria-label={speech.isListening ? "停止语音输入" : "开始语音输入"}
+            title={speech.supported ? (speech.isListening ? "停止语音输入" : "语音输入") : "当前浏览器不支持语音输入"}
+            className={`flex-shrink-0 w-8 h-8 rounded-xl flex items-center justify-center ${speech.isListening ? "bg-red-500/20 text-red-300" : "bg-[var(--bg-elevated)] text-[var(--text-secondary)]"}`}
+          >
+            {speech.isListening ? "■" : "🎙"}
+          </button>
+          <button
             onClick={handleSend}
             disabled={!input.trim() || isProcessing}
             aria-label="发送"
@@ -586,7 +600,9 @@ export function ChatPanel() {
         </div>
         <div className="flex items-center justify-between mt-1 px-1">
           <span className="text-[10px] text-[var(--muted-foreground)]">Enter 发送 · Shift+Enter 换行</span>
+          {speech.interimText && <span className="max-w-[180px] truncate text-[10px] text-[var(--primary)]">正在识别：{speech.interimText}</span>}
         </div>
+        {speech.error && <div role="status" className="mt-1 px-1 text-[10px] text-amber-300">{speech.error}</div>}
       </div>
     </div>
   );

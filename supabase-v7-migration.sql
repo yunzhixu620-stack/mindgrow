@@ -1,6 +1,6 @@
--- MindGrow V7 Supabase bootstrap schema (fresh project only).
--- Cloud data is accessed only through the trusted Function Compute backend.
--- The browser receives a public publishable key for Supabase Auth only.
+-- MindGrow V6 -> V7 live migration. Safe to run more than once.
+-- Existing anonymous V6 rows remain unassigned (workspace_id IS NULL) and are
+-- therefore invisible to V7 tenant-scoped API requests.
 
 BEGIN;
 
@@ -22,64 +22,15 @@ CREATE TABLE IF NOT EXISTS workspace_members (
   PRIMARY KEY (workspace_id, user_id)
 );
 
-CREATE TABLE IF NOT EXISTS categories (
-  id TEXT PRIMARY KEY,
-  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-  name TEXT NOT NULL DEFAULT '新文件夹',
-  icon TEXT NOT NULL DEFAULT '📁',
-  color TEXT NOT NULL DEFAULT '#22d3a7',
-  sort_order INTEGER NOT NULL DEFAULT 0,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+ALTER TABLE categories ADD COLUMN IF NOT EXISTS workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE;
+ALTER TABLE maps ADD COLUMN IF NOT EXISTS workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE;
+ALTER TABLE nodes ADD COLUMN IF NOT EXISTS workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE;
+ALTER TABLE edges ADD COLUMN IF NOT EXISTS workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE;
+ALTER TABLE node_layouts ADD COLUMN IF NOT EXISTS workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE;
 
-CREATE TABLE IF NOT EXISTS maps (
-  id TEXT PRIMARY KEY,
-  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
-  description TEXT NOT NULL DEFAULT '',
-  color TEXT NOT NULL DEFAULT '#22d3a7',
-  is_default BOOLEAN NOT NULL DEFAULT FALSE,
-  node_count INTEGER NOT NULL DEFAULT 0 CHECK (node_count >= 0),
-  category_id TEXT REFERENCES categories(id) ON DELETE SET NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS nodes (
-  id TEXT PRIMARY KEY,
-  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-  map_id TEXT NOT NULL REFERENCES maps(id) ON DELETE CASCADE,
-  content TEXT NOT NULL CHECK (char_length(content) BETWEEN 1 AND 10000),
-  "desc" TEXT NOT NULL DEFAULT '',
-  type TEXT NOT NULL DEFAULT 'concept' CHECK (type IN ('topic', 'concept', 'detail', 'question')),
-  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived', 'merged', 'deleted')),
-  source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'auto_complete', 'article', 'meeting', 'ai_generated', 'template')),
-  confidence REAL NOT NULL DEFAULT 0.5 CHECK (confidence BETWEEN 0 AND 1),
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS edges (
-  id TEXT PRIMARY KEY,
-  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-  map_id TEXT NOT NULL REFERENCES maps(id) ON DELETE CASCADE,
-  source_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-  target_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-  relation TEXT NOT NULL DEFAULT 'contains' CHECK (relation IN ('contains', 'relates_to', 'contradicts')),
-  weight REAL NOT NULL DEFAULT 1 CHECK (weight BETWEEN 0 AND 1),
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CHECK (source_id <> target_id)
-);
-
-CREATE TABLE IF NOT EXISTS node_layouts (
-  node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-  map_id TEXT NOT NULL REFERENCES maps(id) ON DELETE CASCADE,
-  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-  position_x REAL NOT NULL DEFAULT 0,
-  position_y REAL NOT NULL DEFAULT 0,
-  zoom_level REAL NOT NULL DEFAULT 1 CHECK (zoom_level > 0),
-  PRIMARY KEY (node_id, map_id)
-);
+ALTER TABLE nodes DROP CONSTRAINT IF EXISTS nodes_source_check;
+ALTER TABLE nodes ADD CONSTRAINT nodes_source_check
+  CHECK (source IN ('manual', 'auto_complete', 'article', 'meeting', 'ai_generated', 'template'));
 
 CREATE INDEX IF NOT EXISTS idx_members_user ON workspace_members(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_maps_workspace_updated ON maps(workspace_id, is_default DESC, updated_at DESC);
@@ -89,24 +40,14 @@ CREATE INDEX IF NOT EXISTS idx_nodes_workspace_map_status ON nodes(workspace_id,
 CREATE INDEX IF NOT EXISTS idx_nodes_content_trgm ON nodes USING GIN (content gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_nodes_desc_trgm ON nodes USING GIN ("desc" gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_edges_workspace_map ON edges(workspace_id, map_id);
-CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id);
-CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id);
 
--- Bounded, tenant-scoped candidate retrieval. The backend expands graph neighbors
--- and validates citations before returning an answer.
 CREATE OR REPLACE FUNCTION search_knowledge_nodes(
   p_workspace_id TEXT,
   p_map_id TEXT,
   p_query TEXT,
   p_limit INTEGER DEFAULT 12
 )
-RETURNS TABLE (
-  id TEXT,
-  content TEXT,
-  description TEXT,
-  type TEXT,
-  score REAL
-)
+RETURNS TABLE (id TEXT, content TEXT, description TEXT, type TEXT, score REAL)
 LANGUAGE sql
 STABLE
 SECURITY INVOKER
@@ -127,8 +68,7 @@ AS $$
     AND n.map_id = p_map_id
     AND n.status = 'active'
     AND (
-      n.content % p_query
-      OR n."desc" % p_query
+      n.content % p_query OR n."desc" % p_query
       OR lower(n.content) LIKE '%' || lower(p_query) || '%'
       OR lower(n."desc") LIKE '%' || lower(p_query) || '%'
     )
@@ -144,7 +84,6 @@ ALTER TABLE nodes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE edges ENABLE ROW LEVEL SECURITY;
 ALTER TABLE node_layouts ENABLE ROW LEVEL SECURITY;
 
--- Remove legacy permissive policies. No direct browser table access is allowed.
 DROP POLICY IF EXISTS "Allow all on categories" ON categories;
 DROP POLICY IF EXISTS "Allow all on maps" ON maps;
 DROP POLICY IF EXISTS "Allow all on nodes" ON nodes;

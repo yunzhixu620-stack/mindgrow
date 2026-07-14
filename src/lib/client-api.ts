@@ -1,7 +1,13 @@
 import { API_BASE_URL } from "@/lib/config";
+import { supabase } from "@/lib/supabase-browser";
 import type { AIMindMap, Category, KnowledgeEdge, KnowledgeNode, MindMap } from "@/types";
 
 const STORAGE_KEY = "mindgrow.local.v2";
+let activeWorkspaceId: string | null = null;
+
+export function setActiveWorkspaceId(workspaceId: string | null) {
+  activeWorkspaceId = workspaceId;
+}
 
 type LocalState = {
   version: 2;
@@ -394,12 +400,55 @@ function handleChat(init?: RequestInit): Response {
   });
 }
 
+function handleLocalTool(path: string, init?: RequestInit): Response {
+  const body = bodyOf(init);
+  if (path.endsWith("/meeting")) {
+    const transcript = String(body.transcript || "").trim();
+    if (transcript.length < 10) return json({ error: "请至少输入 10 个字的会议内容" }, 400);
+    const mindMap = generateLocalMindMap(transcript);
+    mindMap.root = String(body.title || mindMap.root || "会议纪要");
+    return json({
+      title: mindMap.root,
+      summary: mindMap.rootDesc || "",
+      topics: mindMap.children.map((child) => ({ title: child.topic, details: child.items })),
+      decisions: [],
+      actionItems: [],
+      risks: [],
+      openQuestions: ["本地演示模式未调用云端模型，请登录云端版获得完整提取结果"],
+      mindMap,
+    });
+  }
+  if (path.endsWith("/article")) {
+    const content = String(body.content || "").trim();
+    if (content.length < 50) return json({ error: "本地模式请粘贴至少 50 个字的文章正文" }, 400);
+    const mindMap = generateLocalMindMap(content);
+    return json({
+      title: mindMap.root,
+      summary: mindMap.rootDesc || "",
+      keyPoints: mindMap.children.flatMap((child) => child.items).slice(0, 10),
+      arguments: [],
+      questions: ["文章有哪些适用边界？"],
+      mindMap,
+      sourceUrl: "",
+    });
+  }
+  return json({ error: "Tool not found" }, 404);
+}
+
 export const IS_LOCAL_MODE = !API_BASE_URL;
 
 export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
-  if (API_BASE_URL) return fetch(`${API_BASE_URL}${path}`, init);
+  if (API_BASE_URL) {
+    const { data } = await supabase.auth.getSession();
+    const headers = new Headers(init?.headers);
+    if (data.session?.access_token) headers.set("Authorization", `Bearer ${data.session.access_token}`);
+    const workspaceId = activeWorkspaceId || (typeof window !== "undefined" ? window.localStorage.getItem("mindgrow.workspace.v1") : null);
+    if (workspaceId) headers.set("X-Workspace-Id", workspaceId);
+    return fetch(`${API_BASE_URL}${path}`, { ...init, headers });
+  }
   if (typeof window === "undefined") return fetch(path, init);
   if (path.startsWith("/api/knowledge")) return handleKnowledge(path, init);
   if (path.startsWith("/api/chat")) return handleChat(init);
+  if (path.startsWith("/api/tools/")) return handleLocalTool(path, init);
   return fetch(path, init);
 }
