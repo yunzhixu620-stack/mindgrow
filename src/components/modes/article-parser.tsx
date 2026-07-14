@@ -33,6 +33,8 @@ interface AudioOverview {
 
 export function ArticleParser() {
   const currentMapId = useMindGrowStore((state) => state.currentMapId);
+  const currentMap = useMindGrowStore((state) => state.maps.find((map) => map.id === state.currentMapId));
+  const nodeCount = useMindGrowStore((state) => state.nodes.length);
   const setNodes = useMindGrowStore((state) => state.setNodes);
   const setEdges = useMindGrowStore((state) => state.setEdges);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -137,8 +139,10 @@ export function ArticleParser() {
   );
 
   return (
-    <section className="w-full md:w-[520px] md:min-w-[420px] h-full overflow-y-auto border-r border-[var(--border)] bg-[var(--card)] p-4">
-      <div className="mb-4"><h2 className="text-base font-semibold">📄 文章解析</h2><p className="text-[11px] text-[var(--text-tertiary)] mt-1">支持公开网页、粘贴正文和 PDF；要点、导图节点与音频脚本均可回到原文引用。</p></div>
+    <section className="h-full w-full overflow-y-auto bg-[var(--background)]" data-mode-library-id={currentMapId}>
+      <div className="mx-auto max-w-5xl p-4 md:p-8">
+      <div className="mb-6 flex flex-col gap-3 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4 md:flex-row md:items-center md:justify-between"><div><h2 className="text-lg font-semibold">📄 文章解析</h2><p className="mt-1 text-xs text-[var(--text-tertiary)]">支持公开网页、粘贴正文和 PDF；要点、导图节点与音频脚本均可回到原文引用，内容只进入文章板块。</p></div><div className="rounded-xl border border-violet-400/30 bg-violet-400/10 px-3 py-2 text-xs text-violet-200"><span className="font-semibold">独立文章知识库</span><span className="mx-2 opacity-40">·</span>{currentMap?.name || "文章知识库"}<span className="mx-2 opacity-40">·</span>{nodeCount} 节点</div></div>
+      <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4">
       <div className="space-y-3">
         <input type="url" value={url} onChange={(event) => { setUrl(event.target.value); if (event.target.value) { setPdf(null); setContent(""); } }} placeholder="https://… 公开文章网址" className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2.5 text-sm outline-none focus:border-[var(--primary)]" />
         <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 text-[10px] text-[var(--text-muted)]"><span className="h-px bg-[var(--border)]" />或<span className="h-px bg-[var(--border)]" /></div>
@@ -158,8 +162,10 @@ export function ArticleParser() {
         {selectedCitation && <ArticleBlock title={`引用 [${selectedCitation.index}] · ${selectedCitation.locator || "原文"}`}><blockquote className="border-l-2 border-[var(--primary)] pl-2 text-[var(--text-secondary)]">“{selectedCitation.quote}”</blockquote>{result.sourceUrl && <a className="mt-2 inline-block text-[var(--primary-hover)] underline" href={result.sourceUrl} target="_blank" rel="noreferrer">打开原网页核对</a>}</ArticleBlock>}
         <button onClick={() => void createAudioOverview()} disabled={audioBusy} className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] py-2.5 text-sm font-medium disabled:opacity-40">{audioBusy ? "正在生成引用型播客脚本与音频…" : "🎧 生成 Audio Overview"}</button>
         {audio && <AudioOverviewCard audio={audio} speech={speech} showCitations={showCitations} />}
-        <button onClick={() => void save()} disabled={saving} className="w-full rounded-xl border border-[var(--primary-border)] bg-[var(--primary-subtle)] py-2.5 text-sm font-medium text-[var(--primary-hover)] disabled:opacity-40">{saving ? "正在保存…" : "保存到当前思维导图（含引用）"}</button>
+        <button onClick={() => void save()} disabled={saving} className="w-full rounded-xl border border-[var(--primary-border)] bg-[var(--primary-subtle)] py-2.5 text-sm font-medium text-[var(--primary-hover)] disabled:opacity-40">{saving ? "正在保存…" : "保存到文章知识库（含引用）"}</button>
       </div>}
+      </div>
+      </div>
     </section>
   );
 }

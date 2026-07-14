@@ -137,6 +137,13 @@ button, a, input, textarea, select {
   border-radius: var(--radius-lg) !important;
   box-shadow: var(--shadow-md) !important;
 }
+.mindgrow-minimap {
+  cursor: grab;
+  touch-action: none;
+}
+.mindgrow-minimap:active {
+  cursor: grabbing;
+}
 .react-flow__background {
   background: var(--bg-base) !important;
 }

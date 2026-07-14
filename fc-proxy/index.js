@@ -263,6 +263,19 @@ function tokenize(value) {
   return [...terms];
 }
 
+function contentSimilarity(left, right) {
+  const a = String(left || '').trim().toLowerCase();
+  const b = String(right || '').trim().toLowerCase();
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  if (a.includes(b) || b.includes(a)) return (Math.min(a.length, b.length) / Math.max(a.length, b.length)) * 0.9;
+  const leftTerms = new Set(tokenize(a));
+  const rightTerms = new Set(tokenize(b));
+  const union = new Set([...leftTerms, ...rightTerms]);
+  if (!union.size) return 0;
+  return [...leftTerms].filter((term) => rightTerms.has(term)).length / union.size;
+}
+
 function retrieveEvidence(question, nodes) {
   const queryTerms = tokenize(question);
   return nodes
@@ -963,31 +976,86 @@ async function assertOwnedCategory(workspaceId, categoryId) {
   if (!Array.isArray(rows) || !rows[0]) throw requestError(404, 'CATEGORY_NOT_FOUND', 'Category not found');
 }
 
-async function createGraph(workspaceId, mapId, mindMap, source, document, sourceCitations) {
+async function createGraph(workspaceId, mapId, mindMap, source, document, sourceCitations, placement) {
   await assertOwnedMap(workspaceId, mapId);
   const now = new Date().toISOString();
   const seed = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const workspace = encodeURIComponent(workspaceId);
+  const map = encodeURIComponent(mapId);
+  const [storedNodes, storedEdges] = await Promise.all([
+    supabaseRequest('GET', `nodes?workspace_id=eq.${workspace}&map_id=eq.${map}&status=eq.active&select=id,content,desc,type,status&limit=2000`),
+    supabaseRequest('GET', `edges?workspace_id=eq.${workspace}&map_id=eq.${map}&select=id,source_id,target_id,relation&limit=4000`),
+  ]);
+  const allNodes = Array.isArray(storedNodes) ? [...storedNodes] : [];
+  const allEdges = Array.isArray(storedEdges) ? [...storedEdges] : [];
   const nodes = [];
   const edges = [];
+  const reusedNodes = new Set();
   const citationPlan = new Map();
-  const rootId = `node_${seed}_r`;
-  nodes.push({ id: rootId, workspace_id: workspaceId, content: mindMap.root, desc: mindMap.rootDesc || '', type: 'topic', status: 'active', source, confidence: 1, map_id: mapId, created_at: now, updated_at: now });
-  citationPlan.set(rootId, normalizeCitationIndexes(mindMap.rootCitationIndexes));
+  const directChildIds = (parentId) => new Set(allEdges.filter((edge) => edge.source_id === parentId && edge.relation === 'contains').map((edge) => edge.target_id));
+  const bestSimilar = (content, candidates, threshold) => candidates
+    .map((node) => ({ node, score: contentSimilarity(content, node.content) }))
+    .filter((item) => item.score >= threshold)
+    .sort((a, b) => b.score - a.score)[0];
+  const makeNode = (id, content, desc, type, confidence) => ({ id, workspace_id: workspaceId, content, desc: desc || '', type, status: 'active', source, confidence, map_id: mapId, created_at: now, updated_at: now });
+  const addContains = (id, sourceId, targetId, weight) => {
+    if (allEdges.some((edge) => edge.source_id === sourceId && edge.target_id === targetId && edge.relation === 'contains')) return;
+    const created = { id, workspace_id: workspaceId, source_id: sourceId, target_id: targetId, relation: 'contains', weight, map_id: mapId, created_at: now };
+    edges.push(created);
+    allEdges.push(created);
+  };
+
+  const topics = allNodes.filter((node) => node.type === 'topic');
+  const requestedTopic = placement && Number(placement.confidence) >= 0.45 ? String(placement.targetTopic || '') : '';
+  let root = requestedTopic ? topics.find((node) => node.content === requestedTopic) : null;
+  if (!root) {
+    const similarRoot = bestSimilar(mindMap.root, topics, 0.42);
+    root = similarRoot ? similarRoot.node : null;
+  }
+  if (root) {
+    reusedNodes.add(root.id);
+    if (!root.desc && mindMap.rootDesc) {
+      await supabaseRequest('PATCH', `nodes?workspace_id=eq.${workspace}&id=eq.${encodeURIComponent(root.id)}`, { desc: String(mindMap.rootDesc).slice(0, 2000), updated_at: now }, 'return=minimal');
+    }
+  } else {
+    root = makeNode(`node_${seed}_r`, mindMap.root, mindMap.rootDesc, 'topic', 1);
+    nodes.push(root);
+    allNodes.push(root);
+  }
+  citationPlan.set(root.id, normalizeCitationIndexes(mindMap.rootCitationIndexes));
 
   (mindMap.children || []).forEach((child, childIndex) => {
-    const childId = `node_${seed}_c${childIndex}`;
-    nodes.push({ id: childId, workspace_id: workspaceId, content: child.topic, desc: child.desc || '', type: 'concept', status: 'active', source, confidence: 0.9, map_id: mapId, created_at: now, updated_at: now });
-    citationPlan.set(childId, normalizeCitationIndexes(child.citationIndexes));
-    edges.push({ id: `edge_${seed}_c${childIndex}`, workspace_id: workspaceId, source_id: rootId, target_id: childId, relation: 'contains', weight: 1, map_id: mapId, created_at: now });
+    const rootChildren = directChildIds(root.id);
+    const similarChild = bestSimilar(child.topic, allNodes.filter((node) => rootChildren.has(node.id)), 0.66);
+    let childNode = similarChild ? similarChild.node : null;
+    if (childNode) {
+      reusedNodes.add(childNode.id);
+    } else {
+      childNode = makeNode(`node_${seed}_c${childIndex}`, child.topic, child.desc, 'concept', 0.9);
+      nodes.push(childNode);
+      allNodes.push(childNode);
+      addContains(`edge_${seed}_c${childIndex}`, root.id, childNode.id, 1);
+    }
+    citationPlan.set(childNode.id, normalizeCitationIndexes(child.citationIndexes));
+
     (child.items || []).forEach((item, itemIndex) => {
-      const itemId = `node_${seed}_c${childIndex}i${itemIndex}`;
-      nodes.push({ id: itemId, workspace_id: workspaceId, content: item, desc: '', type: 'detail', status: 'active', source, confidence: 0.8, map_id: mapId, created_at: now, updated_at: now });
-      edges.push({ id: `edge_${seed}_c${childIndex}i${itemIndex}`, workspace_id: workspaceId, source_id: childId, target_id: itemId, relation: 'contains', weight: 0.8, map_id: mapId, created_at: now });
+      const childChildren = directChildIds(childNode.id);
+      const similarDetail = bestSimilar(item, allNodes.filter((node) => childChildren.has(node.id)), 0.72);
+      const existingDetail = similarDetail ? similarDetail.node : null;
       const itemIndexes = child.itemCitationIndexes && child.itemCitationIndexes[itemIndex];
-      citationPlan.set(itemId, normalizeCitationIndexes(itemIndexes && itemIndexes.length ? itemIndexes : child.citationIndexes));
+      if (existingDetail) {
+        reusedNodes.add(existingDetail.id);
+        citationPlan.set(existingDetail.id, normalizeCitationIndexes(itemIndexes && itemIndexes.length ? itemIndexes : child.citationIndexes));
+        return;
+      }
+      const detail = makeNode(`node_${seed}_c${childIndex}i${itemIndex}`, item, '', 'detail', 0.8);
+      nodes.push(detail);
+      allNodes.push(detail);
+      addContains(`edge_${seed}_c${childIndex}i${itemIndex}`, childNode.id, detail.id, 0.8);
+      citationPlan.set(detail.id, normalizeCitationIndexes(itemIndexes && itemIndexes.length ? itemIndexes : child.citationIndexes));
     });
   });
-  await supabaseRequest('POST', 'nodes', nodes);
+  if (nodes.length) await supabaseRequest('POST', 'nodes', nodes);
   if (edges.length) await supabaseRequest('POST', 'edges', edges);
   let citationRows = [];
   let sourceDocument = null;
@@ -1038,7 +1106,7 @@ async function createGraph(workspaceId, mapId, mindMap, source, document, source
       throw error;
     }
   }
-  return { nodes, edges, citations: citationRows, document: sourceDocument };
+  return { root, nodes, edges, reusedNodes: [...reusedNodes], citations: citationRows, document: sourceDocument };
 }
 
 async function updateMapNodeCount(workspaceId, mapId) {
@@ -1267,16 +1335,17 @@ async function handleKnowledge(req, context) {
 
   if (body.mindMap && body.mindMap.root) {
     const mapId = String(body.mapId || context.defaultMapId);
-    const graph = await createGraph(workspaceId, mapId, body.mindMap, body.source || 'ai_generated', body.document || null, body.citations || []);
+    const graph = await createGraph(workspaceId, mapId, body.mindMap, body.source || 'ai_generated', body.document || null, body.citations || [], body.placement || null);
     await updateMapNodeCount(workspaceId, mapId);
     return {
       status: 201,
       data: {
-        node: { id: graph.nodes[0].id, content: graph.nodes[0].content },
-        additionalNodes: graph.nodes.slice(1).map((node) => ({ id: node.id, content: node.content })),
+        node: { id: graph.root.id, content: graph.root.content },
+        additionalNodes: graph.nodes.filter((node) => node.id !== graph.root.id).map((node) => ({ id: node.id, content: node.content })),
         additionalEdges: graph.edges.map((edge) => edge.id),
         totalNodes: graph.nodes.length,
         totalEdges: graph.edges.length,
+        reusedNodes: graph.reusedNodes.length,
         totalCitations: graph.citations ? graph.citations.length : 0,
       },
     };

@@ -19,6 +19,8 @@ interface MeetingResult {
 
 export function MeetingAssistant() {
   const currentMapId = useMindGrowStore((state) => state.currentMapId);
+  const currentMap = useMindGrowStore((state) => state.maps.find((map) => map.id === state.currentMapId));
+  const nodeCount = useMindGrowStore((state) => state.nodes.length);
   const setNodes = useMindGrowStore((state) => state.setNodes);
   const setEdges = useMindGrowStore((state) => state.setEdges);
   const [title, setTitle] = useState("");
@@ -68,9 +70,14 @@ export function MeetingAssistant() {
   }
 
   return (
-    <section className="w-full md:w-[480px] md:min-w-[400px] h-full overflow-y-auto border-r border-[var(--border)] bg-[var(--card)] p-4">
-      <div className="mb-4"><h2 className="text-base font-semibold">🎯 会议助手</h2><p className="text-[11px] text-[var(--text-tertiary)] mt-1">实时口述或粘贴会议原文，提取决议、行动项和风险。</p></div>
-      <div className="space-y-3">
+    <section className="h-full w-full overflow-y-auto bg-[var(--background)]" data-mode-library-id={currentMapId}>
+      <div className="mx-auto max-w-6xl p-4 md:p-8">
+        <div className="mb-6 flex flex-col gap-3 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4 md:flex-row md:items-center md:justify-between">
+          <div><h2 className="text-lg font-semibold">🎯 会议助手</h2><p className="mt-1 text-xs text-[var(--text-tertiary)]">实时口述或粘贴会议原文，提取决议、行动项和风险；内容只进入会议板块。</p></div>
+          <div className="rounded-xl border border-sky-400/30 bg-sky-400/10 px-3 py-2 text-xs text-sky-200"><span className="font-semibold">独立会议知识库</span><span className="mx-2 opacity-40">·</span>{currentMap?.name || "会议知识库"}<span className="mx-2 opacity-40">·</span>{nodeCount} 节点</div>
+        </div>
+        <div className={`grid gap-5 ${result ? "lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]" : "mx-auto max-w-2xl"}`}>
+        <div className="space-y-3 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4">
         <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="会议标题（可选）" className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2.5 text-sm outline-none focus:border-[var(--primary)]" />
         <input value={participants} onChange={(event) => setParticipants(event.target.value)} placeholder="参会人，用逗号分隔（可选）" className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2.5 text-sm outline-none focus:border-[var(--primary)]" />
         <div className="rounded-xl border border-[var(--border)] bg-[var(--background)] p-3">
@@ -83,15 +90,17 @@ export function MeetingAssistant() {
         </div>
         {(speech.error || notice) && <div role="status" className="rounded-lg bg-[var(--bg-elevated)] px-3 py-2 text-xs text-[var(--text-secondary)]">{speech.error || notice}</div>}
         <button onClick={() => void generate()} disabled={busy || transcript.trim().length < 10} className="w-full rounded-xl bg-[var(--primary)] py-2.5 text-sm font-semibold text-black disabled:opacity-40">{busy ? "正在整理会议…" : "生成结构化会议纪要"}</button>
-      </div>
+        </div>
 
-      {result && <div className="mt-5 space-y-3 animate-fade-in">
+      {result && <div className="space-y-3 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4 animate-fade-in">
         <ResultBlock title="会议摘要"><p>{result.summary || "未提取到摘要"}</p></ResultBlock>
         <ResultBlock title="会议决议"><ResultList items={result.decisions} empty="未形成明确决议" /></ResultBlock>
         <ResultBlock title="行动项">{result.actionItems.length ? result.actionItems.map((item, index) => <div key={index} className="mb-2 last:mb-0"><div className="font-medium">□ {item.task}</div><div className="text-[10px] text-[var(--text-tertiary)] mt-0.5">负责人：{item.owner || "待确认"} · 截止：{item.due || "待确认"}</div></div>) : <span className="text-[var(--text-tertiary)]">未提取到行动项</span>}</ResultBlock>
         <ResultBlock title="风险与待确认"><ResultList items={[...result.risks, ...result.openQuestions]} empty="暂无" /></ResultBlock>
-        <button onClick={() => void save()} disabled={saving} className="w-full rounded-xl border border-[var(--primary-border)] bg-[var(--primary-subtle)] py-2.5 text-sm font-medium text-[var(--primary-hover)] disabled:opacity-40">{saving ? "正在保存…" : "保存到当前思维导图"}</button>
+        <button onClick={() => void save()} disabled={saving} className="w-full rounded-xl border border-[var(--primary-border)] bg-[var(--primary-subtle)] py-2.5 text-sm font-medium text-[var(--primary-hover)] disabled:opacity-40">{saving ? "正在保存…" : "保存到会议知识库"}</button>
       </div>}
+        </div>
+      </div>
     </section>
   );
 }

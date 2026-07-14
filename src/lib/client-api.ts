@@ -132,6 +132,7 @@ function createNode(state: LocalState, mapId: string, values: Partial<KnowledgeN
     status: values.status || "active",
     source: values.source || "manual",
     confidence: values.confidence ?? 1,
+    citations: values.citations || [],
     createdAt: timestamp,
     updatedAt: timestamp,
   };
@@ -149,27 +150,82 @@ function createEdge(state: LocalState, mapId: string, sourceId: string, targetId
   return created;
 }
 
-function addMindMap(state: LocalState, mapId: string, mindMap: AIMindMap, source: KnowledgeNode["source"] = "ai_generated", citations: Citation[] = []) {
+function contentSimilarity(left: string, right: string) {
+  const a = left.trim().toLocaleLowerCase();
+  const b = right.trim().toLocaleLowerCase();
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  if (a.includes(b) || b.includes(a)) return Math.min(a.length, b.length) / Math.max(a.length, b.length) * 0.9;
+  const leftTerms = new Set(terms(a));
+  const rightTerms = new Set(terms(b));
+  const union = new Set([...Array.from(leftTerms), ...Array.from(rightTerms)]);
+  if (!union.size) return 0;
+  const overlap = Array.from(leftTerms).filter((term) => rightTerms.has(term)).length;
+  return overlap / union.size;
+}
+
+function addMindMap(
+  state: LocalState,
+  mapId: string,
+  mindMap: AIMindMap,
+  source: KnowledgeNode["source"] = "ai_generated",
+  citations: Citation[] = [],
+  targetTopic = "",
+) {
   const createdNodes: KnowledgeNode[] = [];
   const createdEdges: KnowledgeEdge[] = [];
+  const reusedNodes = new Set<string>();
   const citationMap = new Map(citations.map((citation) => [citation.index, citation]));
   const cited = (indexes: number[] = []) => indexes.map((index) => citationMap.get(index)).filter(Boolean) as Citation[];
-  const root = createNode(state, mapId, { content: mindMap.root, desc: mindMap.rootDesc, type: "topic", source, confidence: 0.95, citations: cited(mindMap.rootCitationIndexes) });
-  createdNodes.push(root);
+  const mapNodes = state.nodes[mapId] || [];
+  const mapEdges = state.edges[mapId] || [];
+  const directChildren = (parentId: string) => new Set(mapEdges.filter((edge) => edge.sourceId === parentId && edge.relation === "contains").map((edge) => edge.targetId));
+  const findSimilar = (content: string, candidates: KnowledgeNode[], threshold: number) => candidates
+    .map((node) => ({ node, score: contentSimilarity(content, node.content) }))
+    .filter(({ score }) => score >= threshold)
+    .sort((a, b) => b.score - a.score)[0]?.node;
+
+  const topics = mapNodes.filter((node) => node.type === "topic" && node.status === "active");
+  let root = targetTopic ? topics.find((node) => node.content === targetTopic) : undefined;
+  root ||= findSimilar(mindMap.root, topics, 0.42);
+  if (root) {
+    reusedNodes.add(root.id);
+    if (!root.desc && mindMap.rootDesc) root.desc = mindMap.rootDesc;
+    root.citations = [...(root.citations || []), ...cited(mindMap.rootCitationIndexes)].filter((citation, index, all) => all.findIndex((item) => item.index === citation.index && item.quote === citation.quote) === index);
+    root.updatedAt = now();
+  } else {
+    root = createNode(state, mapId, { content: mindMap.root, desc: mindMap.rootDesc, type: "topic", source, confidence: 0.95, citations: cited(mindMap.rootCitationIndexes) });
+    createdNodes.push(root);
+  }
   for (const child of mindMap.children || []) {
-    const childNode = createNode(state, mapId, { content: child.topic, desc: child.desc, type: "concept", source, confidence: 0.85, citations: cited(child.citationIndexes) });
-    createdNodes.push(childNode);
-    createdEdges.push(createEdge(state, mapId, root.id, childNode.id));
+    const rootChildren = directChildren(root.id);
+    let childNode = findSimilar(child.topic, mapNodes.filter((node) => rootChildren.has(node.id)), 0.66);
+    if (childNode) {
+      reusedNodes.add(childNode.id);
+      if (!childNode.desc && child.desc) childNode.desc = child.desc;
+    } else {
+      childNode = createNode(state, mapId, { content: child.topic, desc: child.desc, type: "concept", source, confidence: 0.85, citations: cited(child.citationIndexes) });
+      createdNodes.push(childNode);
+      const newEdge = createEdge(state, mapId, root.id, childNode.id);
+      createdEdges.push(newEdge);
+    }
     const childItems = child.items || [];
     for (let itemIndex = 0; itemIndex < childItems.length; itemIndex += 1) {
       const item = childItems[itemIndex];
+      const childChildren = directChildren(childNode.id);
+      const existingDetail = findSimilar(item, mapNodes.filter((node) => childChildren.has(node.id)), 0.72);
+      if (existingDetail) {
+        reusedNodes.add(existingDetail.id);
+        continue;
+      }
       const detail = createNode(state, mapId, { content: item, type: "detail", source, confidence: 0.75, citations: cited(child.itemCitationIndexes?.[itemIndex] || child.citationIndexes) });
       createdNodes.push(detail);
-      createdEdges.push(createEdge(state, mapId, childNode.id, detail.id));
+      const newEdge = createEdge(state, mapId, childNode.id, detail.id);
+      createdEdges.push(newEdge);
     }
   }
   updateMapCount(state, mapId);
-  return { root, createdNodes, createdEdges };
+  return { root, createdNodes, createdEdges, reusedNodes: Array.from(reusedNodes) };
 }
 
 function handleKnowledge(path: string, init?: RequestInit): Response {
@@ -307,14 +363,16 @@ function handleKnowledge(path: string, init?: RequestInit): Response {
 
   const mapId = body.mapId || "map_default";
   if (body.mindMap?.root) {
-    const result = addMindMap(state, mapId, body.mindMap, body.source || "ai_generated", body.citations || []);
+    const targetTopic = body.placement?.confidence >= 0.45 ? String(body.placement.targetTopic || "") : "";
+    const result = addMindMap(state, mapId, body.mindMap, body.source || "ai_generated", body.citations || [], targetTopic);
     saveState(state);
     return json({
       node: result.root,
-      additionalNodes: result.createdNodes.slice(1),
+      additionalNodes: result.createdNodes.filter((node) => node.id !== result.root.id),
       additionalEdges: result.createdEdges,
       totalNodes: result.createdNodes.length,
       totalEdges: result.createdEdges.length,
+      reusedNodes: result.reusedNodes.length,
     });
   }
   if (!body.content) return json({ error: "Content is required" }, 400);
@@ -410,11 +468,20 @@ function handleChat(init?: RequestInit): Response {
     });
   }
   const mindMap = generateLocalMindMap(input);
+  const closestTopic = mapNodes
+    .filter((node) => node.type === "topic")
+    .map((node) => ({ node, score: Math.max(contentSimilarity(input, node.content), contentSimilarity(mindMap.root, node.content)) }))
+    .sort((a, b) => b.score - a.score)[0];
+  const placement = closestTopic && closestTopic.score >= 0.2
+    ? { targetTopic: closestTopic.node.content, confidence: Math.min(0.95, 0.55 + closestTopic.score / 2), reason: "与已有主题共享关键词，保存时将复用相似分支" }
+    : null;
   return json({
     type: "knowledge",
     intent: { type: "knowledge", keywords: terms(input), topic: mindMap.root, summary: compact(input, 60) },
-    reply: `已把这段内容整理为可编辑的知识结构。保存前可以取消不需要的分支。`,
-    placement: null,
+    reply: placement
+      ? `已把内容整理为可编辑结构，并识别到它与「${placement.targetTopic}」相关；保存时会自动复用相似节点。`
+      : "已把这段内容整理为可编辑的知识结构。它与现有主题关联较弱，将保留为独立主题。",
+    placement,
     mindMap,
   });
 }

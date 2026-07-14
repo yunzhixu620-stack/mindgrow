@@ -43,6 +43,7 @@ function MindGrowNode({ data, selected }: NodeProps) {
   const descendantCount = (data.descendantCount as number) || childCount;
   const collapsed = data.collapsed as boolean;
   const showDetails = data.showDetails as boolean;
+  const compact = data.compact as boolean;
   const horizontal = data.direction === "horizontal";
   const branchIndex = data.branchIndex as number || 0;
   const citations = (data.citations || []) as KnowledgeNode["citations"];
@@ -63,7 +64,7 @@ function MindGrowNode({ data, selected }: NodeProps) {
   return (
     <div
       className={`
-        relative rounded-xl px-3.5 py-2.5 min-w-[150px] max-w-[220px]
+        relative rounded-xl ${compact ? "min-w-[132px] max-w-[172px] px-2.5 py-2" : "min-w-[150px] max-w-[220px] px-3.5 py-2.5"}
         text-center transition-all duration-200 cursor-grab active:cursor-grabbing
         ${selected ? "ring-2 ring-offset-1 ring-offset-[#0a0a0f]" : ""}
         ${highlighted ? "animate-pulse ring-2 ring-[#22d3a7] ring-offset-1 ring-offset-[#0a0a0f]" : ""}
@@ -241,18 +242,29 @@ function layoutTree(
     }
   }
 
-  const treeSpacing = direction === "vertical" ? options.tree : 0;
-  const treeHSpacing = direction === "horizontal" ? options.tree : 0;
-  let offset = 0;
+  // Lay independent topics on bounded shelves instead of one unbounded line.
+  // This keeps new keywords inside a predictable viewport and prevents trees
+  // from overlapping while still leaving a clear gap between topic groups.
+  const maxPrimarySpan = direction === "vertical" ? 1500 : 980;
+  let primaryOffset = 0;
+  let secondaryOffset = 0;
+  let lineCrossSpan = 0;
   for (const root of rootNodes) {
     const size = getSubtreeSize(root.id);
-    if (direction === "vertical") {
-      placeNode(root.id, offset, 0);
-      offset += size.w + treeSpacing;
-    } else {
-      placeNode(root.id, 0, offset);
-      offset += size.h + treeHSpacing;
+    const primarySpan = direction === "vertical" ? size.w : size.h;
+    const crossSpan = direction === "vertical" ? size.h : size.w;
+    if (primaryOffset > 0 && primaryOffset + primarySpan > maxPrimarySpan) {
+      primaryOffset = 0;
+      secondaryOffset += lineCrossSpan + options.tree;
+      lineCrossSpan = 0;
     }
+    if (direction === "vertical") {
+      placeNode(root.id, primaryOffset, secondaryOffset);
+    } else {
+      placeNode(root.id, secondaryOffset, primaryOffset);
+    }
+    primaryOffset += primarySpan + options.tree;
+    lineCrossSpan = Math.max(lineCrossSpan, crossSpan);
   }
 
   if (rootNodes.length === 0) {
@@ -279,6 +291,7 @@ function buildGraph(
   collapsed: Set<string>,
   focusRootId: string | null,
   showDetails: boolean,
+  compact: boolean,
   onToggleCollapse: (nodeId: string) => void,
 ): { nodes: Node[]; edges: Edge[]; branchMap: Map<string, number> } {
   const allChildrenOf = new Map<string, string[]>();
@@ -332,7 +345,7 @@ function buildGraph(
   }
 
   const positions = layoutTree(scopedNodes, scopedEdges, {
-    direction, nodeWidth: 210, nodeHeight: 84, hGap: spacing.h, vGap: spacing.v, tree: spacing.tree,
+    direction, nodeWidth: compact ? 170 : 210, nodeHeight: compact ? 72 : 84, hGap: spacing.h, vGap: spacing.v, tree: spacing.tree,
   }, collapsed);
 
   // Collect all visible IDs (respecting collapse)
@@ -372,6 +385,7 @@ function buildGraph(
         collapsed: collapsed.has(dbNode.id),
         direction,
         showDetails,
+        compact,
         nodeId: dbNode.id,
         onToggleCollapse,
         citations: dbNode.citations || [],
@@ -389,11 +403,12 @@ function buildGraph(
       id: dbEdge.id,
       source: dbEdge.sourceId,
       target: dbEdge.targetId,
-      type: isRelation ? "default" : "smoothstep",
+      // One continuous cubic curve is easier to follow than multi-turn elbows.
+      type: "bezier",
       animated: isRelation,
       style: {
         stroke: isRelation ? "#f472b688" : `${edgeColor}44`,
-        strokeWidth: 1.5,
+        strokeWidth: isRelation ? 1.4 : 1.8,
         strokeDasharray: isRelation ? "5 5" : undefined,
       },
     };
@@ -503,7 +518,7 @@ export function MindMapPanel() {
   const [spacing, setSpacing] = useState<"compact" | "normal" | "wide">("compact");
   const [showSearch, setShowSearch] = useState(false);
   const [localSearch, setLocalSearch] = useState("");
-  const [editingNode, setEditingNode] = useState<{ id: string; content: string } | null>(null);
+  const [editingNode, setEditingNode] = useState<{ id: string; content: string; desc: string } | null>(null);
   const [showSpacing, setShowSpacing] = useState(false);
   const [showToolbar, setShowToolbar] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
@@ -519,7 +534,10 @@ export function MindMapPanel() {
     const check = () => {
       const mobile = window.innerWidth < 768;
       setIsMobile(mobile);
-      if (mobile) setDirection("horizontal");
+      if (mobile) {
+        setDirection("horizontal");
+        setShowNodeDetails(false);
+      }
     };
     check();
     window.addEventListener("resize", check);
@@ -588,8 +606,9 @@ export function MindMapPanel() {
 
   // Large maps open as a readable outline instead of shrinking every node into one viewport.
   useEffect(() => {
-    if (!currentMapId || storeNodes.length < 14) {
-      const smallMapKey = currentMapId ? `${currentMapId}:small:${storeNodes[0]?.id || "empty"}` : null;
+    const outlineThreshold = isMobile ? 8 : 14;
+    if (!currentMapId || storeNodes.length < outlineThreshold) {
+      const smallMapKey = currentMapId ? `${currentMapId}:small:${isMobile ? "mobile" : "desktop"}:${storeNodes[0]?.id || "empty"}` : null;
       if (currentMapId && initializedLargeMapRef.current !== smallMapKey) {
         initializedLargeMapRef.current = smallMapKey;
         setViewMode("all");
@@ -599,7 +618,7 @@ export function MindMapPanel() {
     }
     const childIds = new Set(storeEdges.filter((edge) => edge.relation === "contains").map((edge) => edge.targetId));
     const rootSignature = storeNodes.filter((node) => !childIds.has(node.id)).map((node) => node.id).sort().join(",");
-    const largeMapKey = `${currentMapId}:large:${rootSignature}`;
+    const largeMapKey = `${currentMapId}:large:${isMobile ? "mobile" : "desktop"}:${rootSignature}`;
     if (initializedLargeMapRef.current === largeMapKey) return;
     initializedLargeMapRef.current = largeMapKey;
     setDirection("horizontal");
@@ -607,14 +626,14 @@ export function MindMapPanel() {
     setCollapsedNodes(getOutlineCollapsedNodes(storeNodes, storeEdges));
     setViewMode("outline");
     refitGraph();
-  }, [currentMapId, storeNodes, storeEdges, setCollapsedNodes, refitGraph]);
+  }, [currentMapId, storeNodes, storeEdges, isMobile, setCollapsedNodes, refitGraph]);
 
   const graph = useMemo(
     () => buildGraph(
       storeNodes, storeEdges, highlightedNodeId, searchResults, direction, sv,
-      collapsedNodes, focusedNodeId, showNodeDetails, handleToggleBranch,
+      collapsedNodes, focusedNodeId, showNodeDetails, isMobile, handleToggleBranch,
     ),
-    [storeNodes, storeEdges, highlightedNodeId, searchResults, direction, sv, collapsedNodes, focusedNodeId, showNodeDetails, handleToggleBranch],
+    [storeNodes, storeEdges, highlightedNodeId, searchResults, direction, sv, collapsedNodes, focusedNodeId, showNodeDetails, isMobile, handleToggleBranch],
   );
 
   const hiddenNodeCount = Math.max(0, storeNodes.length - graph.nodes.length);
@@ -630,7 +649,7 @@ export function MindMapPanel() {
   const onConnect = useCallback(
     (connection: Connection) => {
       setFlowEdges((eds) =>
-        addEdge({ ...connection, type: "smoothstep", style: { stroke: "#ffffff10" } }, eds)
+        addEdge({ ...connection, type: "bezier", style: { stroke: "#ffffff24", strokeWidth: 1.8 } }, eds)
       );
     },
     [setFlowEdges]
@@ -727,7 +746,7 @@ export function MindMapPanel() {
       const nodeId = nodeEl.getAttribute('data-id');
       if (!nodeId) return;
       const node = storeNodes.find((n) => n.id === nodeId);
-      if (node) setEditingNode({ id: nodeId, content: node.content });
+      if (node) setEditingNode({ id: nodeId, content: node.content, desc: node.desc || "" });
     };
     document.addEventListener("dblclick", handler);
     return () => document.removeEventListener("dblclick", handler);
@@ -744,7 +763,7 @@ export function MindMapPanel() {
       await apiFetch("/api/knowledge", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nodeId: editingNode.id, content: editingNode.content.trim() }),
+        body: JSON.stringify({ nodeId: editingNode.id, content: editingNode.content.trim(), desc: editingNode.desc.trim() }),
       });
       reloadMap();
     } catch (e) {
@@ -794,7 +813,7 @@ export function MindMapPanel() {
   const handleCtxEdit = useCallback(() => {
     if (!contextMenu) return;
     const node = storeNodes.find((n) => n.id === contextMenu.nodeId);
-    if (node) setEditingNode({ id: node.id, content: node.content });
+    if (node) setEditingNode({ id: node.id, content: node.content, desc: node.desc || "" });
     setContextMenu(null);
   }, [contextMenu, storeNodes, setContextMenu]);
 
@@ -1092,18 +1111,40 @@ export function MindMapPanel() {
       {/* Inline edit overlay */}
       {editingNode && (
         <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/40 backdrop-blur-sm">
-          <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-6 shadow-xl min-w-[320px] animate-fade-in-up">
-            <h3 className="text-sm font-semibold text-[var(--foreground)] mb-3">编辑节点</h3>
+          <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-6 shadow-xl w-[min(92vw,480px)] animate-fade-in-up">
+            <h3 className="text-sm font-semibold text-[var(--foreground)] mb-4">编辑节点内容</h3>
+            <label className="mb-1.5 block text-[11px] font-medium text-[var(--muted-foreground)]" htmlFor="node-title-editor">大标题</label>
             <input
+              id="node-title-editor"
               ref={editInputRef}
               value={editingNode.content}
-              onChange={(e) => setEditingNode({ ...editingNode, content: e.target.value })}
+              onChange={(e) => {
+                const content = e.target.value;
+                setEditingNode((current) => current ? { ...current, content } : current);
+              }}
               onKeyDown={(e) => {
-                if (e.key === "Enter") commitEdit();
+                if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) commitEdit();
                 if (e.key === "Escape") setEditingNode(null);
               }}
               className="w-full bg-[var(--background)] rounded-xl px-4 py-2.5 text-sm text-[var(--foreground)] outline-none border border-[var(--border)] focus:border-[var(--primary)]"
             />
+            <label className="mb-1.5 mt-4 block text-[11px] font-medium text-[var(--muted-foreground)]" htmlFor="node-description-editor">详细解释</label>
+            <textarea
+              id="node-description-editor"
+              value={editingNode.desc}
+              onChange={(e) => {
+                const desc = e.target.value;
+                setEditingNode((current) => current ? { ...current, desc } : current);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) commitEdit();
+                if (e.key === "Escape") setEditingNode(null);
+              }}
+              rows={5}
+              placeholder="补充定义、背景、边界、例子或来源说明…"
+              className="w-full resize-y bg-[var(--background)] rounded-xl px-4 py-2.5 text-sm leading-6 text-[var(--foreground)] outline-none border border-[var(--border)] focus:border-[var(--primary)]"
+            />
+            <p className="mt-2 text-[10px] text-[var(--text-muted)]">Ctrl / ⌘ + Enter 保存</p>
             <div className="flex justify-end gap-2 mt-4">
               <button onClick={() => setEditingNode(null)} className="px-4 py-2 rounded-xl text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--muted)] transition-colors cursor-pointer">
                 取消
@@ -1143,30 +1184,31 @@ export function MindMapPanel() {
         zoomOnScroll={true}
         zoomOnPinch={true}
         zoomOnDoubleClick={false}
-        defaultEdgeOptions={{ type: "default", style: { stroke: "#ffffff10" } }}
+        defaultEdgeOptions={{ type: "bezier", style: { stroke: "#ffffff24", strokeWidth: 1.8 } }}
         proOptions={{ hideAttribution: true }}
         className={`!bg-[var(--background)] ${isMobile ? "!touch-none" : ""}`}
       >
         <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="#151520" />
         <Controls
-          className="!bg-[var(--card)] !border !border-[var(--border)] !rounded-xl !shadow-lg !bottom-4 !left-auto !right-4"
+          className={`!bg-[var(--card)] !border !border-[var(--border)] !rounded-xl !shadow-lg !bottom-4 ${isMobile ? "!left-3 !right-auto" : "!left-auto !right-4"}`}
           showInteractive={false}
         />
-        {!isMobile && (
-          <MiniMap
-            className="!bg-[var(--card)] !border !border-[var(--border)] !rounded-xl"
-            nodeColor={(n) => {
-              const type = n.data?.nodeType as string;
-              const bi = n.data?.branchIndex as number;
-              if (bi && bi > 0) return BRANCH_COLORS[bi % BRANCH_COLORS.length];
-              const colorMap: Record<string, string> = {
-                topic: "#22d3a7", concept: "#38bdf8", detail: "#818cf8", question: "#f472b6",
-              };
-              return colorMap[type] || "#818cf8";
-            }}
-            maskColor="rgba(10, 10, 15, 0.85)"
-          />
-        )}
+        <MiniMap
+          className={`mindgrow-minimap !bg-[var(--card)] !border !border-[var(--border)] !rounded-xl ${isMobile ? "!bottom-3 !right-3" : ""}`}
+          style={isMobile ? { width: 126, height: 78 } : undefined}
+          pannable
+          zoomable
+          nodeColor={(n) => {
+            const type = n.data?.nodeType as string;
+            const bi = n.data?.branchIndex as number;
+            if (bi && bi > 0) return BRANCH_COLORS[bi % BRANCH_COLORS.length];
+            const colorMap: Record<string, string> = {
+              topic: "#22d3a7", concept: "#38bdf8", detail: "#818cf8", question: "#f472b6",
+            };
+            return colorMap[type] || "#818cf8";
+          }}
+          maskColor="rgba(10, 10, 15, 0.82)"
+        />
       </ReactFlow>
     </div>
   );

@@ -457,6 +457,7 @@ export function ChatPanel() {
           mindMap: filteredMindMap,
           mapId: currentMapId,
           source: "ai_generated",
+          placement: pendingPlacement,
         }),
       });
       const data = await res.json();
@@ -478,7 +479,9 @@ export function ChatPanel() {
         addMessage({
           id: `msg_${Date.now()}_confirm`,
           role: "assistant",
-          content: `✅ 已创建 ${data.totalNodes || 0} 个知识节点！思维导图已更新 🌱`,
+          content: data.reusedNodes
+            ? `✅ 已新增 ${data.totalNodes || 0} 个节点，并复用 ${data.reusedNodes} 个相似节点；知识已自动耦合到现有主题。`
+            : `✅ 已创建 ${data.totalNodes || 0} 个知识节点！思维导图已更新 🌱`,
           timestamp: new Date().toISOString(),
         });
       }
@@ -495,7 +498,7 @@ export function ChatPanel() {
       setPendingPlacement(null);
       setConfirming(false);
     }
-  }, [pendingMindMap, confirming, currentMapId, setNodes, setEdges, addMessage, setPendingMindMap, setPendingPlacement]);
+  }, [pendingMindMap, pendingPlacement, confirming, currentMapId, setNodes, setEdges, addMessage, setPendingMindMap, setPendingPlacement]);
 
   const handleCancel = useCallback(() => {
     setPendingMindMap(null);

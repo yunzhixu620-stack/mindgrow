@@ -4,12 +4,15 @@ import { useState, useEffect } from "react";
 import { useMindGrowStore, type AppMode } from "@/store/mindgrow-store";
 import Link from "next/link";
 import { WorkspaceMenu } from "@/components/auth/workspace-menu";
+import { MODE_LIBRARY_CONFIG } from "@/lib/mode-libraries";
 
 const MODES: { key: AppMode; label: string; emoji: string; tooltip: string }[] = [
   { key: "meeting", label: "会议助手", emoji: "🎯", tooltip: "整理会议记录，提取决议和行动项" },
   { key: "knowledge", label: "知识碎片", emoji: "💡", tooltip: "整合零散知识点，构建知识体系" },
   { key: "article", label: "文章解析", emoji: "📄", tooltip: "解析文章内容，提炼核心观点" },
 ];
+
+const GUIDE_HREF = process.env.NODE_ENV === "production" ? "/mindgrow/guide/" : "/guide/";
 
 export function Header() {
   const { currentMode, setCurrentMode, layoutDirection, setLayoutDirection, nodes } = useMindGrowStore();
@@ -99,8 +102,8 @@ export function Header() {
       {/* Right: Actions */}
       <div className="flex items-center gap-1">
         <WorkspaceMenu />
-        {/* Layout direction toggle - desktop only */}
-        {!isMobile && (
+        {/* Layout direction only belongs to the knowledge-map workspace. */}
+        {!isMobile && currentMode === "knowledge" && (
           <button
             onClick={() => setLayoutDirection(layoutDirection === "vertical" ? "horizontal" : "vertical")}
             className="w-8 h-8 rounded-[var(--radius-sm)] border-none bg-transparent flex items-center justify-center cursor-pointer"
@@ -127,7 +130,7 @@ export function Header() {
           </button>
         )}
 
-        {/* Node count indicator */}
+        {/* Active workspace count */}
         <div
           className="flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-semibold"
           style={{
@@ -136,23 +139,24 @@ export function Header() {
             color: "var(--primary-hover)",
           }}
         >
-          {nodes.length} 节点
+          {currentMode === "knowledge" ? `${nodes.length} 节点` : `${MODE_LIBRARY_CONFIG[currentMode].shortLabel}库 · ${nodes.length}`}
         </div>
 
-        {!isMobile && (
+        {!isMobile && currentMode === "knowledge" && (
           <div
             className="mx-1"
             style={{ width: 1, height: 20, background: "var(--border-default)" }}
           />
         )}
 
-        <Link
-          href="/guide"
+        <a
+          href={GUIDE_HREF}
+          data-testid="guide-link"
           className="flex items-center gap-1 px-2 py-1.5 rounded-[var(--radius-sm)] text-xs no-underline hover:bg-[var(--bg-hover)]"
           style={{ color: "var(--text-tertiary)" }}
         >
           使用指南
-        </Link>
+        </a>
 
         {/* Universe link */}
         <Link

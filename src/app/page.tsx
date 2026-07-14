@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { MindMapPanel } from "@/components/mindmap/mind-map-panel";
 import { ChatPanel } from "@/components/chat/chat-panel";
 import { Sidebar } from "@/components/layout/sidebar";
-import { useMindGrowStore } from "@/store/mindgrow-store";
+import { useMindGrowStore, type AppMode } from "@/store/mindgrow-store";
 import type { MindMap } from "@/types";
 import { apiFetch } from "@/lib/client-api";
 import { TemplateBrowser } from "@/components/template/template-browser";
@@ -13,6 +13,7 @@ import { WorkspaceMenu } from "@/components/auth/workspace-menu";
 import { MeetingAssistant } from "@/components/modes/meeting-assistant";
 import { ArticleParser } from "@/components/modes/article-parser";
 import { IS_LOCAL_MODE } from "@/lib/client-api";
+import { MODE_LIBRARY_CONFIG, isMapForMode, modeLibraryDescription } from "@/lib/mode-libraries";
 
 export default function Home() {
   const { currentWorkspace } = useAuth();
@@ -47,8 +48,14 @@ export default function Home() {
   const [showUncategorized, setShowUncategorized] = useState(true);
   const [contextMenu, setContextMenu] = useState<{ map: MindMap } | null>(null);
   const [actionSheet, setActionSheet] = useState<"none" | "map-actions" | "move-to">("none");
+  const [modeLibraryBusy, setModeLibraryBusy] = useState(false);
+  const [modeLibraryError, setModeLibraryError] = useState("");
+  const [mapCatalogReady, setMapCatalogReady] = useState(false);
   const createRef = useRef<HTMLInputElement>(null);
   const catCreateRef = useRef<HTMLInputElement>(null);
+  const activeModeRef = useRef<AppMode>("knowledge");
+  const lastMapByModeRef = useRef<Partial<Record<AppMode, string>>>({ knowledge: "map_default" });
+  const provisioningModeRef = useRef<AppMode | null>(null);
 
   // Detect mobile
   useEffect(() => {
@@ -103,14 +110,16 @@ export default function Home() {
       .then(([{ maps }, { categories }]) => {
         setMaps(maps || []);
         setCategories(categories || []);
+        setMapCatalogReady(true);
       })
-      .catch(() => {});
+      .catch(() => setMapCatalogReady(true));
   }, [setMaps, setCategories, currentWorkspaceId]);
 
   useEffect(() => {
     if (!currentWorkspaceDefaultMapId) return;
     setMaps([]);
     setCategories([]);
+    setMapCatalogReady(false);
     setNodes([]);
     setEdges([]);
     setCurrentMapId(currentWorkspaceDefaultMapId);
@@ -130,6 +139,7 @@ export default function Home() {
         const { categories: allCats } = await catsRes.json();
         setCategories(allCats);
       }
+      setMapCatalogReady(true);
     } catch (e) { console.error(e); }
   }, [setMaps, setCategories]);
 
@@ -149,13 +159,85 @@ export default function Home() {
     loadChatHistory(mapId);
   }, [currentMapId, setCurrentMapId, setNodes, setEdges, saveChatHistory, loadChatHistory]);
 
+  // Switching product boards also switches to a board-owned knowledge library.
+  // Meeting and article libraries are provisioned once, then reused on later visits.
+  useEffect(() => {
+    if (!mapCatalogReady) return;
+
+    const previousMode = activeModeRef.current;
+    const modeChanged = previousMode !== currentMode;
+    if (modeChanged) {
+      lastMapByModeRef.current[previousMode] = currentMapId;
+      activeModeRef.current = currentMode;
+      setModeLibraryError("");
+    } else if (modeLibraryError) {
+      return;
+    }
+
+    const currentMap = maps.find((map) => map.id === currentMapId);
+    if (currentMap && isMapForMode(currentMap, currentMode)) {
+      lastMapByModeRef.current[currentMode] = currentMap.id;
+      setModeLibraryBusy(false);
+      return;
+    }
+
+    const rememberedId = lastMapByModeRef.current[currentMode];
+    const target = maps.find((map) => map.id === rememberedId && isMapForMode(map, currentMode))
+      || maps.find((map) => isMapForMode(map, currentMode));
+
+    if (target) {
+      setModeLibraryBusy(true);
+      void handleSwitchMap(target.id).finally(() => setModeLibraryBusy(false));
+      return;
+    }
+
+    if (currentMode === "knowledge" || provisioningModeRef.current === currentMode) return;
+
+    let cancelled = false;
+    provisioningModeRef.current = currentMode;
+    setModeLibraryBusy(true);
+    const config = MODE_LIBRARY_CONFIG[currentMode];
+    void apiFetch("/api/knowledge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "createMap",
+        name: config.defaultName,
+        description: modeLibraryDescription(currentMode),
+        color: currentMode === "meeting" ? "#38bdf8" : "#a78bfa",
+      }),
+    })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok || !data.map?.id) throw new Error(data.error || `无法创建${config.defaultName}`);
+        if (cancelled) return;
+        lastMapByModeRef.current[currentMode] = data.map.id;
+        await handleSwitchMap(data.map.id);
+        await reloadAll();
+      })
+      .catch((error) => {
+        if (!cancelled) setModeLibraryError(error instanceof Error ? error.message : "知识库准备失败");
+      })
+      .finally(() => {
+        if (provisioningModeRef.current === currentMode) provisioningModeRef.current = null;
+        if (!cancelled) setModeLibraryBusy(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [currentMode, currentMapId, maps, mapCatalogReady, modeLibraryError, handleSwitchMap, reloadAll]);
+
   const handleCreateMap = useCallback(async () => {
     if (!newName.trim()) { setIsCreating(false); setNewName(""); return; }
     try {
       const res = await apiFetch("/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "createMap", name: newName.trim(), categoryId: newCategoryId }),
+        body: JSON.stringify({
+          action: "createMap",
+          name: newName.trim(),
+          categoryId: currentMode === "knowledge" ? newCategoryId : null,
+          description: currentMode === "knowledge" ? "" : modeLibraryDescription(currentMode),
+        }),
       });
       if (res.ok) {
         const { map } = await res.json();
@@ -175,7 +257,7 @@ export default function Home() {
     setNewName("");
     setNewCategoryId(null);
     setDrawerOpen(false);
-  }, [newName, newCategoryId, setCurrentMapId, setNodes, setEdges, saveChatHistory, loadChatHistory, reloadAll]);
+  }, [newName, newCategoryId, currentMode, setCurrentMapId, setNodes, setEdges, saveChatHistory, loadChatHistory, reloadAll]);
 
   const handleDeleteMap = useCallback(async (map: MindMap) => {
     if (map.isDefault) return;
@@ -233,14 +315,32 @@ export default function Home() {
     loadChatHistory(currentMapId);
   }, [isMobile, currentMapId, setNodes, setEdges, loadChatHistory]);
 
-  // Group maps by category
-  const uncategorizedMaps = maps.filter((m) => !m.categoryId);
-  const categorizedMaps = categories.map((cat) => ({
+  // Each product board owns a separate set of knowledge libraries.
+  const visibleMaps = maps.filter((map) => isMapForMode(map, currentMode));
+  const uncategorizedMaps = visibleMaps.filter((m) => !m.categoryId);
+  const categorizedMaps = (currentMode === "knowledge" ? categories : []).map((cat) => ({
     category: cat,
-    maps: maps.filter((m) => m.categoryId === cat.id),
+    maps: visibleMaps.filter((m) => m.categoryId === cat.id),
   }));
 
   const FOLDER_ICONS = ["📁", "📂", "📚", "🎯", "💡", "🔬", "🎨", "💼", "🏠", "🧪", "📖", "🌍", "💻", "🧠", "🎮", "📝"];
+  const modeConfig = MODE_LIBRARY_CONFIG[currentMode];
+  const activeModePanel = currentMode !== "knowledge" && (modeLibraryBusy || modeLibraryError)
+    ? (
+      <div className="flex h-full w-full items-center justify-center bg-[var(--background)] px-6" data-testid="mode-library-state">
+        <div className="max-w-sm rounded-2xl border border-[var(--border)] bg-[var(--card)] p-6 text-center shadow-xl">
+          <div className="mb-3 text-3xl">{modeConfig.emoji}</div>
+          <h2 className="text-base font-semibold text-[var(--foreground)]">{modeLibraryError ? `${modeConfig.defaultName}暂时不可用` : `正在进入${modeConfig.defaultName}`}</h2>
+          <p className="mt-2 text-xs leading-6 text-[var(--muted-foreground)]">{modeLibraryError || "首次进入会自动创建独立知识库，后续将直接恢复上次内容。"}</p>
+          {modeLibraryError && <button type="button" onClick={() => setModeLibraryError("")} className="mt-4 rounded-xl bg-[var(--primary)] px-4 py-2 text-xs font-semibold text-black">重新尝试</button>}
+        </div>
+      </div>
+    )
+    : currentMode === "meeting"
+      ? <MeetingAssistant />
+      : currentMode === "article"
+        ? <ArticleParser />
+        : <ChatPanel />;
 
   // Mobile layout
   if (isMobile) {
@@ -273,17 +373,17 @@ export default function Home() {
               mobileTab === "chat" && currentMode === mode ? "text-[var(--primary)] border-b-2 border-[var(--primary)]" : "text-[var(--muted-foreground)]"
             }`}
           >
-            {mode === "knowledge" ? "💡 知识" : mode === "meeting" ? "🎯 会议" : "📄 文章"}
+            {MODE_LIBRARY_CONFIG[mode].emoji} {MODE_LIBRARY_CONFIG[mode].shortLabel}
           </button>
           ))}
-          <button
-            onClick={() => setMobileTab("map")}
-            className={`flex-1 py-3 text-xs font-medium transition-all cursor-pointer ${
-              mobileTab === "map" ? "text-[var(--primary)] border-b-2 border-[var(--primary)]" : "text-[var(--muted-foreground)]"
-            }`}
-          >
-            🌿 导图
-          </button>
+          {currentMode === "knowledge" && <button
+              onClick={() => setMobileTab("map")}
+              className={`flex-1 py-3 text-xs font-medium transition-all cursor-pointer ${
+                mobileTab === "map" ? "text-[var(--primary)] border-b-2 border-[var(--primary)]" : "text-[var(--muted-foreground)]"
+              }`}
+            >
+              🌿 导图
+            </button>}
         </div>
 
         {/* Drawer backdrop + panel */}
@@ -296,7 +396,7 @@ export default function Home() {
             >
               {/* Drawer header */}
               <div className="px-4 py-3 border-b border-[var(--border)] flex items-center justify-between shrink-0">
-                <span className="text-xs font-semibold text-[var(--muted-foreground)] uppercase tracking-wider">知识库</span>
+                <span className="text-xs font-semibold text-[var(--muted-foreground)] uppercase tracking-wider">{modeConfig.defaultName}</span>
                 <WorkspaceMenu compact />
                 <div className="flex gap-1">
                   {/* Prominent create buttons */}
@@ -309,7 +409,7 @@ export default function Home() {
                       <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
                     </svg>
                   </button>
-                  <button
+                  {currentMode === "knowledge" && <button
                     onClick={() => setIsCreatingCategory(true)}
                     className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--bg-hover)] text-[var(--muted-foreground)] cursor-pointer"
                     title="新建文件夹"
@@ -317,8 +417,8 @@ export default function Home() {
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                       <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /><line x1="12" y1="11" x2="12" y2="17" /><line x1="9" y1="14" x2="15" y2="14" />
                     </svg>
-                  </button>
-                  <button
+                  </button>}
+                  {currentMode === "knowledge" && <button
                     onClick={() => setShowTemplates(true)}
                     className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--bg-hover)] text-[var(--muted-foreground)] cursor-pointer"
                     title="模板中心"
@@ -326,7 +426,7 @@ export default function Home() {
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                       <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
                     </svg>
-                  </button>
+                  </button>}
                   <button
                     onClick={() => setDrawerOpen(false)}
                     className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--bg-hover)] text-[var(--muted-foreground)] transition-colors cursor-pointer"
@@ -451,7 +551,7 @@ export default function Home() {
                       className="w-full bg-[var(--bg-base)] border border-[var(--border)] rounded-lg px-3 py-2 text-xs text-[var(--text-primary)] placeholder:text-[var(--muted-foreground)] outline-none focus:border-[var(--primary)]"
                     />
                     {/* Category picker */}
-                    {categories.length > 0 && (
+                    {currentMode === "knowledge" && categories.length > 0 && (
                       <select
                         value={newCategoryId || ""}
                         onChange={(e) => setNewCategoryId(e.target.value || null)}
@@ -617,7 +717,7 @@ export default function Home() {
         {/* Content */}
         <div className="flex-1 overflow-hidden flex flex-col">
           {mobileTab === "chat" ? (
-            currentMode === "meeting" ? <MeetingAssistant /> : currentMode === "article" ? <ArticleParser /> : <ChatPanel />
+            activeModePanel
           ) : (
             <MindMapPanel />
           )}
@@ -662,12 +762,18 @@ export default function Home() {
     );
   }
 
-  // Desktop layout
+  // Meeting and article are independent product boards. They intentionally do
+  // not render the knowledge-fragment chat or its live mind-map canvas.
+  if (currentMode !== "knowledge") {
+    return <main className="flex h-full w-full overflow-hidden" data-testid={`${currentMode}-workspace`}>{activeModePanel}</main>;
+  }
+
+  // Desktop knowledge workspace
   return (
     <main className="flex h-full w-full overflow-hidden">
       <div className="flex h-full">
         <Sidebar />
-        {currentMode === "meeting" ? <MeetingAssistant /> : currentMode === "article" ? <ArticleParser /> : <ChatPanel />}
+        <ChatPanel />
       </div>
       <MindMapPanel />
     </main>
