@@ -28,7 +28,7 @@ npm run test:e2e:local
 npm run test:backend
 ```
 
-- `test:e2e:local` 覆盖真实两页 PDF、页码引用、Audio Overview、会议助手、知识问答、大图渐进展示与移动端等 11 条完整路径。
+- `test:e2e:local` 覆盖真实两页 PDF、页码引用、Audio Overview、会议助手、跨知识库搜索、知识问答、大图渐进展示与移动端等 12 条完整路径。
 - `test:e2e:public` 覆盖生产登录、匿名拒绝、健康状态、移动端和 SEO。
 - `test:backend` 默认执行不需要账号的安全冒烟；设置 `MINDGROW_ACCESS_TOKEN`（可选 `MINDGROW_WORKSPACE_ID`）后会创建并删除带引用的临时知识库，验证生产租户写入。
 

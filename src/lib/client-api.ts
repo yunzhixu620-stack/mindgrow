@@ -181,6 +181,21 @@ function handleKnowledge(path: string, init?: RequestInit): Response {
     const action = url.searchParams.get("action");
     if (action === "maps") return json({ maps: state.maps });
     if (action === "categories") return json({ categories: state.categories });
+    if (action === "search") {
+      const query = (url.searchParams.get("q") || "").trim().slice(0, 100);
+      if (!query) return json({ query, results: [], total: 0 });
+      const normalized = query.toLocaleLowerCase();
+      const results = state.maps.flatMap((map) => {
+        const mapMatches = `${map.name} ${map.description || ""}`.toLocaleLowerCase().includes(normalized);
+        const matches = (state.nodes[map.id] || [])
+          .filter((node) => `${node.content} ${node.desc || ""}`.toLocaleLowerCase().includes(normalized))
+          .slice(0, 5)
+          .map((node) => ({ id: node.id, content: node.content, desc: node.desc || "", type: node.type }));
+        if (!mapMatches && matches.length === 0) return [];
+        return [{ map, mapMatches, matches }];
+      });
+      return json({ query, results, total: results.length });
+    }
     const mapId = url.searchParams.get("mapId") || "map_default";
     return json({ nodes: state.nodes[mapId] || [], edges: state.edges[mapId] || [] });
   }

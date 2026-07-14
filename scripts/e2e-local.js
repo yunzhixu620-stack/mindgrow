@@ -61,6 +61,19 @@ const clickByText = async (page, selector, text) => {
     if (count !== 13) throw new Error(`Expected 13 seed nodes, got ${count}`);
   });
 
+  await check("workspace search finds maps by node content", async () => {
+    const search = await page.$('input[aria-label="搜索全部知识库"]');
+    if (!search) throw new Error("Workspace search input missing");
+    await search.type("可信检索");
+    await page.waitForFunction(() => Array.from(document.querySelectorAll('button[aria-label^="打开知识库 "]')).length > 0);
+    const result = await page.$('button[aria-label^="打开知识库 "]');
+    if (!result) throw new Error("No matching knowledge map result");
+    const resultText = await result.evaluate((element) => element.textContent);
+    if (!resultText.includes("可信检索")) throw new Error("Node-content match is not visible in result");
+    await result.click();
+    await page.waitForFunction(() => !document.querySelector('input[aria-label="搜索全部知识库"]').value);
+  });
+
   await check("grounded retrieval returns cited evidence", async () => {
     const input = await page.$('textarea[aria-label="输入知识或向知识库提问"]');
     await input.type("AI 知识助手包含哪些能力？");

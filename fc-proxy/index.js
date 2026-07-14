@@ -1073,6 +1073,35 @@ async function handleKnowledge(req, context) {
         data: { categories: rows.map((category) => ({ id: category.id, name: category.name, icon: category.icon || '📁', color: category.color || '#22d3a7', sortOrder: category.sort_order || 0, createdAt: category.created_at })) },
       };
     }
+    if (query.action === 'search') {
+      const searchQuery = String(query.q || '').trim().slice(0, 100);
+      if (!searchQuery) return { status: 200, data: { query: searchQuery, results: [], total: 0 } };
+      const safeTerm = searchQuery.replace(/[,*()%_]/g, ' ').replace(/\s+/g, ' ').trim();
+      const mapRowsPromise = supabaseRequest('GET', `maps?workspace_id=eq.${workspace}&select=*&order=updated_at.desc&limit=500`);
+      const nodeRowsPromise = safeTerm
+        ? supabaseRequest('GET', `nodes?workspace_id=eq.${workspace}&status=eq.active&or=(content.ilike.*${encodeURIComponent(safeTerm)}*,desc.ilike.*${encodeURIComponent(safeTerm)}*)&select=id,map_id,content,desc,type&limit=80`)
+        : Promise.resolve([]);
+      const [mapRows, nodeRows] = await Promise.all([mapRowsPromise, nodeRowsPromise]);
+      if (!Array.isArray(mapRows) || !Array.isArray(nodeRows)) throw dependencyError('knowledge_store');
+      const normalized = searchQuery.toLocaleLowerCase();
+      const matchesByMap = new Map();
+      nodeRows.forEach((node) => {
+        const matches = matchesByMap.get(node.map_id) || [];
+        if (matches.length < 5) matches.push({ id: node.id, content: node.content, desc: node.desc || '', type: node.type });
+        matchesByMap.set(node.map_id, matches);
+      });
+      const results = mapRows
+        .map((row) => {
+          const map = convertMap(row);
+          const mapMatches = `${map.name} ${map.description || ''}`.toLocaleLowerCase().includes(normalized);
+          const matches = matchesByMap.get(map.id) || [];
+          return mapMatches || matches.length ? { map, mapMatches, matches } : null;
+        })
+        .filter(Boolean)
+        .sort((a, b) => b.matches.length - a.matches.length || Number(b.mapMatches) - Number(a.mapMatches))
+        .slice(0, 20);
+      return { status: 200, data: { query: searchQuery, results, total: results.length } };
+    }
     const mapId = encodeURIComponent(String(query.mapId || context.defaultMapId));
     const [nodeRows, edgeRows] = await Promise.all([
       supabaseRequest('GET', `nodes?workspace_id=eq.${workspace}&map_id=eq.${mapId}&status=eq.active&select=*&limit=2000`),
