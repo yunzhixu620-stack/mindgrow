@@ -493,15 +493,23 @@ function handleLocalTool(path: string, init?: RequestInit): Response {
     if (transcript.length < 10) return json({ error: "请至少输入 10 个字的会议内容" }, 400);
     const mindMap = generateLocalMindMap(transcript);
     mindMap.root = String(body.title || mindMap.root || "会议纪要");
+    const excerpts = transcript.split(/\n+|(?<=[。！？!?])\s*/).map((item) => item.trim()).filter((item) => item.length >= 4);
+    const citations: Citation[] = excerpts.map((quote, index) => ({ index: index + 1, quote, locator: `会议原文第 ${index + 1} 句`, sourceType: "meeting" }));
+    mindMap.rootCitationIndexes = citations.length ? [1] : [];
+    mindMap.children = mindMap.children.map((child, index) => ({ ...child, citationIndexes: citations.length ? [Math.min(index + 1, citations.length)] : [], itemCitationIndexes: child.items.map((_, itemIndex) => citations.length ? [Math.min(index + itemIndex + 1, citations.length)] : []) }));
     return json({
       title: mindMap.root,
       summary: mindMap.rootDesc || "",
-      topics: mindMap.children.map((child) => ({ title: child.topic, details: child.items })),
+      summaryCitationIndexes: citations.length ? [1] : [],
+      topics: mindMap.children.map((child) => ({ title: child.topic, citationIndexes: child.citationIndexes, details: child.items.map((text, itemIndex) => ({ text, citationIndexes: child.itemCitationIndexes?.[itemIndex] || [] })) })),
       decisions: [],
       actionItems: [],
       risks: [],
-      openQuestions: ["本地演示模式未调用云端模型，请登录云端版获得完整提取结果"],
+      openQuestions: [{ text: "本地演示模式未调用云端模型，请登录云端版获得完整提取结果", citationIndexes: [] }],
       mindMap,
+      citations,
+      documentChunks: citations,
+      citationAudit: { claimCount: 1, citedClaimCount: citations.length ? 1 : 0, coverage: citations.length ? 1 : 0, verifiedQuoteCount: citations.length, warnings: [] },
     });
   }
   if (path.endsWith("/article")) {
@@ -522,6 +530,9 @@ function handleLocalTool(path: string, init?: RequestInit): Response {
       questions: ["文章有哪些适用边界？"],
       mindMap,
       citations,
+      documentChunks: citations,
+      citationAudit: { claimCount: 1 + mindMap.children.length, citedClaimCount: citations.length ? 1 + mindMap.children.length : 0, coverage: citations.length ? 1 : 0, verifiedQuoteCount: citations.length, warnings: [] },
+      extraction: body.extraction || { pageCount: 0, tablePages: [], imagePages: [], scannedPages: [], truncated: false },
       sourceUrl: body.url || "",
       sourceType: body.sourceType || "text",
       fileName: body.fileName || "",

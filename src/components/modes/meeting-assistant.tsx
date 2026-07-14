@@ -4,17 +4,23 @@ import { useCallback, useState } from "react";
 import { apiFetch } from "@/lib/client-api";
 import { useMindGrowStore } from "@/store/mindgrow-store";
 import { useSpeechInput } from "@/hooks/use-speech-input";
-import type { AIMindMap } from "@/types";
+import type { AIMindMap, Citation } from "@/types";
+
+interface CitedText { text: string; citationIndexes: number[] }
 
 interface MeetingResult {
   title: string;
   summary: string;
-  topics: { title: string; details?: string[] }[];
-  decisions: string[];
-  actionItems: { task: string; owner?: string; due?: string; status?: string }[];
-  risks: string[];
-  openQuestions: string[];
+  summaryCitationIndexes?: number[];
+  topics: { title: string; citationIndexes?: number[]; details?: CitedText[] }[];
+  decisions: CitedText[];
+  actionItems: { task: string; owner?: string; due?: string; status?: string; citationIndexes?: number[] }[];
+  risks: CitedText[];
+  openQuestions: CitedText[];
   mindMap: AIMindMap;
+  citations: Citation[];
+  documentChunks?: Citation[];
+  citationAudit?: { claimCount: number; citedClaimCount: number; coverage: number; verifiedQuoteCount: number; warnings: string[] };
 }
 
 export function MeetingAssistant() {
@@ -30,13 +36,14 @@ export function MeetingAssistant() {
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
+  const [selectedCitation, setSelectedCitation] = useState<Citation | null>(null);
 
   const appendSpeech = useCallback((text: string) => setTranscript((current) => `${current}${current && !current.endsWith("\n") ? " " : ""}${text}`), []);
   const speech = useSpeechInput(appendSpeech);
 
   async function generate() {
     if (transcript.trim().length < 10) { setNotice("请先输入或录入会议内容"); return; }
-    setBusy(true); setNotice(""); setResult(null);
+    setBusy(true); setNotice(""); setResult(null); setSelectedCitation(null);
     try {
       const response = await apiFetch("/api/tools/meeting", {
         method: "POST",
@@ -57,17 +64,26 @@ export function MeetingAssistant() {
       const response = await apiFetch("/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mapId: currentMapId, mindMap: result.mindMap, source: "meeting" }),
+        body: JSON.stringify({
+          mapId: currentMapId, mindMap: result.mindMap, source: "meeting",
+          citations: result.citations,
+          documentChunks: result.documentChunks || result.citations,
+          document: { title: result.title, sourceType: "meeting", fileName: "" },
+          extraction: { pageCount: 0, tablePages: [], imagePages: [], scannedPages: [], truncated: false },
+        }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "保存失败");
       const reload = await apiFetch(`/api/knowledge?mapId=${encodeURIComponent(currentMapId)}`);
       const graph = await reload.json();
       if (reload.ok) { setNodes(graph.nodes || []); setEdges(graph.edges || []); }
-      setNotice(`已保存 ${data.totalNodes || 0} 个会议知识节点`);
+      setNotice(`已保存 ${data.totalNodes || 0} 个会议知识节点、${data.totalCitations || 0} 条引用和 ${data.indexedChunks || 0} 个可检索分块`);
     } catch (error) { setNotice(error instanceof Error ? error.message : "保存失败"); }
     finally { setSaving(false); }
   }
+
+  const citationByIndex = new Map((result?.citations || []).map((item) => [item.index, item]));
+  const showCitations = (indexes: number[] = []) => <span className="ml-1 inline-flex flex-wrap gap-1 align-middle">{indexes.map((index) => <button key={index} type="button" onClick={() => setSelectedCitation(citationByIndex.get(index) || null)} aria-label={`查看会议引用 ${index}`} className="rounded bg-[var(--primary-subtle)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--primary-hover)] hover:ring-1 hover:ring-[var(--primary)]">[{index}]</button>)}</span>;
 
   return (
     <section className="h-full w-full overflow-y-auto bg-[var(--background)]" data-mode-library-id={currentMapId}>
@@ -93,10 +109,12 @@ export function MeetingAssistant() {
         </div>
 
       {result && <div className="space-y-3 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4 animate-fade-in">
-        <ResultBlock title="会议摘要"><p>{result.summary || "未提取到摘要"}</p></ResultBlock>
-        <ResultBlock title="会议决议"><ResultList items={result.decisions} empty="未形成明确决议" /></ResultBlock>
-        <ResultBlock title="行动项">{result.actionItems.length ? result.actionItems.map((item, index) => <div key={index} className="mb-2 last:mb-0"><div className="font-medium">□ {item.task}</div><div className="text-[10px] text-[var(--text-tertiary)] mt-0.5">负责人：{item.owner || "待确认"} · 截止：{item.due || "待确认"}</div></div>) : <span className="text-[var(--text-tertiary)]">未提取到行动项</span>}</ResultBlock>
-        <ResultBlock title="风险与待确认"><ResultList items={[...result.risks, ...result.openQuestions]} empty="暂无" /></ResultBlock>
+        {result.citationAudit && <ResultBlock title="引用完整性"><div>结论引用覆盖率：{Math.round(result.citationAudit.coverage * 100)}% · {result.citationAudit.verifiedQuoteCount} 个原文证据块</div>{result.citationAudit.warnings.length > 0 && <div className="mt-1 text-amber-300">{result.citationAudit.warnings.join("；")}</div>}</ResultBlock>}
+        <ResultBlock title="会议摘要"><p>{result.summary || "未提取到摘要"}{showCitations(result.summaryCitationIndexes)}</p></ResultBlock>
+        <ResultBlock title="会议决议"><ResultList items={result.decisions} empty="未形成明确决议" showCitations={showCitations} /></ResultBlock>
+        <ResultBlock title="行动项">{result.actionItems.length ? result.actionItems.map((item, index) => <div key={index} className="mb-2 last:mb-0"><div className="font-medium">□ {item.task}{showCitations(item.citationIndexes)}</div><div className="text-[10px] text-[var(--text-tertiary)] mt-0.5">负责人：{item.owner || "待确认"} · 截止：{item.due || "待确认"}</div></div>) : <span className="text-[var(--text-tertiary)]">未提取到行动项</span>}</ResultBlock>
+        <ResultBlock title="风险与待确认"><ResultList items={[...result.risks, ...result.openQuestions]} empty="暂无" showCitations={showCitations} /></ResultBlock>
+        {selectedCitation && <ResultBlock title={`会议引用 [${selectedCitation.index}] · ${selectedCitation.locator || "原文"}`}><blockquote className="border-l-2 border-[var(--primary)] pl-2 text-[var(--text-secondary)]">“{selectedCitation.quote}”</blockquote></ResultBlock>}
         <button onClick={() => void save()} disabled={saving} className="w-full rounded-xl border border-[var(--primary-border)] bg-[var(--primary-subtle)] py-2.5 text-sm font-medium text-[var(--primary-hover)] disabled:opacity-40">{saving ? "正在保存…" : "保存到会议知识库"}</button>
       </div>}
         </div>
@@ -109,6 +127,6 @@ function ResultBlock({ title, children }: { title: string; children: React.React
   return <div className="rounded-xl border border-[var(--border)] bg-[var(--background)] p-3 text-xs leading-relaxed"><h3 className="mb-2 font-semibold text-[var(--primary-hover)]">{title}</h3>{children}</div>;
 }
 
-function ResultList({ items, empty }: { items: string[]; empty: string }) {
-  return items.length ? <ul className="space-y-1">{items.map((item, index) => <li key={index}>• {item}</li>)}</ul> : <span className="text-[var(--text-tertiary)]">{empty}</span>;
+function ResultList({ items, empty, showCitations }: { items: CitedText[]; empty: string; showCitations: (indexes?: number[]) => React.ReactNode }) {
+  return items.length ? <ul className="space-y-1">{items.map((item, index) => <li key={index}>• {item.text}{showCitations(item.citationIndexes)}</li>)}</ul> : <span className="text-[var(--text-tertiary)]">{empty}</span>;
 }

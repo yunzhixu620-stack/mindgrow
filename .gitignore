@@ -36,6 +36,7 @@ next-env.d.ts
 
 # temp files
 artifacts/
+tmp/
 work/
 *.png
 clipboard-temp.png

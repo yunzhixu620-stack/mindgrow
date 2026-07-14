@@ -17,10 +17,21 @@ interface ArticleResult {
   questions: string[];
   mindMap: AIMindMap;
   citations: Citation[];
+  documentChunks?: Citation[];
+  citationAudit?: { claimCount: number; citedClaimCount: number; coverage: number; verifiedQuoteCount: number; warnings: string[] };
+  extraction?: PdfExtraction;
   sourceUrl?: string;
   sourceType: "url" | "pdf" | "text";
   fileName?: string;
   mimeType?: string;
+}
+interface PdfExtraction {
+  pageCount: number;
+  truncated: boolean;
+  tablePages: number[];
+  imagePages: number[];
+  scannedPages: number[];
+  warnings?: string[];
 }
 interface AudioOverview {
   title: string;
@@ -29,6 +40,22 @@ interface AudioOverview {
   audioUrl?: string;
   audioExpiresAt?: number;
   synthesis: "cosyvoice" | "browser";
+}
+
+interface ArticleQaSource {
+  id: string;
+  index: number;
+  title: string;
+  quote?: string;
+  locator?: string;
+  sourceUrl?: string;
+}
+
+interface ArticleQaMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  sources?: ArticleQaSource[];
 }
 
 export function ArticleParser() {
@@ -40,7 +67,7 @@ export function ArticleParser() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [url, setUrl] = useState("");
   const [content, setContent] = useState("");
-  const [pdf, setPdf] = useState<{ name: string; pages: number; truncated: boolean } | null>(null);
+  const [pdf, setPdf] = useState<(PdfExtraction & { name: string; pages: number }) | null>(null);
   const [result, setResult] = useState<ArticleResult | null>(null);
   const [audio, setAudio] = useState<AudioOverview | null>(null);
   const [selectedCitation, setSelectedCitation] = useState<Citation | null>(null);
@@ -48,6 +75,9 @@ export function ArticleParser() {
   const [pdfBusy, setPdfBusy] = useState(false);
   const [audioBusy, setAudioBusy] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [qaInput, setQaInput] = useState("");
+  const [qaBusy, setQaBusy] = useState(false);
+  const [qaMessages, setQaMessages] = useState<ArticleQaMessage[]>([]);
   const [notice, setNotice] = useState("");
   const speech = useScriptSpeech(audio?.segments || []);
 
@@ -58,8 +88,8 @@ export function ArticleParser() {
       const extracted = await extractPdfText(file);
       setContent(extracted.text);
       setUrl("");
-      setPdf({ name: file.name, pages: extracted.pageCount, truncated: extracted.truncated });
-      setNotice(`已读取 ${extracted.pageCount} 页${extracted.truncated ? "，超长部分已按安全上限截取" : ""}`);
+      setPdf({ name: file.name, pages: extracted.pageCount, pageCount: extracted.pageCount, truncated: extracted.truncated, tablePages: extracted.tablePages, imagePages: extracted.imagePages, scannedPages: extracted.scannedPages, warnings: extracted.warnings });
+      setNotice(`已读取 ${extracted.pageCount} 页${extracted.warnings.length ? `；${extracted.warnings.join("；")}` : ""}`);
     } catch (error) {
       setPdf(null);
       setNotice(error instanceof Error ? error.message : "PDF 读取失败");
@@ -77,6 +107,7 @@ export function ArticleParser() {
           url: url.trim(), content: content.trim(),
           sourceType: pdf ? "pdf" : (content.trim() ? "text" : "url"),
           fileName: pdf?.name, mimeType: pdf ? "application/pdf" : undefined,
+          extraction: pdf ? { pageCount: pdf.pageCount, truncated: pdf.truncated, tablePages: pdf.tablePages, imagePages: pdf.imagePages, scannedPages: pdf.scannedPages } : undefined,
         }),
       });
       const data = await response.json();
@@ -115,6 +146,8 @@ export function ArticleParser() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           mapId: currentMapId, mindMap: result.mindMap, source: "article", citations: result.citations,
+          documentChunks: result.documentChunks || result.citations,
+          extraction: result.extraction,
           document: {
             title: result.title, sourceType: result.sourceType, sourceUrl: result.sourceUrl,
             fileName: result.fileName, mimeType: result.mimeType,
@@ -126,9 +159,46 @@ export function ArticleParser() {
       const reload = await apiFetch(`/api/knowledge?mapId=${encodeURIComponent(currentMapId)}`);
       const graph = await reload.json();
       if (reload.ok) { setNodes(graph.nodes || []); setEdges(graph.edges || []); }
-      setNotice(`已保存 ${data.totalNodes || 0} 个文章知识节点及 ${data.totalCitations || 0} 条引用`);
+      setNotice(`已保存 ${data.totalNodes || 0} 个文章知识节点、${data.totalCitations || 0} 条节点引用和 ${data.indexedChunks || 0} 个检索分块${data.indexStatus === "ready" ? "（向量索引就绪）" : data.indexStatus ? `（${data.indexStatus}）` : ""}`);
     } catch (error) { setNotice(error instanceof Error ? error.message : "保存失败"); }
     finally { setSaving(false); }
+  }
+
+  async function askArticleLibrary() {
+    const question = qaInput.trim();
+    if (!question || qaBusy) return;
+    const userMessage: ArticleQaMessage = { id: `article_qa_${Date.now()}`, role: "user", content: question };
+    const priorMessages = qaMessages;
+    setQaMessages((messages) => [...messages, userMessage]);
+    setQaInput("");
+    setQaBusy(true);
+    try {
+      const response = await apiFetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          input: question,
+          mapId: currentMapId,
+          history: priorMessages.slice(-8).map((message) => ({ role: message.role, content: message.content })),
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "文章知识库问答失败");
+      setQaMessages((messages) => [...messages, {
+        id: `article_qa_${Date.now()}_assistant`,
+        role: "assistant",
+        content: data.reply || "知识库中暂时没有足够证据回答这个问题。",
+        sources: Array.isArray(data.sources) ? data.sources : [],
+      }]);
+    } catch (error) {
+      setQaMessages((messages) => [...messages, {
+        id: `article_qa_${Date.now()}_error`,
+        role: "assistant",
+        content: error instanceof Error ? error.message : "文章知识库问答失败，请稍后重试。",
+      }]);
+    } finally {
+      setQaBusy(false);
+    }
   }
 
   const citationByIndex = new Map((result?.citations || []).map((item) => [item.index, item]));
@@ -155,6 +225,9 @@ export function ArticleParser() {
       </div>
 
       {result && <div className="mt-5 space-y-3 animate-fade-in">
+        <ArticleWikiNavigator mindMap={result.mindMap} showCitations={showCitations} />
+        {result.citationAudit && <ArticleBlock title="引用完整性检查"><div className="flex flex-wrap gap-2"><span className="rounded-full bg-[var(--primary-subtle)] px-2 py-1">结论引用覆盖率 {Math.round(result.citationAudit.coverage * 100)}%</span><span className="rounded-full bg-[var(--bg-elevated)] px-2 py-1">{result.citationAudit.verifiedQuoteCount} 个可逐字核验证据块</span></div>{result.citationAudit.warnings.length > 0 && <ul className="mt-2 space-y-1 text-amber-300">{result.citationAudit.warnings.map((warning, index) => <li key={index}>• {warning}</li>)}</ul>}</ArticleBlock>}
+        {result.extraction && (result.extraction.tablePages.length > 0 || result.extraction.imagePages.length > 0 || result.extraction.scannedPages.length > 0) && <ArticleBlock title="文档解析覆盖"><div>表格/多列页：{result.extraction.tablePages.join("、") || "无"}</div><div>图片页：{result.extraction.imagePages.join("、") || "无"}</div><div>疑似扫描页：{result.extraction.scannedPages.join("、") || "无"}</div>{result.extraction.imagePages.length > 0 && <div className="mt-1 text-amber-300">图片页已保留图注与位置提示；涉及图中曲线、坐标或像素内容的结论需视觉模型复核。</div>}</ArticleBlock>}
         <ArticleBlock title={result.title}><p>{result.summary || "未提取到摘要"}{showCitations(result.summaryCitationIndexes)}</p></ArticleBlock>
         <ArticleBlock title="核心要点">{result.keyPoints.length ? <ul className="space-y-1.5">{result.keyPoints.map((item, index) => <li key={index}>• {item.text}{showCitations(item.citationIndexes)}</li>)}</ul> : <span className="text-[var(--text-tertiary)]">未提取到要点</span>}</ArticleBlock>
         <ArticleBlock title="论点与证据">{result.arguments.length ? result.arguments.map((item, index) => <div key={index} className="mb-2 last:mb-0"><div className="font-medium">{index + 1}. {item.claim}{showCitations(item.citationIndexes)}</div>{item.evidence && <div className="mt-0.5 text-[var(--text-tertiary)]">依据：{item.evidence}</div>}</div>) : <span className="text-[var(--text-tertiary)]">未提取到论点</span>}</ArticleBlock>
@@ -165,9 +238,61 @@ export function ArticleParser() {
         <button onClick={() => void save()} disabled={saving} className="w-full rounded-xl border border-[var(--primary-border)] bg-[var(--primary-subtle)] py-2.5 text-sm font-medium text-[var(--primary-hover)] disabled:opacity-40">{saving ? "正在保存…" : "保存到文章知识库（含引用）"}</button>
       </div>}
       </div>
+      <div className="mt-4 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4">
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <div><h3 className="text-sm font-semibold">向文章知识库提问</h3><p className="mt-1 text-xs text-[var(--text-tertiary)]">检索当前文章库中已经保存的论文，支持跨文档问题、连续追问和原文定位。</p></div>
+          {qaMessages.length > 0 && <button type="button" onClick={() => setQaMessages([])} className="shrink-0 rounded-lg border border-[var(--border)] px-2 py-1 text-[10px] text-[var(--text-tertiary)]">清空对话</button>}
+        </div>
+        {qaMessages.length > 0 && <div className="mb-3 max-h-[420px] space-y-3 overflow-y-auto rounded-xl bg-[var(--background)] p-3">
+          {qaMessages.map((message) => <div key={message.id} className={message.role === "user" ? "ml-8 rounded-xl bg-[var(--primary)] px-3 py-2 text-sm text-black" : "mr-8 rounded-xl bg-[var(--bg-elevated)] px-3 py-2 text-sm"}>
+            <div className="whitespace-pre-wrap leading-relaxed">{message.content}</div>
+            {message.role === "assistant" && message.sources && message.sources.length > 0 && <div className="mt-2 space-y-1.5 border-t border-[var(--border)] pt-2">
+              {message.sources.map((source) => <details key={`${message.id}-${source.id}-${source.index}`} className="rounded-lg bg-[var(--card)] px-2 py-1.5 text-[11px]">
+                <summary className="cursor-pointer text-[var(--primary-hover)]">[{source.index}] {source.title}{source.locator ? ` · ${source.locator}` : ""}</summary>
+                {source.quote && <blockquote className="mt-1 border-l-2 border-[var(--primary)] pl-2 text-[var(--text-secondary)]">“{source.quote}”</blockquote>}
+                {source.sourceUrl && <a href={source.sourceUrl} target="_blank" rel="noreferrer" className="mt-1 inline-block text-[var(--primary-hover)] underline">打开来源</a>}
+              </details>)}
+            </div>}
+          </div>)}
+          {qaBusy && <div className="mr-8 rounded-xl bg-[var(--bg-elevated)] px-3 py-2 text-xs text-[var(--text-tertiary)]">正在检索、重排并核对原文…</div>}
+        </div>}
+        <div className="flex items-end gap-2 rounded-xl border border-[var(--border)] bg-[var(--background)] p-2 focus-within:border-[var(--primary)]">
+          <textarea value={qaInput} onChange={(event) => setQaInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void askArticleLibrary(); } }} rows={2} aria-label="向文章知识库提问" placeholder="例如：三篇论文如何改进检索？它使用的编码器是什么？" className="min-h-[44px] flex-1 resize-none bg-transparent px-1 text-sm outline-none" />
+          <button type="button" onClick={() => void askArticleLibrary()} disabled={!qaInput.trim() || qaBusy} className="rounded-lg bg-[var(--primary)] px-3 py-2 text-xs font-semibold text-black disabled:opacity-40">{qaBusy ? "检索中" : "提问"}</button>
+        </div>
+        <p className="mt-2 text-[10px] text-[var(--text-muted)]">回答只使用当前文章知识库的证据；证据不足时会明确说明，引用可展开逐字核验。</p>
+      </div>
       </div>
     </section>
   );
+}
+
+function ArticleWikiNavigator({ mindMap, showCitations }: { mindMap: AIMindMap; showCitations: (indexes?: number[]) => React.ReactNode }) {
+  const [query, setQuery] = useState("");
+  const normalized = query.trim().toLowerCase();
+  const branches = mindMap.children.map((child) => ({
+    ...child,
+    visibleItems: child.items.map((item, index) => ({ item, index })).filter(({ item }) => !normalized || item.toLowerCase().includes(normalized)),
+  })).filter((child) => !normalized || child.topic.toLowerCase().includes(normalized) || String(child.desc || "").toLowerCase().includes(normalized) || child.visibleItems.length > 0);
+
+  return <ArticleBlock title="Repo Wiki 论文链路">
+    <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+      <div className="font-medium text-[var(--text-primary)]">📄 {mindMap.root}{showCitations(mindMap.rootCitationIndexes)}</div>
+      <input value={query} onChange={(event) => setQuery(event.target.value)} aria-label="搜索论文链路" placeholder="搜索章节、主题或证据…" className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-2 py-1.5 text-xs outline-none focus:border-[var(--primary)]" />
+    </div>
+    {mindMap.rootDesc && <p className="mb-2 text-[var(--text-tertiary)]">{mindMap.rootDesc}</p>}
+    <div className="space-y-1.5 border-l border-[var(--primary-border)] pl-3">
+      {branches.map((child, childIndex) => <details key={`${child.topic}-${childIndex}`} open={Boolean(normalized)} className="rounded-lg bg-[var(--bg-elevated)] px-2.5 py-2">
+        <summary className="cursor-pointer font-medium text-[var(--primary-hover)]">{child.topic}{showCitations(child.citationIndexes)}</summary>
+        {child.desc && <p className="mt-1 text-[var(--text-tertiary)]">{child.desc}</p>}
+        {child.visibleItems.length > 0 && <ul className="mt-1.5 space-y-1 border-l border-[var(--border)] pl-3">
+          {child.visibleItems.map(({ item, index }) => <li key={index}>↳ {item}{showCitations(child.itemCitationIndexes?.[index] || child.citationIndexes)}</li>)}
+        </ul>}
+      </details>)}
+      {branches.length === 0 && <div className="rounded-lg bg-[var(--bg-elevated)] px-3 py-2 text-[var(--text-tertiary)]">没有匹配的链路节点</div>}
+    </div>
+    <p className="mt-2 text-[10px] text-[var(--text-muted)]">保存后，相似主题会复用已有节点形成跨论文链接；每一级都保留可展开的原文证据。</p>
+  </ArticleBlock>;
 }
 
 function AudioOverviewCard({ audio, speech, showCitations }: { audio: AudioOverview; speech: ReturnType<typeof useScriptSpeech>; showCitations: (indexes?: number[]) => React.ReactNode }) {

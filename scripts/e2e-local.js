@@ -9,6 +9,7 @@ const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || "C:\\Program Fil
 const artifactDir = path.join(__dirname, "..", "artifacts");
 fs.mkdirSync(artifactDir, { recursive: true });
 const pdfPath = path.join(artifactDir, "mindgrow-citation-sample.pdf");
+const realPaperPath = path.join(__dirname, "..", "tests", "fixtures", "papers", "layoutlmv3-2204.08387.pdf");
 const pdf = new jsPDF();
 pdf.text("Retrieval augmented generation must find relevant evidence before producing an answer.", 12, 20, { maxWidth: 180 });
 pdf.text("Every conclusion should keep a source citation so users can verify the original material.", 12, 40, { maxWidth: 180 });
@@ -257,10 +258,32 @@ const clickByText = async (page, selector, text) => {
     await clickByText(page, "button", "解析文章");
     await page.waitForFunction(() => document.body.innerText.includes("核心要点"));
     await page.waitForFunction(() => document.body.innerText.includes("[1]"));
+    await page.waitForFunction(() => document.body.innerText.includes("Repo Wiki 论文链路"));
+    if (!await page.$('input[aria-label="搜索论文链路"]')) throw new Error("Paper link navigator search is missing");
+    if (!await page.$('textarea[aria-label="向文章知识库提问"]')) throw new Error("Article-library Q&A input is missing");
     await clickByText(page, "button", "生成 Audio Overview");
     await page.waitForFunction(() => document.body.innerText.includes("Audio Overview ·"));
     await clickByText(page, "button", "保存到文章知识库");
     await page.waitForFunction(() => document.body.innerText.includes("文章知识节点"));
+  });
+
+  await check("real research PDF preserves pages and reports visual structures", async () => {
+    if (!fs.existsSync(realPaperPath)) throw new Error("LayoutLMv3 test paper is missing");
+    const fileInput = await page.waitForSelector('input[type="file"][accept*="pdf"]');
+    await fileInput.uploadFile(realPaperPath);
+    await page.waitForFunction(() => document.body.innerText.includes("已读取 10 页"));
+    const extraction = await page.$eval('textarea[placeholder*="PDF 文字"]', (element) => ({
+      hasPageTwo: element.value.includes("[第 2 页]"),
+      hasLineBreaks: element.value.split("\n").length > 100,
+      length: element.value.length,
+    }));
+    if (!extraction.hasPageTwo || !extraction.hasLineBreaks || extraction.length < 20000) throw new Error(`PDF layout extraction is incomplete: ${JSON.stringify(extraction)}`);
+    await clickByText(page, "button", "解析文章");
+    await page.waitForFunction(() => document.body.innerText.includes("文档解析覆盖"));
+    const coverageText = await page.evaluate(() => document.body.innerText);
+    if (!coverageText.includes("图片页：")) throw new Error("Image-page diagnostics are missing");
+    if (!coverageText.includes("引用完整性检查")) throw new Error("Citation coverage audit is missing");
+    await page.screenshot({ path: path.join(artifactDir, "layoutlmv3-document-coverage.png"), fullPage: true });
   });
 
   await check("mobile chat and map tabs have no horizontal overflow", async () => {

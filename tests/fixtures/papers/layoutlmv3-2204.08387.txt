@@ -1,0 +1,681 @@
+[PAGE 1]
+LayoutLMv3:    Pre-training for Document    AI                   
+                                                                                    
+                      with Unified  Text and  Image  Masking                        
+                                                                                    
+               Yupan Huang∗           Tengchao Lv             Lei Cui               
+             Sun Yat-sen University Microsoft Research Asia Microsoft Research Asia 
+           huangyp28@mail2.sysu.edu.cn tengchaolv@microsoft.com lecu@microsoft.com  
+                                                                                    
+                           Yutong Lu              Furu Wei                          
+                        Sun Yat-sen University Microsoft Research Asia              
+                       luyutong@mail.sysu.edu.cn fuwei@microsoft.com                
+       ABSTRACT                                                                     
+       Self-supervised pre-training techniques have achieved remarkable             
+       progress in Document AI. Most multimodal pre-trained models                  
+       use a masked language modeling objective to learn bidirectional              
+       representations on the text modality, but they differ in pre-training        
+       objectives for the image modality. This discrepancy adds difficulty          
+       to multimodal representation learning. In this paper, we propose             
+       LayoutLMv3 to pre-train multimodal Transformers for Document                 
+       AI with unified text and image masking. Additionally, LayoutLMv3             
+       is pre-trained with a word-patch alignment objective to learn cross-         
+       modal alignment by predicting whether the corresponding image                
+       patch of a text word is masked. The simple unified architecture              
+       and training objectives make LayoutLMv3 a general-purpose pre-               
+       trainedmodelforbothtext-centricandimage-centricDocumentAI (a) Text-centric form under- (b) Image-centric layout anal-
+       tasks. Experimental results show that LayoutLMv3 achieves state- standingonFUNSD ysisonPubLayNet
+       of-the-art performance not only in text-centric tasks, including             
+       form understanding, receipt understanding, and document visual Figure 1: Examples of Document AI Tasks.
+       question answering, but also in image-centric tasks such as docu-            
+       ment image classification and document layout analysis. The code             
+       and models are publicly available at https://aka.ms/layoutlmv3.              
+                                            1 INTRODUCTION                          
+       CCS CONCEPTS                                                                 
+                                            In recent years, pre-training techniques have been making waves
+       • Applied computing → Document analysis; • Computing in the Document AI community by achieving remarkable progress
+       methodologies → Natural language processing. on document understanding tasks [2, 13–15, 17, 25, 28, 31, 32, 40,
+                                            41, 50, 52, 54–56]. As shown in Figure 1, a pre-trained Document
+       KEYWORDS                                                                     
+                                            AI model can parse layout and extract key information for various
+       documentai,layoutlm,multimodalpre-training,vision-and-language documents such as scanned forms and academic papers, which is
+                                            important for industrial applications and academic research [8].
+       ACMReferenceFormat:                                                          
+                                             Self-supervisedpre-trainingtechniqueshavemaderapidprogress
+       YupanHuang,TengchaoLv,LeiCui,YutongLu,andFuruWei.2022.Lay-                   
+       outLMv3:Pre-trainingforDocumentAIwithUnifiedTextandImageMask- in representation learning due to their successful applications of re-
+       ing.InProceedingsofthe30thACMInternationalConferenceonMultimedia constructive pre-training objectives. In NLP research, BERT firstly
+       (MM’22),October10–14,2022,Lisboa,Portugal.ACM,NewYork,NY,USA, proposed “masked language modeling” (MLM) to learn bidirec-
+       10pages.https://doi.org/10.1145/3503161.3548112 tional representations by predicting the original vocabulary id of
+                                            a randomly masked word token based on its context [9]. Whereas
+       ∗ContributionduringinternshipatMicrosoftResearch.Correspondingauthors:Lei    
+       CuiandFuruWei.                       most performant multimodal pre-trained Document AI models use
+                                            the MLM proposed by BERT for text modality, they differ in pre-
+       Permissiontomakedigitalorhardcopiesofallorpartofthisworkforpersonalor        
+                                            training objectives for image modality as depicted in Figure 2. For
+       classroomuseisgrantedwithoutfeeprovidedthatcopiesarenotmadeordistributed     
+       forprofitorcommercialadvantageandthatcopiesbearthisnoticeandthefullcitation example, DocFormer learns to reconstruct image pixels through a
+       onthefirstpage.CopyrightsforcomponentsofthisworkownedbyothersthanACM CNN decoder [2], which tends to learn noisy details rather than
+       mustbehonored.Abstractingwithcreditispermitted.Tocopyotherwise,orrepublish,  
+                                            high-level structures such as document layouts [43, 45]. SelfDoc
+       topostonserversortoredistributetolists,requirespriorspecificpermissionand/ora
+       fee.Requestpermissionsfrompermissions@acm.org. proposes to regress masked region features [31], which is noisier
+       MM’22,October10–14,2022,Lisboa,Portugal and harder to learn than classifying discrete features in a smaller
+       ©2022AssociationforComputingMachinery.                                       
+                                            vocabulary [6, 18]. The different granularities of image (e.g., dense
+       ACMISBN978-1-4503-9203-7/22/10...$15.00                                      
+       https://doi.org/10.1145/3503161.3548112 image pixels or contiguous region features) and text (i.e., discrete
+  2202                                                                              
+  luJ                                                                               
+  91                                                                                
+  ]LC.sc[                                                                           
+  3v78380.4022:viXra
+
+[PAGE 2]
+(2)Pre-training Objectives of Image Modality model without CNNs for image embeddings, which significantly
+                  𝑖𝑑𝑖1 𝑖𝑑𝑖2 𝑖𝑑𝑖3            saves parameters and gets rid of region annotations. The simple
+         𝑖 𝑖 𝑑 𝑑 𝑡 𝑡 1 4 , , 𝑖 𝑖 𝑑 𝑑 𝑡 𝑡 2 5 , , 𝑖 𝑖 𝑑 𝑑 𝑡 𝑡 3 6 , ,… 𝑖𝑑𝑖4 𝑖𝑑𝑖5 𝑖𝑑𝑖6 u pu n r ifi p e o d se a p rc r h e- it t e ra c i t n u e re d a m n o d d o e b l j f e o c r t b iv o e t s h m te a x k t e -c L en ay tr o i u c t t L a M sk v s 3 a a nd ge im ne a r g a e l- -
+                  𝑖𝑑𝑖7 𝑖𝑑𝑖8 𝑖𝑑𝑖9                                                    
+                                            centric Document AI tasks.              
+         Masked Word Masked Patch Origin Image Masked Region We evaluated pre-trained LayoutLMv3 models across five pub-
+        Token Classification Token Classification Reconstruction Feature Regression 
+                                            lic benchmarks, including text-centric benchmarks: FUNSD [20]
+                                            for form understanding, CORD [39] for receipt understanding,
+                  Multimodal Transformer                                            
+                                            DocVQA [38] for document visual question answering, and image-
+                                            centric benchmarks: RVL-CDIP [16] for document image classifi-
+                        (1)Image Embedding  cation, PubLayNet [59] for document layout analysis. Experiment
+                                            results demonstrate that LayoutLMv3 achieves state-of-the-art per-
+        Word Embedding Linear Embedding Visual Transformer (Optional)               
+                                            formance on these benchmarks with parameter efficiency. Further-
+         Text                               more, LayoutLMv3 is easy to reproduce for its simple and neat
+         “A few                             architecture and pre-training objectives.
+         number of                                                                  
+                                             Our contributions are summarized as follows:
+         tumor cell…”                                                               
+         Image                                • LayoutLMv3 is the first multimodal model in Document AI
+                                               that does not rely on a pre-trained CNN or Faster R-CNN
+                                               backbonetoextractvisualfeatures,whichsignificantlysaves
+                                               parameters and eliminates region annotations.
+                                              • LayoutLMv3 mitigates the discrepancy between text and
+                           CNN   Faster R-CNN                                       
+                                               image multimodal representation learning with unified dis-
+                                               crete token reconstructive objectives MLM and MIM. We
+                  (a) Patch (b) Grid (c) Region further propose a Word-Patch Alignment (WPA) objective
+                 (LayoutLMv3) (e.g., DocFormer) (e.g., SelfDoc) to facilitate cross-modal alignment learning.
+                                              • LayoutLMv3isageneral-purposemodelforbothtext-centric
+       Figure2:Comparisonswithexistingworks(e.g.,DocFormer and image-centric Document AI tasks. For the first time, we
+       [2] and SelfDoc [31]) on (1) image embedding: our Lay- demonstrate the generality of multimodal Transformers to
+       outLMv3 uses linear patches to reduce the computational vision tasks in Document AI.
+       bottleneckofCNNsandeliminatetheneedforregionsuper- • Experimental results show that LayoutLMv3 achieves state-
+       visionintrainingobjectdetectors;(2)pre-trainingobjectives of-the-artperformanceintext-centrictasksandimage-centric
+       on image modality: our LayoutLMv3 learns to reconstruct tasks in Document AI. The code and models are publicly
+       discrete image tokensof masked patches instead ofraw pix- available at https://aka.ms/layoutlmv3.
+       elsorregionfeaturestocapturehigh-levellayoutstructures                       
+       rather than noisy details.           2 LAYOUTLMV3                            
+                                            Figure 3 gives an overview of the LayoutLMv3.
+       tokens) objectives further add difficulty to cross-modal alignment           
+                                            2.1 Model Architecture                  
+       learning, which is essential to multimodal representation learning.          
+         To overcome the discrepancy in pre-training objectives of text LayoutLMv3 applies a unified text-image multimodal Transformer
+       andimagemodalitiesandfacilitatemultimodalrepresentationlearn- to learn cross-modal representations. The Transformer has a multi-
+       ing, we propose LayoutLMv3 to pre-train multimodal Transform- layer architecture and each layer mainly consists of multi-head
+       ersforDocumentAIwithunifiedtextandimagemaskingobjectives self-attention and position-wise fully connected feed-forward net-
+       MLM and MIM. As shown in Figure 3, LayoutLMv3 learns to recon- works [49]. The input of Transformer is a concatenation of text
+       struct masked word tokens of the text modality and symmetrically embedding Y = y1:𝐿 and image embedding X = x1:𝑀 sequences,
+       reconstruct masked patch tokens of the image modality. Inspired where𝐿 and𝑀 aresequencelengthsfortextandimagerespectively.
+       by DALL-E [43] and BEiT [3], we obtain the target image tokens Through the Transformer, the last layer outputs text-and-image
+       from latent codes of a discrete VAE. For documents, each text word contextual representations.
+       correspondstoanimagepatch.Tolearnthiscross-modalalignment, Text Embedding. Text embedding is a combination of word em-
+       we propose a Word-Patch Alignment (WPA) objective to predict beddings and position embeddings. We pre-processed document
+       whether the corresponding image patch of a text word is masked. images with an off-the-shelf OCR toolkit to obtain textual con-
+         Inspired by ViT [11] and ViLT [22], LayoutLMv3 directly lever- tent and corresponding 2D position information. We initialize the
+       ages raw image patches from document images without complex wordembeddings withawordembeddingmatrixfromapre-trained
+       pre-processing steps such as page object detection. LayoutLMv3 model RoBERTa [36]. The position embeddings include 1D position
+       jointlylearnsimage,textandmultimodalrepresentationsinaTrans- and 2D layout position embeddings, where the 1D position refers
+       former model with unified MLM, MIM and WPA objectives. This to the index of tokens within the text sequence, and the 2D lay-
+       makes LayoutLMv3 the first multimodal pre-trained Document AI out position refers to the bounding box coordinates of the text
+
+[PAGE 3]
+T 1  T 2 Unaligned Aligned        V 2  V 3                 
+            Pre-training                                                            
+            Objectives   MLM Head  WPA Head                 MIM Head                
+                                                                                    
+                         h    h    h    h                  h     h                  
+                                                                                    
+                                     Multimodal Transformer                         
+                                                                                    
+            2D Position                                                             
+            Embedding Seg PAD Seg 1 Seg 1 Seg 2 Seg 3 Seg PAD Patch PAD Patch 1 Patch 2 Patch 3 Patch 4
+                    +    +    +    +    +    +    +    +    +    +    +             
+            1D Position 0 1   2    3    4    5    0    1    2    3    4             
+            Embedding                                                               
+                    +    +    +    +    +    +    +    +    +    +    +             
+            Word/Patch                                                              
+            Embedding [CLS] [MASK] [MASK] T 3 T 4 [SEP] [SPE] V 1 [MASK] [MASK] V 4 
+                        (T 1 ) (T 2 )        (Unaligned)     (V 2 ) (V 3 )          
+                                                      (Aligned)                     
+                       Word  OCR Parser      Resize         Flatten Linear          
+                      Embedding Masking       Split         Masking Embedding       
+                                                                                    
+                                   Document Image                                   
+                                                   Image Patches                    
+                                                                                    
+       Figure 3: The architecture and pre-training objectives of LayoutLMv3. LayoutLMv3 is a pre-trained multimodal Transformer
+       for Document AI with unified text and image masking objectives. Given an input document image and its corresponding text
+       andlayoutpositioninformation,themodeltakesthelinearprojectionofpatchesandwordtokensasinputsandencodesthem
+       intocontextualizedvectorrepresentations.LayoutLMv3ispre-trainedwithdiscretetokenreconstructiveobjectivesofMasked
+       Language Modeling (MLM) and Masked Image Modeling (MIM). Additionally, LayoutLMv3 is pre-trained with a Word-Patch
+       Alignment (WPA) objective to learn cross-modal alignment by predicting whether the corresponding image patch of a text
+       word is masked. “Seg” denotes segment-level positions. “[CLS]”, “[MASK]”, “[SEP]” and “[SPE]” are special tokens.
+       sequence. Following the LayoutLM, we normalize all coordinates learnable 1D position embeddings to each patch since we have
+       by the size of images, and use embedding layers to embed x-axis, not observed improvements from using 2D position embeddings in
+       y-axis, width and height features separately [54]. The LayoutLM our preliminary experiments. LayoutLMv3 is the first multimodal
+       and LayoutLMv2 adopt word-level layout positions, where each model in Document AI that does not relyon CNNs to extract image
+       word has its positions. Instead, we adopt segment-level layout posi- features,whichisvitaltoDocumentAImodelstoreduceparameters
+       tions that words in a segment share the same 2D position since the or remove complex pre-processing steps.
+       words usually express the same semantic meaning [28]. We insert semantic 1D relative position and spatial 2D relative
+       Image Embedding. Existing multimodal models in Document AI position as bias terms in self-attention networks for text and image
+       eitherextractCNNgridfeatures[2,56]orrelyonanobjectdetector modalities following LayoutLMv2[56].
+       like Faster R-CNN [44] to extract region features [14, 31, 40, 54]           
+       for image embeddings, which accounts for heavy computation                   
+                                            2.2 Pre-training Objectives             
+       bottleneck or require region supervision. Inspired by ViT [11] and           
+       ViLT [22], we represent document images with linear projection LayoutLMv3 is pre-trained with the MLM, MIM, and WPA objec-
+       features of image patches before feeding them into the multimodal tives to learn multimodal representation in a self-supervised learn-
+       Transformer. Specifically, we resize a document image into 𝐻 ×𝑊 ing manner. Full pre-training objectives of LayoutLMv3 is defined
+       anddenotetheimagewithI ∈ R𝐶×𝐻×𝑊 ,where𝐶,𝐻 and𝑊 arethe as 𝐿 = 𝐿 𝑀𝐿𝑀 +𝐿 𝑀𝐼𝑀 +𝐿 𝑊𝑃𝐴.
+       channel size, width and height of the image respectively. We then Objective I: Masked Language Modeling (MLM). For the lan-
+       split the image into a sequence of uniform 𝑃 ×𝑃 patches, linearly guage side, our MLM is inspired by the masked language mod-
+       project the image patches to 𝐷 dimensions and flatten them into eling in BERT [9] and masked visual-language modeling in Lay-
+       a sequence of vectors, which length is 𝑀 = 𝐻𝑊/𝑃2. Then we add outLM[54]andLayoutLMv2[56].Wemask30%oftexttokenswith
+
+[PAGE 4]
+a span masking strategy with span lengths drawn from a Poisson Transformer encoder with 12-head self-attention, hidden size of
+       distribution (𝜆 = 3) [21, 27]. The pre-training objective is to maxi- 𝐷 = 768, and 3,072 intermediate size of feed-forward networks.
+       mize the log-likelihood of the correct masked text tokens y𝑙 based LayoutLMv3LARGE adopts a 24-layer Transformer encoder with
+       on the contextual representations of corrupted sequences of image 16-head self-attention, hidden size of 𝐷 = 1,024, and 4,096 interme-
+       tokens X 𝑀′ and text tokens Y 𝐿′ , where 𝑀′ and 𝐿′ represent the diate size of feed-forward networks. To pre-process the text input,
+       masked positions. We denote parameters of the Transformer model we tokenize the text sequence with Byte-Pair Encoding (BPE) [46]
+       with𝜃 and minimize the subsequent cross-entropy loss: with a maximum sequence length 𝐿 = 512. We add a [CLS] and
+                                            a [SEP] token at the beginning and end of each text sequence.
+                      𝐿′                                                            
+              𝐿 𝑀𝐿𝑀 (𝜃) = − ∑︁ log𝑝 𝜃 (cid:16) yℓ | X 𝑀′,Y 𝐿′(cid:17) (1) When the length of the text sequence is shorter than 𝐿, we append
+                                            [PAD] tokens to it. The bounding box coordinates of these spe-
+                     𝑙=1                                                            
+                                            cial tokens are all zeros. The parameters for image embedding are
+       As we keep the layout information unchanged, this objective fa-              
+                                            𝐶 ×𝐻 ×𝑊 = 3×224×224, 𝑃 = 16, 𝑀 = 196.   
+       cilitates the model to learn the correspondence between layout               
+                                             We adopt distributed and mixed-precision training to reduce
+       information and text and image context.                                      
+                                            memory costs and speed up training procedures. We also use a
+       Objective II: Masked Image Modeling (MIM). To encourage                      
+                                            gradientaccumulationmechanismtosplitthebatchofsamplesinto
+       the model to interpret visual content from contextual text and               
+                                            several mini-batches to overcome memory constraints for large
+       image representations, we adapt the MIM pre-training objective in            
+                                            batch sizes. We further use a gradient checkpointing technique for
+       BEiT [3] to our multimodal Transformer model. The MIM objective              
+                                            documentlayoutanalysistoreducememorycosts.Tostabilizetrain-
+       is a symmetry to the MLM objective, that we randomly mask a                  
+                                            ing, we follow CogView [10] to change the computation of atten-
+       p st e r r a c t e e n g t y ag [ e 3] o . f T a h b e ou M t I 4 M 0% ob im je a c g ti e v t e o i k s e d n r s iv w e i n th b t y he a b c l r o o c s k s w -e i n se tr m op a y sk lo in s g s tion to softmax (cid:16) Q √ 𝑇 𝑑 K (cid:17) = softmax (cid:16)(cid:16) 𝛼 Q √ 𝑇 𝑑 K−max (cid:16) 𝛼 Q √ 𝑇 𝑑 K (cid:17)(cid:17) ×𝛼 (cid:17) ,
+       to reconstruct the masked image tokens x𝑚 under the context of where 𝛼 is 32.
+       their surrounding text and image tokens.                                     
+                                            3.2 Pre-training LayoutLMv3             
+                     𝑀′                                                             
+              𝐿 𝑀𝐼𝑀 (𝜃) = − ∑︁ log𝑝 𝜃 (cid:16) x𝑚 | X 𝑀′,Y 𝐿′(cid:17) (2) To learn a universal representation for various document tasks,
+                     𝑚=1                    we pre-train LayoutLMv3 on a large IIT-CDIP dataset. The IIT-
+       The labels of image tokens come from an image tokenizer, which CDIP Test Collection 1.0 is a large-scale scanned document im-
+       can transform dense image pixels into discrete tokens according to age dataset, which contains about 11 million document images
+       a visual vocabulary [43]. Thus MIM facilitates learning high-level and can split into 42 million pages [26]. We only use 11 million
+       layout structures rather than noisy low-level details. of them to train LayoutLMv3. We do not do image augmentation
+       Objective III: Word-Patch Alignment (WPA). For documents, following LayoutLM models [54, 56]. For the multimodal Trans-
+       each text word corresponds to an image patch. As we randomly former encoder along with the text embedding layer, LayoutLMv3
+       masktextandimagetokenswithMLMandMIMrespectively,there is initialized from the pre-trained weights of RoBERTa [36]. Our
+       isnoexplicitalignmentlearningbetweentextandimagemodalities. image tokenizer is initialized from a pre-trained image tokenizer
+       We thus propose a WPA objective to learn a fine-grained alignment in DiT, a self-supervised pre-trained document image Transformer
+       between text words and image patches. The WPA objective is to model [30]. The vocabulary size of image tokens is 8,192. We ran-
+       predict whether the corresponding image patches of a text word domly initialized the rest model parameters. We pre-train Lay-
+       are masked. Specifically, we assign an aligned label to an unmasked outLMv3 using Adam optimizer [23] with a batch size of 2,048 for
+       texttokenwhenitscorrespondingimagetokensarealsounmasked. 500,000 steps. We use a weight decay of 1𝑒 −2, and (𝛽1, 𝛽2) = (0.9,
+       Otherwise, we assign an unaligned label. We exclude the masked 0.98). For the LayoutLMv3BASE model, we use a learning rate of
+       text tokens when calculating WPA loss to prevent the model from 1𝑒 −4, and we linearly warm up the learning rate over the first 4.8%
+       learning a correspondence between masked text words and image steps. For LayoutLMv3LARGE, the learning rate and warm-up ratio
+       patches. We use a two-layer MLP head that inputs contextual text are 5𝑒 −5 and 10%, respectively.
+       and image and outputs the binary aligned/unaligned labels with a             
+                                            3.3 Fine-tuning on Multimodal Tasks     
+       binary cross-entropy loss:                                                   
+                                            We compare LayoutLMv3 with typical self-supervised pre-training
+                     𝐿−𝐿′                                                           
+              𝐿 𝑊𝑃𝐴 (𝜃) = − ∑︁ log𝑝 𝜃 (cid:16) zℓ | X 𝑀′,Y 𝐿′(cid:17) , (3) approaches and categorize them by their pre-training modalities.
+                     ℓ=1                      • [T] text modality: BERT [9] and RoBERTa [36] are typical
+       where𝐿−𝐿′ isthenumberofunmaskedtexttokens,zℓ isthebinary pre-trainedlanguagemodelswhichonlyusetextinformation
+       label of language token in the ℓ position. with Transformer architecture. We use FUNSD and RVL-
+                                               CDIPresultsoftheRoBERTafromLayoutLM[54]andresults
+       3  EXPERIMENTS                          of BERT from LayoutLMv2 [56]. We reproduce and report
+                                               the CORD and DocVQA results of the RoBERTa.
+       3.1 Model Configurations                                                     
+                                              • [T+L]textandlayoutmodalities:LayoutLMincorporates
+       ThenetworkarchitectureofLayoutLMv3followsthatofLayoutLM[54] layout information by adding word-level spatial embeddings
+       and LayoutLMv2 [56] for a fair comparison. We use base and large toembeddingsofBERT[54].StructuralLMleveragessegment-
+       model sizes for LayoutLMv3. LayoutLMv3BASE adopts a 12-layer level layout information [28]. BROS encodes relative layout
+
+[PAGE 5]
+Table1:ComparisonwithexistingpublishedmodelsontheCORD[39],FUNSD[20],RVL-CDIP[16],andDocVQA[38]datasets.
+       “T/L/I” denotes “text/layout/image” modality. “R/G/P” denotes “region/grid/patch” image embedding. We multiply all values
+       by a hundred for better readability. †In the UDoc paper [14], the CORD splits are 626/247 receipts for training/test instead of
+       the official 800/100 training/test receipts adopted by other works. Thus the score† is not directly comparable to other scores.
+       Models denoted with ‡ use more data to train DocVQA and are expected to score higher. For example, TILT introduces one
+       more supervised training stage on more QA datasets [40]. StructuralLM additionally uses the validation set in training [28].
+                                                                                    
+                                                    FUNSD CORD RVL-CDIP DocVQA      
+          Model          Parameters Modality Image Embedding                        
+                                                     F1↑  F1↑  Accuracy↑ ANLS↑      
+          BERTBASE [9]   110M    T     None          60.26 89.68 89.81 63.72        
+          RoBERTaBASE [36] 125M  T     None          66.48 93.54 90.06 66.42        
+          BROSBASE [17]  110M    T+L   None          83.05 95.73 -      -           
+          LiLTBASE [50]  -       T+L   None          88.41 96.07 95.68* -           
+          LayoutLM [54]  160M    T+L+I (R) ResNet-101 (fine-tune) 79.27 - 94.42 -   
+               BASE                                                                 
+          SelfDoc [31]   -       T+L+I (R) ResNeXt-101 83.36 -  92.81   -           
+          UDoc [14]      272M    T+L+I (R) ResNet-50 87.93 98.94† 95.05 -           
+          TILTBASE [40]  230M    T+L+I (R) U-Net      -   95.11 95.25  83.92‡       
+          XYLayoutLM [15] -      T+L+I (G) ResNeXt-101 83.35 -   -      -           
+                 BASE                                                               
+          LayoutLMv2 [56] 200M   T+L+I (G) ResNeXt101-FPN 82.76 94.95 95.25 78.08   
+                BASE                                                                
+          DocFormerBASE [2] 183M T+L+I (G) ResNet-50 83.34 96.33 96.17  -           
+          LayoutLMv3 (Ours) 133M T+L+I (P) Linear    90.29 96.56 95.44 78.76        
+                 BASE                                                               
+          BERTLARGE [9]  340M    T     None          65.63 90.25 89.92 67.45        
+          RoBERTaLARGE [36] 355M T     None          70.72 93.80 90.11 69.52        
+          LayoutLM [54]  343M    T+L   None          77.89 -    91.90   -           
+               LARGE                                                                
+          BROSLARGE [17] 340M    T+L   None          84.52 97.40 -      -           
+          StructuralLMLARGE [28] 355M T+L None       85.14 -    96.08  83.94‡       
+          FormNet [25]   217M    T+L   None          84.69 -     -      -           
+          FormNet [25]   345M    T+L   None           -   97.28  -      -           
+          TILTLARGE [40] 780M    T+L+I (R) U-Net      -   96.33 95.52  87.05‡       
+          LayoutLMv2 [56] 426M   T+L+I (G) ResNeXt101-FPN 84.20 96.01 95.64 83.48   
+                LARGE                                                               
+          DocFormerLARGE [2] 536M T+L+I (G) ResNet-50 84.55 96.99 95.50 -           
+          LayoutLMv3 (Ours) 368M T+L+I (P) Linear    92.08 97.46 95.93 83.37        
+                 LARGE                                                              
+          *LiLTusesimagefeatureswithResNeXt101-FPNbackboneinfine-tuningRVL-CDIP.    
+           positions [17]. LILT fine-tunes on different languages with Wefine-tuneLayoutLMv3onmultimodaltasksonpubliclyavail-
+           pre-trained textual models [50]. FormNet leverages the spa- able benchmarks. Results are shown in Table 1.
+           tial relationship between tokens in a form [25]. Task I: Form and Receipt Understanding. Form and receipt
+          • [T+L+I(R)]text,layoutandimagemodalitieswithFaster understanding tasks require extracting and structuring forms and
+           R-CNN region features: This line of works extract im- receipts’textualcontent.Thetasksareasequencelabelingproblem
+           age region features from RoI heads in the Faster R-CNN aiming to tag each word with a label. We predict the label of the
+           model [44]. Among them, LayoutLM [54] and TILT [40] use last hidden state of each text token with a linear layer and an MLP
+           OCR words’ bounding box to serve as region proposals and classifier for form and receipt understanding tasks, respectively.
+           add the region features to corresponding text embeddings. We conduct experiments on the FUNSD dataset and the CORD
+           SelfDoc [31] and UDoc [14] use document object proposals dataset. The FUNSD [20] is a noisy scanned form understand-
+           and concatenate region features with text embeddings. ing dataset sampled from the RVL-CDIP dataset [16]. The FUNSD
+          • [T+L+I(G)]text,layoutandimagemodalitieswithCNN dataset contains 199 documents with comprehensive annotations
+           grid features: LayoutLMv2 [56] and DocFormer [2] extract for9,707semanticentities.Wefocusonthesemanticentitylabeling
+           image grid features with a CNN backbone without object task on the FUNSD dataset to assign each semantic entity a label
+           detection. XYLayoutLM [15] adopts the architecture of Lay- among “question”, “answer”, “header” or “other”. The training and
+           outLMv2 and improves layout representation. test splits contain 149 and 50 samples, respectively. CORD [39] is a
+          • [T+L+I(P)]text,layout,andimagemodalitieswithlin- receipt key information extraction dataset with 30 semantic labels
+           ear patch features: LayoutLMv3 replaces CNN backbones definedunder4categories.Itcontains1,000receiptsof800training,
+           with simple linear embedding to encode image patches. 100 validation, and 100 test examples. We use officially-provided
+                                            images and OCR annotations. We fine-tune LayoutLMv3 for 1,000
+
+[PAGE 6]
+Table2:DocumentlayoutanalysismAP@IOU[0.50:0.95]onPubLayNetvalidationset.Allmodelsuseonlyinformationfrom
+       the vision modality. LayoutLMv3 outperforms the compared ResNets [14, 59] and vision Transformer [30] backbones.
+                                                                                    
+                   Model     Framework Backbone Text Title List Table Figure Overall
+                                                                                    
+                 PubLayNet[59] Mask R-CNN ResNet-101 91.6 84.0 88.6 96.0 94.9 91.0  
+                 DiTBASE [30] Mask R-CNN Transformer 93.4 87.1 92.9 97.3 96.7 93.5  
+                  UDoc [14]  Faster R-CNN ResNet-50 93.9 88.5 93.7 97.3 96.4 93.9   
+                 DiTBASE [30] Cascade R-CNN Transformer 94.4 88.9 94.8 97.6 96.9 94.5
+              LayoutLMv3 (Ours) Cascade R-CNN Transformer 94.5 90.6 95.5 97.9 97.0 95.1
+                     BASE                                                           
+       stepswithalearningrateof1𝑒−5andabatchsizeof16forFUNSD, to extract text and bounding boxes from images and use heuris-
+       and 5𝑒 −5 and 64 for CORD.           tics to find given answers in the extracted text as in LayoutLMv2.
+         We report F1 scores for this task. For the large model size, the We fine-tune LayoutLMv3 for 100,000 steps with a batch size
+                                                         BASE                       
+       LayoutLMv3 achieves an F1 score of 92.08 on the FUNSD dataset, of 128, a learning rate of 3𝑒 − 5, and a warmup ratio of 0.048.
+       which significantly outperforms the SOTA result of 85.14 provided For LayoutLMv3 , the step size, batch size, learning rate and
+                                                    LARGE                           
+       by StructuralLM [28]. Note that LayoutLMv3 and StructuralLM use warmup ratio are 200,000, 32, 1𝑒 −5, and 0.1, respectively.
+       segment-level layout positions, while the other works use word- We report the commonly-used edit distance-based metric ANLS
+       level layout positions. Using segment-level positions may benefit (also known as Average Normalized Levenshtein Similarity). The
+       the semantic entity labeling task on FUNSD [28], so the two types LayoutLMv3 improves the ANLS score of LayoutLMv2
+                                                  BASE                     BASE     
+       ofworkarenotdirectlycomparable.TheLayoutLMv3alsoachieves from 78.08 to 78.76, with much simpler image embedding (i.e., from
+       SOTAF1scoresontheCORDdatasetforbothbaseandlargemodel ResNeXt101-FPN to Linear embedding). The LayoutLMv3
+                                                                          LARGE     
+       sizes. The results show that LayoutLMv3 can significantly benefit furthergainsanabsoluteANLSscoreof4.61overLayoutLMv3 .
+                                                                           BASE     
+       the text-centric form and receipt understanding tasks. The results show that LayoutLMv3 is effective for the document
+       Task II: Document Image Classification. The document image visual question answering task.
+       classification task aims to predict the category of document images.         
+       We feed the output hidden state of the special classification token          
+       ([CLS]) into an MLP classifier to predict the class labels. 3.4 Fine-tuning on a Vision Task
+         WeconductexperimentsontheRVL-CDIPdataset.Itisasubset To demonstrate the generality of LayoutLMv3 from the multimodal
+       oftheIIT-CDIPcollectionlabeledwith16categories[16].RVL-CDIP domain to the visual domain, we transfer LayoutLMv3 to a docu-
+       dataset contains 400,000 document images, among them 320,000 mentlayoutanalysistask.Thistaskisaboutdetectingthelayouts
+       are training images, 40,000 are validation images, and 40,000 are ofunstructureddigitaldocumentsbyprovidingboundingboxesand
+       testimages.WeextracttextandlayoutinformationusingMicrosoft categoriessuchastables,figures,texts,etc.Thistaskhelpsparsethe
+       Read API. We fine-tune LayoutLMv3 for 20,000 steps with a batch documents into a machine-readable format for downstream appli-
+       size of 64 and a learning rate of 2𝑒 −5. cations. We model this task as an object detection problem without
+         The evaluation metric is the overall classification accuracy. Lay- text embedding, which is effective in existing works [14, 30, 59].
+       outLMv3achievesbetterorcomparableresultswithamuchsmaller We integrate the LayoutLMv3 as feature backbone in the Cascade
+       model size than previous works. For example, compared to Lay- R-CNN detector [4] with FPN [34] implemented using the Detec-
+       outLMv2, LayoutLMv3 achieves an absolute improvement of 0.19% tron2 [53]. We adopt the standard practice to extract single-scale
+       and0.29%inthebasemodelandlargemodelsize,respectively,with featuresfromdifferentTransformerlayers,suchaslayers4,6,8,and
+       amuchsimplerimageembedding(i.e.,Linearvs.ResNeXt101-FPN). 12 of the LayoutLMv3 base model. We use resolution-modifying
+       The results show that our simple image embeddings can achieve modulestoconvertthesingle-scalefeaturesintothemultiscaleFPN
+       desirable results on image-centric tasks. features [1, 30, 33].              
+       Task III: Document Visual Question Answering. Document WeconductexperimentsonPubLayNetdataset[59].Thedataset
+       visual question answering requires a model to take a document containsresearchpaperimagesannotatedwithboundingboxesand
+       image and a question as input and output an answer [38]. We polygonal segmentation across five document layout categories:
+       formalize this task as an extractive QA problem, where the model text, title, list, figure, and table. The official splits contain 335,703
+       predicts start and end positions by classifying the last hidden state training images, 11,245 validation images, and 11,405 test images.
+       of each text token with a binary classifier. We train our model on the training split and evaluate our model
+         We conduct experiments on the DocVQA dataset, a standard on the validation split following standard practice [14, 30, 59]. We
+       datasetforvisualquestionansweringondocumentimages[38].The train our model for 60,000 steps using the AdamW optimizer with
+       officialpartitionoftheDocVQAdatasetconsistsof10,194/1,286/1,287 1,000 warm-up steps and a weight decay of 0.05 following DiT [30].
+       imagesand39,463/5,349/5,188questionsfortraining/validation/test Since LayoutLMv3 is pre-trained with inputs from both vision and
+       set, respectively. We train our model on the training set, evalu- language modalities, we use a larger batch size of 32 and a lower
+       ate the model on the test set, and report results by submitting learning rate of 2𝑒 −4 empirically. We do not use flipping or crop-
+       them to the official evaluation website. We use Microsoft Read API pingaugmentationstrategyinthefine-tuningstagetobeconsistent
+
+[PAGE 7]
+Table3:Ablationstudyonimageembeddingsandpre-trainingobjectivesontypicaltext-centrictasks(formandreceiptunder-
+       standing on FUNSD and CORD) and image-centric tasks (document image classification on RVL-CDIP and document layout
+       analysis on PubLayNet). All models were trained at BASE size on 1 million data for 150,000 steps with learning rate 3𝑒 −4.
+                                                                                    
+                   Image       Pre-training FUNSD CORD RVL-CDIP PubLayNet           
+                #       Parameters                                                  
+                  Embed        Objective(s) F1↑ F1↑  Accuracy↑ MAP↑                 
+                1  None   125M MLM         88.64 96.27 95.33 Not Applicable         
+                2  Linear 126M MLM         89.39 96.11 95.00 Loss Divergence        
+                3  Linear 132M MLM+MIM     89.19 96.30 95.42   94.38                
+                4  Linear 133M MLM+MIM+WPA 89.78 96.49 95.53  94.43                 
+                                            #2 with MIM and WPA objectives step by step and denote the new
+                                            models as #3 and #4, respectively.      
+                                             In Figure 4, we visualize losses of models #2, #3, and #4 when
+                                            fine-tuned on the PubLayNet dataset with a batch size of 16 and a
+                                            learning rate of 2𝑒 − 4. We have tried to train the model #2 with
+                                            learning rates of {1𝑒 −4, 2𝑒 −4, 4𝑒 −4} combined with batch sizes
+                                            of {16, 32}, but the loss of model #2 did not converge and the mAP
+                                            score on PubLayNet is near zero.        
+                                            Effect of Linear Image Embedding. We observe that model #1
+                                            without image embedding has achieved good results on some tasks.
+                                            This suggests that language modality, including text and layout
+                                            information, plays a vital role in document understanding. How-
+                                            ever, the results are still unsatisfactory. Moreover, model #1 cannot
+                                            conduct some image-centric document analysis tasks without vi-
+                                            sion modality. For example, the vision modality is critical for the
+                                            document layout analysis task on PubLayNet because bounding
+                                            boxes are tightly integrated with images. Our simple design of
+                                            linear image embedding combined with appropriate pre-training
+       Figure4:Lossconvergencecurvesoffine-tuningtheablated                         
+                                            objectives can consistently improve not only image-centric tasks,
+       models of LayoutLMv3 on PubLayNet dataset. The loss of                       
+                                            but also some text-centric tasks further.
+       model #2did notconverge. By incorporatingthe MIMobjec-                       
+                                            Effect of MIM pre-training objective. Simply concatenating lin-
+       tive,thelossconvergesnormally.TheWPAobjectivefurther                         
+                                            ear image embedding with text embedding as input to model #2
+       decreases the loss. Best viewed in color.                                    
+                                            deteriorates performance on CORD and RVL-CDIP, while the loss
+                                            on PubLayNet diverges. We speculate that the model failed to learn
+                                            meaningful visual representation on the linear patch embeddings
+       with our pre-training stage. We do not use relative positions in self-       
+                                            without any pre-training objective associated with image modality.
+       attention networks as DiT.                                                   
+                                            The MIM objective mitigates this problem by preserving the image
+         We measure the performance using the mean average preci-                   
+                                            information until the last layer of the model by randomly masking
+       sion (MAP) @ intersection over union (IOU) [0.50:0.95] of bound-             
+                                            out a portion of input image patches and reconstructing them in
+       ing boxes and report results in Table 2. We compare with the                 
+                                            the output [22]. Comparing the results of model #3 and model #2,
+       ResNets [14, 59] and the concurrent vision Transformer [30] back-            
+                                            the MIM objective benefits CORD and RVL-CDIP. As simply using
+       bones. LayoutLMv3 outperforms the other models in all metrics,               
+                                            linear image embedding has improved FUNSD, MIM does not fur-
+       achieving an overall mAP score of 95.1. LayoutLMv3 achieves a                
+                                            ther contribute to FUNSD. By incorporating the MIM objective in
+       high gain in the “Title” category. Since titles are typically much           
+                                            training, the loss converges when fine-tuning PubLayNet as shown
+       smaller than other categories and can be identified by their tex-            
+                                            in Figure 4, and we obtain a desirable mAP score. The results indi-
+       tual content, we attribute this improvement to our incorporation             
+                                            cate that MIM can help regularize the training. Thus MIM is critical
+       of language modality in pre-training LayoutLMv3. These results               
+                                            for vision tasks like document layout analysis on PubLayNet.
+       demonstrate the generality and superiority of LayoutLMv3.                    
+                                            Effect of WPA pre-training objective. By comparing models #3
+       3.5 Ablation Study                   and #4 in Table 3, we observe that the WPA objective consistently
+                                            improves all tasks. Moreover, the WPA objective decreases the loss
+       In Table 3 we study the effect of our image embeddings and pre-              
+                                            of the vision task on PubLayNet in Figure 4. These results confirm
+       training objectives. We first build a baseline model #1 that uses text       
+                                            the effectiveness of WPA not only in cross-modal representation
+       and layout information, pre-trained with MLM objective. Then we              
+                                            learning, but also in image representation learning.
+       uselinearlyprojectedimagepatchesastheimageembeddingofthe                     
+       baseline model, denoted as model #2. We further pre-train model
+
+[PAGE 8]
+Parameter Comparisons. The table shows that incorporating (MPM). MRM has been proven to be effective in regressing original
+       imageembeddingfora16×16patchprojection(#1→#2)introduces region features [5, 31, 48] or classifying object labels [5, 37, 48] for
+       only 0.6M parameters. The parameters are negligible compared to masked regions. MGM has also been explored in the SOHO, whose
+       the parameters of CNN backbones (e.g., 44M for ResNet-101). A objective is to predict the mapping index in a visual dictionary for
+       MIM head and a WPA head introduce 6.9M and 0.6M parameters maskedgridfeatures[19].Forpatch-levelimageembedding,Visual
+       in the pre-training stage. The parameter overhead introduced by Parsing [57] proposed to mask visual tokens according to the atten-
+       image embedding is marginal compared to the MLM head, which tion weights in their self-attention image encoder, which does not
+       has 39.2M parameters for a text vocabulary size of 50,265. We did apply to simple linear image encoders. ViLT [22] and METER [12]
+       not take count of the image tokenizer when calculating parameters attempttoleverageMPMsimilartoViT[11]andBEiT[3],whichre-
+       as the tokenizer is a standalone module for generating the labels of spectively reconstruct the mean color and discrete tokens in visual
+       MIM but is not integrated into the Transformer backbone. vocabularies for image patches, but resulted in degraded perfor-
+                                            mance on downstream tasks. Our LayoutLMv3 firstly demonstrates
+                                            the effectiveness of MIM for linear patch image embedding.
+       4  RELATED WORK                                                              
+                                             Various cross-modal objectives are further developed for vi-
+       Multimodalself-supervisedpre-trainingtechniquehasmadea sion and language (VL) alignment learning in multimodal models.
+       rapid progress in document intelligence due to its successful applica- Image-text matching is widely used to learn a coarse-grained VL
+       tions of document layout and image representation learning [2, 13– alignment [2, 5, 19, 22, 56]. To learn a fine-grained VL alignment,
+       15, 17, 25, 28, 31, 32, 40, 41, 50, 52, 54–56]. LayoutLM and following UNITERproposesaword-regionalignmentobjectivebasedonopti-
+       works joint layout representation learning by encoding spatial co- mal transports, which calculates the minimum cost of transporting
+       ordinates of text [17, 25, 28, 54]. Various works then joint image the contextualized image embeddings to word embeddings [5].
+       representationlearningbycombiningCNNswithTransformer[49] ViLT extends this objective to patch-level image embeddings [22].
+       self-attention networks. These works either extract CNN grid fea- Unlike natural images, document images imply an explicit fine-
+       tures [2, 56] or rely on an object detector to extract region fea- grained alignment relationship between text words and image ar-
+       tures [14, 31, 40, 54], which accounts for heavy computation bottle- eas. Using this relationship, UDoc uses contrastive learning and
+       neck or requires region supervision. In the field of natural images similarity distillation to align the image and text belonging to the
+       vision-and-language pre-training (VLP), research works have seen same area [14]. LayoutLMv2 covers some text lines in raw images
+       a shift from region features [5, 47, 48] to grid features [19] to lift and predicts whether each text token is covered [56]. In contrast,
+       limitations of pre-defined object classes and region supervision. In- we naturally utilize the masking operations in MIM to construct
+       spiredbyvisionTransformer(ViT)[11],therehavealsobeenrecent aligned/unaligned pairs in an effective and unified way.
+       efforts in VLP without CNNs to overcome the weakness of CNN.                 
+       Still, most rely on separate self-attention networks to learn visual 5 CONCLUSION AND FUTURE WORK
+       features; thus, their computational cost is not reduced [12, 29, 57]. In this paper, we present LayoutLMv3 to pre-train the multimodal
+       An exception is ViLT, which learns visual features with a light- Transformer for Document AI, which redesigns the model archi-
+       weight linear layer and significantly cuts down the model size and tecture and pre-training objectives for LayoutLM. Distinguishing
+       running time [22]. Inspired by ViLT, our LayoutLMv3 is the first from the existing multimodal model in Document AI, LayoutLMv3
+       multimodal model in Document AI that utilizes image embeddings does not rely on a pre-trained CNN or Faster R-CNN backbone to
+       without CNNs.                        extract visual features, significantly saving parameters and elimi-
+         Reconstructivepre-trainingobjectivesrevolutionizedrepre- nating region annotations. We use unified text and image masking
+       sentationlearning.InNLP research,BERTfirstlyproposed“masked pre-training objectives: masked language modeling, masked image
+       language modeling” (MLM) to learn bidirectional representations modeling, and word-patch alignment, to learn multimodal repre-
+       andadvancedthestateoftheartsonbroadlanguageunderstanding sentations. Extensive experimental results have demonstrated the
+       tasks [9]. In the field of CV, Masked Image Modeling (MIM) aims generality and superiority of LayoutLMv3 for both text-centric and
+       to learn rich visual representations via predicting masked content image-centric Document AI tasks with the simple architecture and
+       conditioning in visible context. For example, ViT reconstructs the unified objectives. In future research, we will investigate scaling up
+       mean color of masked patches, which leads to performance gains pre-trained models so that the models can leverage more training
+       in ImageNet classification [11]. BEiT reconstructs visual tokens data to drive SOTA results further. In addition, we will explore few-
+       learned by a discrete VAE, achieving competitive results in image shotandzero-shotlearningcapabilitiestofacilitatemorereal-world
+       classification and semantic segmentation [3]. DiT extends BEiT to business scenarios in the Document AI industry.
+       document images to document layout analysis [30].                            
+         Inspired by MLM and MIM, researchers in the field of vision- 6 ACKNOWLEDGEMENT
+       and-languagehaveexploredreconstructiveobjectivesformulti-                    
+                                            WearegratefultoYihengXuforfruitfuldiscussionsandinspiration.
+       modal representation learning. Whereas most well-performing                  
+                                            ThisworkwassupportedbytheNSFC(U1811461)andtheProgram
+       vision-and-language pre-training (VLP) models use the MLM pro-               
+                                            for Guangdong Introducing Innovative and Entrepreneurial Teams
+       posedbyBERTontextmodality,theydifferintheirpre-trainingob-                   
+                                            under Grant NO.2016ZT06D211.            
+       jectivesfortheimagemodality.TherearethreevariantsofMIMcor-                   
+       respondingtodifferentimageembeddings:maskedregionmodeling                    
+       (MRM),maskedgridmodeling (MGM),and maskedpatchmodeling
+
+[PAGE 9]
+Table 4: Visual information extraction in Chinese F1 score on the EPHOIE test set.
+                                                                                    
+        Model            Subject TestTime Name School #Examination #Seat Class #Student Grade Score Mean
+                                                                                    
+        BiLSTM+CRF[24]   98.51 100.0 98.87 98.80 75.86 72.73 94.04 84.44 98.18 69.57 89.10
+        GCN-based[35]    98.18 100.0 99.52 100.0 88.17 86.00 97.39 80.00 94.44 81.82 92.55
+        GraphIE[42]      94.00 100.0 95.84 97.06 82.19 84.44 93.07 85.33 94.44 76.19 90.26
+        TRIE[58]         98.79 100.0 99.46 99.64 88.64 85.92 97.94 84.32 97.02 80.39 93.21
+        VIES[51]         99.39 100.0 99.67 99.28 91.81 88.73 99.29 89.47 98.35 86.27 95.23
+        StrucTexT[32]    99.25 100.0 99.47 99.83 97.98 95.43 98.29 97.33 99.25 93.73 97.95
+        LayoutLMv3-Chinese (Ours) 98.99 100.0 99.77 99.20 100.0 100.0 98.82 99.78 98.31 97.27 99.21
+                   BASE                                                             
+       A  APPENDIX                                                                  
+                                            [6] JaeminCho,JiasenLu,DustinSchwenk,HannanehHajishirzi,andAniruddha
+                                              Kembhavi.2020. X-LXMERT:Paint,CaptionandAnswerQuestionswithMulti-
+       A.1 LayoutLMv3 in Chinese                                                    
+                                              ModalTransformers.InEMNLP.            
+                                            [7] AlexisConneau,KartikayKhandelwal,NamanGoyal,VishravChaudhary,Guil-
+       Pre-trainingLayoutLMv3inChinese.Todemonstratetheeffec-                       
+                                              laumeWenzek,FranciscoGuzmán,ÉdouardGrave,MyleOtt,LukeZettlemoyer,
+       tiveness of LayoutLMv3 in not only English but also in the Chinese andVeselinStoyanov.2020.UnsupervisedCross-lingualRepresentationLearning
+       language, we pre-train a LayoutLMv3-Chinese model in base size. atScale.InACL.
+                                            [8] LeiCui,YihengXu,TengchaoLv,andFuruWei.2021.DocumentAI:Benchmarks,
+       It is trained on 50 million document pages in Chinese. We collect            
+                                              ModelsandApplications. arXivpreprintarXiv:2111.08609 (2021).
+       large-scale Chinese documents by downloading publicly available [9] JacobDevlin,Ming-WeiChang,KentonLee,andKristinaToutanova.2019. BERT:
+       digital-born documents and following the principles of Common Pre-trainingofDeepBidirectionalTransformersforLanguageUnderstanding.In
+                                              NAACL.                                
+       Crawl (https://commoncrawl.org/) to process these documents. For [10] Ming Ding, Zhuoyi Yang, Wenyi Hong, Wendi Zheng, Chang Zhou, Da Yin,
+       the multimodal Transformer encoder along with the text embed- JunyangLin,XuZou,ZhouShao,HongxiaYang,etal.2021. Cogview:Mastering
+                                              text-to-imagegenerationviatransformers.InNeurIPS.
+       ding layer, LayoutLMv3-Chinese is initialized from the pre-trained           
+                                            [11] AlexeyDosovitskiy,LucasBeyer,AlexanderKolesnikov,DirkWeissenborn,Xi-
+       weights of XLM-R [7]. We randomly initialized the rest model pa- aohuaZhai,ThomasUnterthiner,MostafaDehghani,MatthiasMinderer,Georg
+       rameters. Other training setting is the same as LayoutLMv3. Heigold,SylvainGelly,JakobUszkoreit,andNeilHoulsby.2021. AnImageis
+                                              Worth16x16Words:TransformersforImageRecognitionatScale.InICLR.
+       Fine-tuning on Visual Information Extraction. The visual in-                 
+                                            [12] Zi-YiDou,YichongXu,ZheGan,JianfengWang,ShuohangWang,LijuanWang,
+       formationextraction(VIE)requiresextractingkeyinformationfrom ChenguangZhu, ZichengLiu,Michael Zeng,etal. 2021. AnEmpiricalStudy
+       document images. The task is a sequence labeling problem aiming of Training End-to-End Vision-and-Language Transformers. arXiv preprint
+                                              arXiv:2111.02387 (2021).              
+       to tag each word with a pre-defined label. We predict the label of [13] ŁukaszGarncarek,RafałPowalski,TomaszStanisławek,BartoszTopolski,Piotr
+       the last hidden state of each text token with a linear layer. Halama, Michał Turski, and Filip Graliński. 2021. LAMBERT: Layout-Aware
+                                              LanguageModelingforInformationExtraction.InICDAR.
+         WeconductexperimentsontheEPHOIEdataset.TheEPHOIE[51]                       
+                                            [14] Jiuxiang Gu, Jason Kuen, Vlad Morariu, Handong Zhao, Rajiv Jain, Nikolaos
+       is a visual information extraction dataset consisting of examina- Barmpalios, Ani Nenkova, and Tong Sun. 2021. UniDoc: Unified Pretraining
+       tion paper heads with diverse layouts and backgrounds. It contains FrameworkforDocumentUnderstanding.InNeurIPS.
+                                            [15] Zhangxuan Gu, Changhua Meng, Ke Wang, Jun Lan, Weiqiang Wang, Ming
+       1,494 images with comprehensive annotations for 15,771 Chinese               
+                                              Gu,andLiqingZhang.2022. XYLayoutLM:TowardsLayout-AwareMultimodal
+       text instances. We focus on a token-level entity labeling task on NetworksForVisually-RichDocumentUnderstanding.InCVPR.
+       the EPHOIE dataset to assign each character a label among ten [16] AdamWHarley,AlexUfkes,andKonstantinosGDerpanis.2015. Evaluationof
+                                              DeepConvolutionalNetsforDocumentImageClassificationandRetrieval.In
+       pre-defined categories. The training and test sets contain 1,183 and ICDAR.  
+       311 images, respectively. We fine-tune LayoutLMv3-Chinese for [17] TeakgyuHong,DongHyunKim,MingiJi,WonseokHwang,DaehyunNam,and
+       100 epochs. The batch size is 16, and the learning rate is 5𝑒 −5 with SungraePark.2022. BROS:APre-TrainedLanguageModelFocusingonTextand
+                                              LayoutforBetterKeyInformationExtractionfromDocuments.InAAAI.
+       linear warmup over the first epoch.  [18] YupanHuang,HongweiXue,BeiLiu,andYutongLu.2021. Unifyingmultimodal
+         WereportF1scoresforthistaskandreportresultsinTable4.The transformerforbi-directionalimageandtextgeneration.InACMMultimedia.
+                                            [19] Zhicheng Huang, Zhaoyang Zeng, Yupan Huang, Bei Liu, Dongmei Fu, and
+       LayoutLMv3-Chineseshowssuperiorperformanceonmostmetrics                      
+                                              Jianlong Fu. 2021. Seeing out of the box: End-to-end pre-training for vision-
+       and achieves a SOTA mean F1 score of 99.21%. The results show languagerepresentationlearning.InCVPR.
+       that LayoutLMv3 significantly benefits the VIE task in Chinese. [20] GuillaumeJaume,HazimKemalEkenel,andJean-PhilippeThiran.2019. Funsd:
+                                              Adatasetforformunderstandinginnoisyscanneddocuments.InICDARW.
+                                            [21] MandarJoshi,DanqiChen,YinhanLiu,DanielSWeld,LukeZettlemoyer,and
+       REFERENCES                             OmerLevy.2020. Spanbert:Improvingpre-trainingbyrepresentingandpredict-
+                                              ingspans. TransactionsoftheAssociationforComputationalLinguistics8(2020),
+        [1] AlaaeldinAli,HugoTouvron,MathildeCaron,PiotrBojanowski,MatthijsDouze,   
+                                              64–77.                                
+          ArmandJoulin,IvanLaptev,NataliaNeverova,GabrielSynnaeve,JakobVerbeek,     
+                                            [22] Wonjae Kim, Bokyung Son, and Ildoo Kim. 2021. Vilt: Vision-and-language
+          etal.2021. Xcit:Cross-covarianceimagetransformers.InNeurIPS.              
+                                              transformerwithoutconvolutionorregionsupervision.InICML.
+        [2] SrikarAppalaraju,BhavanJasani,BhargavaUralaKota,YushengXie,andR.Man-    
+                                            [23] DiederikPKingmaandJimmyBa.2014. Adam:Amethodforstochasticopti-
+          matha.2021. DocFormer:End-to-EndTransformerforDocumentUnderstanding.      
+                                              mization. arXivpreprintarXiv:1412.6980 (2014).
+          InICCV.                                                                   
+                                            [24] GuillaumeLample,MiguelBallesteros,SandeepSubramanian,KazuyaKawakami,
+        [3] Hangbo Bao, Li Dong, Songhao Piao, and Furu Wei. 2022. BEiT: BERT Pre-  
+                                              andChrisDyer.2016. NeuralArchitecturesforNamedEntityRecognition.In
+         TrainingofImageTransformers.InICLR.                                        
+                                              NAACLHLT.                             
+        [4] Zhaowei Cai and Nuno Vasconcelos. 2018. Cascade r-cnn: Delving into high
+                                            [25] Chen-YuLee,Chun-LiangLi,TimothyDozat,VincentPerot,GuolongSu,Nan
+          qualityobjectdetection.InCVPR.                                            
+                                              Hua, Joshua Ainslie, Renshen Wang, Yasuhisa Fujii, and Tomas Pfister. 2022.
+        [5] Yen-ChunChen,LinjieLi,LichengYu,AhmedElKholy,FaisalAhmed,ZheGan,        
+                                              FormNet:StructuralEncodingbeyondSequentialModelinginFormDocument
+          YuCheng,andJingjingLiu.2020. Uniter:Universalimage-textrepresentation     
+                                              InformationExtraction.InACL.          
+          learning.InECCV.                                                          
+                                            [26] D. Lewis, G. Agam, S. Argamon, O. Frieder, D. Grossman, and J. Heard. 2006.
+                                              BuildingaTestCollectionforComplexDocumentInformationProcessing.In
+                                              SIGIR.
+
+[PAGE 10]
+[27] MikeLewis,YinhanLiu,NamanGoyal,MarjanGhazvininejad,Abdelrahman [43] Aditya Ramesh, Mikhail Pavlov, Gabriel Goh, Scott Gray, Chelsea Voss, Alec
+          Mohamed,OmerLevy,VeselinStoyanov,andLukeZettlemoyer.2020. BART: Radford,MarkChen,andIlyaSutskever.2021.Zero-shottext-to-imagegeneration.
+          DenoisingSequence-to-SequencePre-trainingforNaturalLanguageGeneration, InICML.
+          Translation,andComprehension.InACL. [44] ShaoqingRen,KaimingHe,RossB.Girshick,andJianSun.2015. FasterR-CNN:
+       [28] ChenliangLi,BinBi,MingYan,WeiWang,SongfangHuang,FeiHuang,andLuo TowardsReal-TimeObjectDetectionwithRegionProposalNetworks. TPAMI 39,
+          Si.2021. StructuralLM:StructuralPre-trainingforFormUnderstanding.InACL. 1137–1149.
+       [29] JunnanLi,RamprasaathSelvaraju,AkhileshGotmare,ShafiqJoty,CaimingXiong, [45] TimSalimans,AndrejKarpathy,XiChen,andDiederikP.Kingma.2017. Pixel-
+          andStevenChuHongHoi.2021. Alignbeforefuse:Visionandlanguagerepre- CNN++:ImprovingthePixelCNNwithDiscretizedLogisticMixtureLikelihood
+          sentationlearningwithmomentumdistillation.InNeurIPS. andOtherModifications.InICLR.
+       [30] JunlongLi,YihengXu,TengchaoLv,LeiCui,ChaZhang,andFuruWei.2022.DiT: [46] Rico Sennrich, Barry Haddow, and Alexandra Birch. 2016. Neural Machine
+          Self-supervisedPre-trainingforDocumentImageTransformer. arXivpreprint TranslationofRareWordswithSubwordUnits.InACL.
+          arXiv:2203.02378(2022).           [47] WeijieSu,XizhouZhu,YueCao,BinLi,LeweiLu,FuruWei,andJifengDai.2019.
+       [31] PeizhaoLi,JiuxiangGu,JasonKuen,VladIMorariu,HandongZhao,RajivJain, VL-BERT:Pre-trainingofGenericVisual-LinguisticRepresentations.InICLR.
+          VarunManjunatha,andHongfuLiu.2021. SelfDoc:Self-SupervisedDocument [48] HaoTanandMohitBansal.2019. LXMERT:LearningCross-ModalityEncoder
+          RepresentationLearning.InCVPR.      RepresentationsfromTransformers.InEMNLP.
+       [32] YulinLi,YuxiQian,YuechenYu,XiamengQin,ChengquanZhang,YanLiu,Kun [49] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones,
+          Yao,JunyuHan,JingtuoLiu,andErruiDing.2021. StrucTexT:StructuredText Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. 2017. Attention is all
+          UnderstandingwithMulti-ModalTransformers.InACMMultimedia. youneed.InNeurIPS.
+       [33] YanghaoLi,SainingXie,XinleiChen,PiotrDollar,KaimingHe,andRossGirshick. [50] JiapengWang,LianwenJin,andKaiDing.2022. LiLT:ASimpleyetEffective
+          2021. Benchmarkingdetectiontransferlearningwithvisiontransformers. arXiv Language-Independent Layout Transformer for Structured Document Under-
+          preprintarXiv:2111.11429 (2021).    standing.InACL.                       
+       [34] Tsung-YiLin,PiotrDollár,RossGirshick,KaimingHe,BharathHariharan,and [51] JiapengWang,ChongyuLiu,LianwenJin,GuozhiTang,JiaxinZhang,Shuaitao
+          SergeBelongie.2017. Featurepyramidnetworksforobjectdetection.InCVPR. Zhang,QianyingWang,YaqiangWu,andMingxiangCai.2021. Towardsrobust
+       [35] XiaojingLiu,FeiyuGao,QiongZhang,andHuashaZhao.2019. GraphConvolu- visualinformationextractioninrealworld:newdatasetandnovelsolution.In
+          tionforMultimodalInformationExtractionfromVisuallyRichDocuments.In AAAI.  
+          NAACLHLT.                         [52] Te-LinWu,ChengLi,MingyangZhang,TaoChen,SpurthiAmbaHombaiah,and
+       [36] YinhanLiu,MyleOtt,NamanGoyal,JingfeiDu,MandarJoshi,DanqiChen,Omer MichaelBendersky.2021. LAMPRET:Layout-AwareMultimodalPreTrainingfor
+          Levy, Mike Lewis, Luke Zettlemoyer, and Veselin Stoyanov. 2019. Roberta: A DocumentUnderstanding. arXivpreprintarXiv:2104.08405 (2021).
+          robustlyoptimizedbertpretrainingapproach. arXivpreprintarXiv:1907.11692 [53] YuxinWu,AlexanderKirillov,FranciscoMassa,Wan-YenLo,andRossGirshick.
+          (2019).                             2019. Detectron2. https://github.com/facebookresearch/detectron2.
+       [37] JiasenLu,DhruvBatra,DeviParikh,andStefanLee.2019. Vilbert:Pretraining [54] YihengXu,MinghaoLi,LeiCui,ShaohanHuang,FuruWei,andMingZhou.2020.
+          task-agnosticvisiolinguisticrepresentationsforvision-and-languagetasks.In Layoutlm:Pre-trainingoftextandlayoutfordocumentimageunderstanding.In
+          NeurIPS.                            KDD.                                  
+       [38] MineshMathew,DimosthenisKaratzas,andCVJawahar.2021.Docvqa:Adataset [55] YihengXu,TengchaoLv,LeiCui,GuoxinWang,YijuanLu,DineiFlorencio,Cha
+          forvqaondocumentimages.InWACV.      Zhang,andFuruWei.2021.LayoutXLM:MultimodalPre-trainingforMultilingual
+       [39] SeunghyunPark,SeungShin,BadoLee,JunyeopLee,JaeheungSurh,Minjoon Visually-richDocumentUnderstanding. arXivpreprintarXiv:2104.08836(2021).
+          Seo,andHwalsukLee.2019. CORD:AConsolidatedReceiptDatasetforPost- [56] YangXu,YihengXu,TengchaoLv,LeiCui,FuruWei,GuoxinWang,YijuanLu,
+          OCRParsing.InDocumentIntelligenceWorkshopatNeuralInformationProcessing DineiFlorencio,ChaZhang,WanxiangChe,MinZhang,andLidongZhou.2021.
+          Systems.                            LayoutLMv2:Multi-modalPre-trainingforVisually-richDocumentUnderstand-
+       [40] RafalPowalski,ŁukaszBorchmann,DawidJurkiewicz,TomaszDwojak,Michal ing.InACL.
+          Pietruszka, and Gabriela Pałka. 2021. Going Full-TILT Boogie on Document [57] HongweiXue,YupanHuang,BeiLiu,HouwenPeng,JianlongFu,HouqiangLi,
+          UnderstandingwithText-Image-LayoutTransformer.InICDAR. andJieboLuo.2021. ProbingInter-modality:VisualParsingwithSelf-Attention
+       [41] Subhojeet Pramanik, Shashank Mujumdar, and Hima Patel. 2020. Towards a forVision-and-LanguagePre-training.InNeurIPS.
+          multi-modal,multi-tasklearningbasedpre-trainingframeworkfordocument [58] PengZhang,YunluXu,ZhanzhanCheng,ShiliangPu,JingLu,LiangQiao,Yi
+          representationlearning. arXivpreprintarXiv:2009.14457 (2020). Niu,andFeiWu.2020. TRIE:end-to-endtextreadingandinformationextraction
+       [42] Yujie Qian. 2019. A graph-based framework for information extraction. Ph.D. fordocumentunderstanding.InACMMultimedia.
+          Dissertation.MassachusettsInstituteofTechnology. [59] XuZhong,JianbinTang,andAntonioJimenoYepes.2019. PubLayNet:largest
+                                              dataseteverfordocumentlayoutanalysis.InICDAR.

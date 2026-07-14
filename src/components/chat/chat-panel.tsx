@@ -81,8 +81,8 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
           <div className="mt-2 flex flex-wrap gap-1.5 border-t border-white/5 pt-2" aria-label="回答来源">
             {msg.sources.map((source) => (
               source.sourceUrl
-                ? <a key={`${source.id}-${source.index}`} href={source.sourceUrl} target="_blank" rel="noreferrer" title={source.quote || source.title} className="rounded-md bg-[var(--primary-subtle)] px-2 py-1 text-[10px] text-[var(--primary-hover)] hover:ring-1 hover:ring-[var(--primary)]">[{source.index}] {source.title}</a>
-                : <span key={`${source.id}-${source.index}`} title={source.quote || source.title} className="rounded-md bg-[var(--primary-subtle)] px-2 py-1 text-[10px] text-[var(--primary-hover)]">[{source.index}] {source.title}</span>
+                ? <a key={`${source.id}-${source.index}`} href={source.sourceUrl} target="_blank" rel="noreferrer" title={source.quote || source.title} className="rounded-md bg-[var(--primary-subtle)] px-2 py-1 text-[10px] text-[var(--primary-hover)] hover:ring-1 hover:ring-[var(--primary)]">[{source.index}] {source.title}{source.locator ? ` · ${source.locator}` : ""}</a>
+                : <span key={`${source.id}-${source.index}`} title={source.quote || source.title} className="rounded-md bg-[var(--primary-subtle)] px-2 py-1 text-[10px] text-[var(--primary-hover)]">[{source.index}] {source.title}{source.locator ? ` · ${source.locator}` : ""}</span>
             ))}
           </div>
         )}
@@ -394,7 +394,11 @@ export function ChatPanel() {
       const res = await apiFetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ input: userMessage.content, mapId: currentMapId }),
+        body: JSON.stringify({
+          input: userMessage.content,
+          mapId: currentMapId,
+          history: messages.filter((message) => message.role !== "system" && !message.id.startsWith("welcome_")).slice(-8).map((message) => ({ role: message.role, content: message.content })),
+        }),
       });
       const data = await res.json();
       const aiMessage: ChatMessage = {
@@ -420,7 +424,7 @@ export function ChatPanel() {
     } finally {
       setProcessing(false);
     }
-  }, [input, isProcessing, currentMapId, addMessage, setProcessing, setPendingMindMap, setPendingPlacement]);
+  }, [input, isProcessing, currentMapId, messages, addMessage, setProcessing, setPendingMindMap, setPendingPlacement]);
 
   // Confirm with selected nodes only
   const handleConfirm = useCallback(async (selectedChildren: { childIdx: number; items: string[] }[]) => {

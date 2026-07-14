@@ -46,8 +46,9 @@ function expectStatus(result, status) {
   preflight.ok = preflight.status === 204 && preflight.cors === "https://yunzhixu620-stack.github.io";
 
   const health = await request("Dependency health and API version", "/health", { authenticated: false });
-  health.ok = health.status === 200 && health.body?.status === "ok" && health.body?.version === "8.0.0"
-    && health.body?.checks?.modelConfigured === true && health.body?.checks?.knowledgeStore === "ok";
+  health.ok = health.status === 200 && health.body?.status === "ok" && health.body?.version === "9.0.0"
+    && health.body?.checks?.modelConfigured === true && health.body?.checks?.knowledgeStore === "ok"
+    && health.body?.checks?.hybridRetrieval === "ready";
 
   for (const [name, pathname, options] of [
     ["Anonymous knowledge is denied", "/api/knowledge?action=maps", { authenticated: false }],
