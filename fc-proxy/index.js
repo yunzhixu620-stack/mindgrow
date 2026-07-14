@@ -499,8 +499,14 @@ async function retrieveNodeEvidence(question, mapId, workspaceId) {
   if (seeds.length === 0) return [];
 
   seeds = seeds
-    .map((node) => ({ ...node, seed: true, graphDepth: 0, anchorScore: anchorCoverage(anchors, `${node.content || ''} ${node.desc || ''}`) }))
-    .sort((left, right) => (right.anchorScore - left.anchorScore) || (Number(right.score || 0) - Number(left.score || 0)))
+    .map((node) => ({
+      ...node,
+      seed: true,
+      graphDepth: 0,
+      titleAnchorScore: anchorCoverage(anchors, node.content || ''),
+      anchorScore: anchorCoverage(anchors, `${node.content || ''} ${node.desc || ''}`),
+    }))
+    .sort((left, right) => (right.titleAnchorScore - left.titleAnchorScore) || (right.anchorScore - left.anchorScore) || (Number(right.score || 0) - Number(left.score || 0)))
     .slice(0, 10);
   const seedIds = seeds.map((node) => node.id);
   const seedSet = new Set(seedIds);
@@ -632,6 +638,16 @@ async function retrieveGraphEvidence(question, mapId, workspaceId) {
   graphNodes.forEach((node) => (node.citations || []).forEach((citation) => {
     if (citation.documentId) graphDocumentIds.add(citation.documentId);
   }));
+  const seedTitleScores = graphNodes.filter((node) => node.seed).map((node) => Number(node.titleAnchorScore || 0));
+  const bestSeedTitleScore = seedTitleScores.length ? Math.max(...seedTitleScores) : 0;
+  const primaryGraphDocumentIds = new Set();
+  if (bestSeedTitleScore > 0) {
+    graphNodes
+      .filter((node) => node.seed && Number(node.titleAnchorScore || 0) >= bestSeedTitleScore)
+      .forEach((node) => (node.citations || []).forEach((citation) => {
+        if (citation.documentId) primaryGraphDocumentIds.add(citation.documentId);
+      }));
+  }
   const graphLabelsByDocument = new Map();
   graphNodes.forEach((node) => (node.citations || []).forEach((citation) => {
     if (!citation.documentId) return;
@@ -642,21 +658,24 @@ async function retrieveGraphEvidence(question, mapId, workspaceId) {
 
   const scoredChunks = documentEvidence.map((item, index) => {
     const graphLinked = graphDocumentIds.has(item.documentId);
+    const primaryGraphLinked = primaryGraphDocumentIds.has(item.documentId);
     const graphLabels = graphLabelsByDocument.get(item.documentId) || [];
     const semanticScore = Number.isFinite(Number(item.rerankScore)) ? Number(item.rerankScore) : Math.max(0, 1 - index / Math.max(documentEvidence.length, 1));
     return {
       ...item,
       graphLinked,
+      primaryGraphLinked,
       graphLabels,
-      graphScore: semanticScore + (graphLinked ? 0.32 : 0) + Number(item.anchorScore || 0) * 0.18,
+      graphScore: semanticScore + (primaryGraphLinked ? 0.62 : graphLinked ? 0.24 : 0) + Number(item.anchorScore || 0) * 0.18,
       desc: `${item.desc || ''}${graphLabels.length ? ` · 图谱路径：${graphLabels.join(' → ')}` : ''}`,
     };
   }).sort((left, right) => right.graphScore - left.graphScore);
 
-  const linkedChunks = scoredChunks.filter((item) => item.graphLinked);
+  const primaryChunks = scoredChunks.filter((item) => item.primaryGraphLinked);
+  const linkedChunks = scoredChunks.filter((item) => item.graphLinked && !item.primaryGraphLinked);
   const unlinkedChunks = scoredChunks.filter((item) => !item.graphLinked);
-  const graphConditionedChunks = linkedChunks.length >= 2
-    ? [...linkedChunks.slice(0, 12), ...unlinkedChunks.slice(0, 4)]
+  const graphConditionedChunks = primaryChunks.length + linkedChunks.length >= 2
+    ? [...primaryChunks.slice(0, 10), ...linkedChunks.slice(0, 5), ...unlinkedChunks.slice(0, 2)]
     : scoredChunks.slice(0, 16);
   const deduplicated = new Map();
   [...graphConditionedChunks, ...graphNodes].forEach((item) => {
@@ -668,6 +687,7 @@ async function retrieveGraphEvidence(question, mapId, workspaceId) {
     seedNodes: graphNodes.filter((node) => node.seed).length,
     expandedNodes: graphNodes.filter((node) => node.expanded).length,
     graphDocuments: graphDocumentIds.size,
+    primaryGraphDocuments: primaryGraphDocumentIds.size,
     candidateChunks: documentEvidence.length,
   };
   return evidence;
