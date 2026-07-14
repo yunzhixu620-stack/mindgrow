@@ -2,6 +2,7 @@
 
 import type { Session, User } from "@supabase/supabase-js";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { getAuthRedirectUrl } from "@/lib/auth-urls";
 import { IS_LOCAL_MODE, apiFetch, setActiveWorkspaceId } from "@/lib/client-api";
 import { supabase } from "@/lib/supabase-browser";
 
@@ -24,6 +25,7 @@ interface AuthContextValue {
   message: string;
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (email: string, password: string) => Promise<void>;
+  resendConfirmation: (email: string) => Promise<void>;
   signOut: () => Promise<void>;
   createWorkspace: (name: string) => Promise<void>;
   selectWorkspace: (workspaceId: string) => void;
@@ -57,6 +59,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setLoading(false);
       return;
     }
+
+    const hashParams = new URLSearchParams(window.location.hash.slice(1));
+    const searchParams = new URLSearchParams(window.location.search);
+    const callbackErrorCode = hashParams.get("error_code") || searchParams.get("error_code");
+    const callbackError = hashParams.get("error") || searchParams.get("error");
+    if (callbackErrorCode || callbackError) {
+      setMessage(callbackErrorCode === "otp_expired"
+        ? "确认链接已失效或已被使用。请在下方输入注册邮箱，重新发送确认邮件。"
+        : "邮箱确认没有完成，请重新发送确认邮件后再试。");
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+
     let active = true;
     supabase.auth.getSession().then(async ({ data }) => {
       if (!active) return;
@@ -91,9 +105,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signUp = useCallback(async (email: string, password: string) => {
     setMessage("");
-    const { data, error } = await supabase.auth.signUp({ email, password });
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: { emailRedirectTo: getAuthRedirectUrl() },
+    });
     if (error) throw error;
-    if (!data.session) setMessage("注册成功，请到邮箱点击确认链接后再登录。");
+    if (!data.session) setMessage("注册成功。确认邮件已发送，请使用最新邮件中的链接完成验证。");
+  }, []);
+
+  const resendConfirmation = useCallback(async (email: string) => {
+    setMessage("");
+    const { error } = await supabase.auth.resend({
+      type: "signup",
+      email,
+      options: { emailRedirectTo: getAuthRedirectUrl() },
+    });
+    if (error) throw error;
+    setMessage("新的确认邮件已发送。请使用最新邮件中的链接，旧链接会失效。");
   }, []);
 
   const signOut = useCallback(async () => {
@@ -130,11 +159,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     message,
     signIn,
     signUp,
+    resendConfirmation,
     signOut,
     createWorkspace,
     selectWorkspace,
     refreshWorkspaces,
-  }), [loading, session, workspaces, currentWorkspace, message, signIn, signUp, signOut, createWorkspace, selectWorkspace, refreshWorkspaces]);
+  }), [loading, session, workspaces, currentWorkspace, message, signIn, signUp, resendConfirmation, signOut, createWorkspace, selectWorkspace, refreshWorkspaces]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

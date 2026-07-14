@@ -4,12 +4,20 @@ import { FormEvent, useState } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
 
 export function AuthScreen() {
-  const { signIn, signUp, message } = useAuth();
+  const { signIn, signUp, resendConfirmation, message } = useAuth();
   const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
+  const [resending, setResending] = useState(false);
   const [error, setError] = useState("");
+
+  function describeAuthError(raw: string) {
+    if (raw.includes("Invalid login")) return "邮箱或密码不正确";
+    if (raw.includes("Email not confirmed")) return "邮箱尚未确认，请点击最新确认邮件，或在下方重新发送。";
+    if (raw.includes("rate limit")) return "发送过于频繁，请稍后再试。";
+    return raw;
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -24,9 +32,27 @@ export function AuthScreen() {
       else await signUp(email.trim(), password);
     } catch (reason) {
       const raw = reason instanceof Error ? reason.message : "登录失败，请重试";
-      setError(raw.includes("Invalid login") ? "邮箱或密码不正确" : raw);
+      setError(describeAuthError(raw));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function resend() {
+    setError("");
+    const normalizedEmail = email.trim();
+    if (!normalizedEmail) {
+      setError("请先输入创建账号时使用的邮箱。");
+      return;
+    }
+    setResending(true);
+    try {
+      await resendConfirmation(normalizedEmail);
+    } catch (reason) {
+      const raw = reason instanceof Error ? reason.message : "发送失败，请稍后重试";
+      setError(describeAuthError(raw));
+    } finally {
+      setResending(false);
     }
   }
 
@@ -57,6 +83,12 @@ export function AuthScreen() {
           </label>
           {(error || message) && <div role="status" className={`rounded-xl px-3 py-2 text-xs ${error ? "bg-red-500/10 text-red-300" : "bg-emerald-500/10 text-emerald-300"}`}>{error || message}</div>}
           <button disabled={busy} className="w-full rounded-xl bg-[var(--primary)] py-3 text-sm font-semibold text-black disabled:opacity-50">{busy ? "请稍候…" : mode === "signin" ? "进入工作区" : "创建账号"}</button>
+          <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2.5 text-center">
+            <p className="text-[11px] text-[var(--text-tertiary)]">确认链接失效，或没有收到邮件？</p>
+            <button type="button" disabled={busy || resending} onClick={resend} className="mt-1 text-xs font-medium text-[var(--primary)] hover:underline disabled:opacity-50">
+              {resending ? "正在发送…" : "重新发送确认邮件"}
+            </button>
+          </div>
         </form>
         <p className="mt-5 text-center text-[10px] leading-relaxed text-[var(--text-muted)]">登录后，每个工作区的数据独立存储；浏览器不会接触数据库管理密钥。</p>
       </div>

@@ -32,6 +32,13 @@ async function check(name, task) {
   await check("registration option is available", async () => {
     const labels = await page.$$eval("button", (buttons) => buttons.map((button) => button.textContent.trim()));
     if (!labels.includes("登录") || !labels.includes("注册")) throw new Error("Login or registration tab is missing");
+    if (!labels.includes("重新发送确认邮件")) throw new Error("Resend confirmation action is missing");
+  });
+
+  await check("expired confirmation links show a recovery path", async () => {
+    await page.goto(`${baseUrl}/#error=access_denied&error_code=otp_expired`, { waitUntil: "networkidle2", timeout: 60000 });
+    await page.waitForFunction(() => document.body.innerText.includes("确认链接已失效"), { timeout: 30000 });
+    if (await page.evaluate(() => window.location.hash.length > 0)) throw new Error("Expired auth error was not removed from the URL");
   });
 
   await check("production API is healthy and anonymous data is denied", async () => {
