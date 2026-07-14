@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint . --ext .js,.ts,.tsx --max-warnings=0",
     "test:e2e:local": "node scripts/e2e-local.js",
+    "test:e2e:public": "node scripts/e2e-public.js",
     "test:backend": "node scripts/backend-smoke.js"
   },
   "dependencies": {
