@@ -17,7 +17,7 @@ const PORT = Number.parseInt(process.env.FC_SERVER_PORT || process.env.PORT || '
 // into a false 503. Transient 429/5xx responses are retried below.
 const UPSTREAM_TIMEOUT_MS = Number.parseInt(process.env.UPSTREAM_TIMEOUT_MS || '45000', 10);
 const AUTH_REQUIRED = process.env.AUTH_REQUIRED !== 'false';
-const API_VERSION = '10.1.0';
+const API_VERSION = '10.2.0';
 const DASHSCOPE_AUDIO_ENDPOINT = process.env.DASHSCOPE_AUDIO_ENDPOINT || 'https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer';
 const ALLOWED_ORIGINS = new Set(
   (process.env.ALLOWED_ORIGINS || 'https://yunzhixu620-stack.github.io')
@@ -393,6 +393,53 @@ function needsConversationalContext(input) {
   return /(^|[，。！？?\s])(它|其|这个|那个|该方法|该模型|该论文|这篇|那篇|前者|后者|上述|这种|这个方法|这个模型)/i.test(value);
 }
 
+function classifyArticleRequest(input) {
+  const value = normalizeSpaces(input);
+  let task = 'qa';
+  if (/(翻译|翻成|译成|英译中|中译英|translate|translation)/i.test(value)) task = 'translate';
+  else if (/(总结|概括|摘要|综述|summari[sz]e|summary|overview)/i.test(value)) task = 'summarize';
+  else if (/(比较|对比|区别|异同|compare|comparison|versus|\bvs\.?\b)/i.test(value)) task = 'compare';
+  else if (/(提取|抽取|列出|整理出|extract|list out)/i.test(value)) task = 'extract';
+  else if (/(解释|解读|讲解|通俗|为什么|原理|explain|interpret)/i.test(value)) task = 'explain';
+
+  let targetLanguage = 'zh-CN';
+  if (/(翻译|翻成|译成|translate).{0,8}(英文|英语|english)|\b(?:to|into)\s+english\b|中译英/i.test(value)) targetLanguage = 'en';
+  else if (/(翻译|翻成|译成|translate).{0,8}(日文|日语|japanese)|\b(?:to|into)\s+japanese\b/i.test(value)) targetLanguage = 'ja';
+  else if (/(翻译|翻成|译成|translate).{0,8}(韩文|韩语|korean)|\b(?:to|into)\s+korean\b/i.test(value)) targetLanguage = 'ko';
+
+  const pageMatch = value.match(/第\s*(\d+)\s*页/i) || value.match(/\bpage\s+(\d+)\b/i);
+  let scope = 'relevant';
+  let pageNumber = null;
+  if (pageMatch) {
+    scope = 'page';
+    pageNumber = Number(pageMatch[1]);
+  } else if (/(摘要|abstract)/i.test(value)) scope = 'abstract';
+  else if (/(全文|整篇|这篇论文|该论文|这篇文章|该文章|whole paper|entire paper|full paper|whole article|entire article)/i.test(value)) scope = 'full';
+
+  return {
+    task,
+    targetLanguage,
+    scope,
+    pageNumber,
+    confidence: task === 'qa' ? 0.82 : 0.98,
+  };
+}
+
+function articleTaskLabel(task) {
+  return ({
+    translate: '翻译',
+    summarize: '总结',
+    compare: '比较',
+    extract: '信息提取',
+    explain: '解释',
+    qa: '事实问答',
+  })[task] || '事实问答';
+}
+
+function targetLanguageLabel(language) {
+  return ({ 'zh-CN': '简体中文', en: '英文', ja: '日文', ko: '韩文' })[language] || '简体中文';
+}
+
 function isTableQuestion(input) {
   const value = String(input || '');
   return /(表格|表中|table|分数|数值|指标|score|accuracy|bleu|rouge|f1|mAP|ANLS|exact match|\bEM\b)/i.test(value);
@@ -412,7 +459,9 @@ function tokenize(value) {
 
 const GRAPH_STOP_TERMS = new Set([
   '什么', '如何', '怎么', '哪些', '哪个', '是否', '论文', '文章', '方法', '模型', '结果', '内容', '研究',
+  '翻译', '总结', '概括', '摘要', '比较', '对比', '解释', '提取', '全文', '整篇', '这篇', '该论文', '该文章',
   'the', 'and', 'for', 'with', 'from', 'that', 'this', 'what', 'which', 'how', 'paper', 'model', 'method',
+  'translate', 'translation', 'summarize', 'summary', 'compare', 'comparison', 'explain', 'extract', 'entire', 'whole', 'full',
 ]);
 
 function queryAnchors(value) {
@@ -697,6 +746,145 @@ async function retrieveGraphEvidence(question, mapId, workspaceId) {
   return evidence;
 }
 
+function articleDocumentMatchScore(input, document) {
+  const value = String(input || '').toLowerCase();
+  const title = String((document && document.title) || '').trim().toLowerCase();
+  const fileName = String((document && document.file_name) || '').trim().toLowerCase();
+  if ((title && value.includes(title)) || (fileName && value.includes(fileName.replace(/\.pdf$/i, '')))) return 1;
+  const anchors = queryAnchors(input);
+  if (!anchors.length) return 0;
+  return anchorCoverage(anchors, `${title} ${fileName}`);
+}
+
+async function retrieveArticleTranslationEvidence(input, mapId, workspaceId, request, history) {
+  const workspace = encodeURIComponent(workspaceId);
+  const map = encodeURIComponent(mapId);
+  const rows = await supabaseRequest(
+    'GET',
+    `source_documents?workspace_id=eq.${workspace}&map_id=eq.${map}&select=id,title,source_type,source_url,file_name,chunk_count,created_at&order=created_at.desc&limit=30`,
+  );
+  const documents = Array.isArray(rows) ? rows : [];
+  if (documents.length === 0) {
+    return {
+      clarification: '已识别为翻译任务，但当前文章知识库还没有保存论文原文。请先解析并保存论文，再让我翻译全文、摘要或指定页。',
+      missingInformation: ['当前文章知识库中的已保存论文原文'],
+      documents: [],
+    };
+  }
+
+  const context = `${(Array.isArray(history) ? history : []).slice(-4).map((item) => item.content).join('\n')}\n${input}`;
+  const ranked = documents.map((document) => ({ document, score: articleDocumentMatchScore(context, document) }))
+    .sort((left, right) => right.score - left.score);
+  let selected = ranked[0] && ranked[0].score >= 0.28 ? ranked[0].document : null;
+  if (!selected && documents.length === 1) selected = documents[0];
+  if (!selected) {
+    const choices = documents.slice(0, 6).map((document, index) => `${index + 1}. ${document.title || document.file_name || '未命名论文'}`);
+    return {
+      clarification: `已识别为翻译任务，但当前知识库包含多篇论文，无法可靠判断“这篇”指哪一篇。请回复论文标题，并可附范围，例如“把《论文标题》的摘要翻译成中文”或“翻译《论文标题》第 3 页”。\n\n可选论文：\n${choices.join('\n')}`,
+      missingInformation: ['需要翻译的论文标题'],
+      documents,
+    };
+  }
+
+  const chunkRows = await supabaseRequest(
+    'GET',
+    `document_chunks?workspace_id=eq.${workspace}&map_id=eq.${map}&document_id=eq.${encodeURIComponent(selected.id)}&select=id,chunk_index,locator,page_number,content&order=chunk_index.asc&limit=160`,
+  );
+  const allChunks = (Array.isArray(chunkRows) ? chunkRows : []).filter((item) => String(item.content || '').trim());
+  let chunks = allChunks;
+  if (request.scope === 'page' && request.pageNumber) {
+    chunks = allChunks.filter((item) => Number(item.page_number) === request.pageNumber || String(item.locator || '').includes(`第 ${request.pageNumber} 页`));
+    if (chunks.length === 0) {
+      return {
+        clarification: `已识别为翻译任务并定位到《${selected.title || selected.file_name || '当前论文'}》，但没有找到第 ${request.pageNumber} 页的可提取文字。该页可能是扫描件，或 PDF 页码与印刷页码不一致。`,
+        missingInformation: [`第 ${request.pageNumber} 页的可提取文字`],
+        documents: [selected],
+      };
+    }
+  } else if (request.scope === 'abstract') {
+    const abstractIndex = allChunks.findIndex((item) => /(^|\s)(abstract|摘要)(\s|[:：])/i.test(String(item.content || '')));
+    chunks = abstractIndex >= 0 ? allChunks.slice(abstractIndex, abstractIndex + 2) : allChunks.slice(0, 2);
+  } else if (request.scope === 'relevant') {
+    const anchors = queryAnchors(input);
+    const rankedChunks = allChunks.map((item, index) => ({
+      item,
+      index,
+      score: anchorCoverage(anchors, `${item.locator || ''} ${item.content || ''}`),
+    })).sort((left, right) => right.score - left.score || left.index - right.index);
+    chunks = (rankedChunks[0] && rankedChunks[0].score > 0 ? rankedChunks : rankedChunks.slice(0, 4))
+      .slice(0, 6).map((item) => item.item).sort((left, right) => Number(left.chunk_index) - Number(right.chunk_index));
+  }
+
+  const totalCharacters = chunks.reduce((sum, item) => sum + String(item.content || '').length, 0);
+  const maximumTranslationCharacters = 6500;
+  if (request.scope === 'full' && totalCharacters > maximumTranslationCharacters) {
+    return {
+      clarification: `已识别为“翻译整篇论文”，目标语言是${targetLanguageLabel(request.targetLanguage)}。但《${selected.title || selected.file_name || '当前论文'}》包含 ${allChunks.length} 个原文分块、约 ${totalCharacters} 个字符，单次输出会被截断。请指定“摘要”“第 N 页”或具体章节；我会按原文顺序翻译，不会把请求误当成 Citation 问答。`,
+      missingInformation: ['需要翻译的章节、页码或摘要范围'],
+      documents: [selected],
+    };
+  }
+
+  let usedCharacters = 0;
+  const bounded = [];
+  for (const chunk of chunks) {
+    const length = String(chunk.content || '').length;
+    if (bounded.length > 0 && usedCharacters + length > maximumTranslationCharacters) break;
+    bounded.push(chunk);
+    usedCharacters += length;
+  }
+  const evidence = bounded.map((item) => ({
+    id: `chunk:${item.id}`,
+    content: String(item.content || ''),
+    desc: String(item.locator || ''),
+    type: 'detail',
+    sourceKind: 'document_chunk',
+    documentId: String(selected.id),
+    documentTitle: String(selected.title || selected.file_name || '来源论文'),
+    citations: [{
+      index: Number(item.chunk_index || 0) + 1,
+      quote: String(item.content || '').slice(0, 1400),
+      locator: String(item.locator || ''),
+      documentId: String(selected.id),
+      title: String(selected.title || selected.file_name || '来源论文'),
+      sourceUrl: String(selected.source_url || ''),
+      fileName: String(selected.file_name || ''),
+      sourceType: String(selected.source_type || 'text'),
+    }],
+  }));
+  evidence.trace = {
+    mode: 'article_translation',
+    task: 'translate',
+    seedNodes: 0,
+    expandedNodes: 0,
+    graphDocuments: 1,
+    primaryGraphDocuments: 1,
+    candidateChunks: evidence.length,
+  };
+  return { evidence, documents: [selected] };
+}
+
+function articleTaskSystemPrompt(request) {
+  const schema = '只返回 JSON：{"answer":"按任务要求生成的内容","usedSourceIds":["证据ID"],"coverage":"complete|partial","missingInformation":["缺失信息"]}。';
+  const grounding = '事实只能来自提供的证据，不得补充证据之外的事实；证据不足时说明缺失，不得猜测。usedSourceIds 只能填写提供的证据 ID。';
+  if (request && request.task === 'translate') {
+    return `你正在执行论文翻译任务，不是 Citation 问答，也不是摘要任务。${schema}把证据中的原文按原顺序准确翻译为${targetLanguageLabel(request.targetLanguage)}，保留标题层级、编号、公式、数字、模型名和数据集名；专业术语首次出现时可保留原文括注。除非用户明确要求，不得改写成摘要、解释或问答。${grounding}`;
+  }
+  if (request && request.task === 'summarize') {
+    return `你正在执行论文总结任务。${schema}使用简体中文概括核心问题、方法、结果与限制，区分作者结论和你的组织性表述。${grounding}`;
+  }
+  if (request && request.task === 'compare') {
+    return `你正在执行论文比较任务。${schema}使用简体中文按统一维度比较对象；缺少同一维度证据时明确留空，不得把不同数据集或指标串列。${grounding}`;
+  }
+  if (request && request.task === 'extract') {
+    return `你正在执行论文信息提取任务。${schema}使用简体中文只提取用户指定字段，尽量保留原始数字、单位和专有名词。${grounding}`;
+  }
+  if (request && request.task === 'explain') {
+    return `你正在执行论文解释任务。${schema}使用简体中文先给直观解释，再说明论文中的技术机制与边界；不能把常识补充冒充为论文事实。${grounding}`;
+  }
+  return `你是严格基于证据回答的论文知识助手。${schema}使用简体中文直接回答当前问题。可用最近对话理解“它/前者/后者/这个方法”等指代。${grounding}处理表格数值时必须按表头从左到右先确定任务、再确定指标、最后定位模型行；相邻任务出现同名指标时不得串列。若无法从同一证据块确认表头与数据行，就明确说明表格结构不足，不得选取看似接近的数字。`;
+}
+
 function deterministicEvidenceAnswer(evidence, intent) {
   const lines = evidence.slice(0, 12).map((node, index) => {
     const description = node.desc ? `：${node.desc}` : '';
@@ -721,20 +909,51 @@ function deterministicEvidenceAnswer(evidence, intent) {
   };
 }
 
-async function answerQuestion(input, mapId, intent, workspaceId, history) {
+async function answerQuestion(input, mapId, intent, workspaceId, history, articleRequest) {
   const contextMessages = (Array.isArray(history) ? history : []).slice(-8);
   const lastUserContext = contextMessages.filter((item) => item.role === 'user').slice(-1).map((item) => item.content)[0] || '';
   const retrievalQuery = lastUserContext && needsConversationalContext(input)
     ? `${lastUserContext}\n追问：${input}`
     : input;
-  const evidence = await retrieveGraphEvidence(retrievalQuery, mapId, workspaceId);
+  let evidence;
+  if (articleRequest && articleRequest.task === 'translate') {
+    const translationRetrieval = await retrieveArticleTranslationEvidence(input, mapId, workspaceId, articleRequest, contextMessages);
+    if (translationRetrieval.clarification) {
+      return {
+        status: 200,
+        data: {
+          intent,
+          type: 'answer',
+          reply: translationRetrieval.clarification,
+          sources: [],
+          grounded: true,
+          abstained: true,
+          coverage: 'partial',
+          missingInformation: translationRetrieval.missingInformation || [],
+          retrievalTrace: {
+            mode: 'article_translation',
+            task: 'translate',
+            seedNodes: 0,
+            expandedNodes: 0,
+            graphDocuments: translationRetrieval.documents ? translationRetrieval.documents.length : 0,
+            candidateChunks: 0,
+          },
+        },
+      };
+    }
+    evidence = translationRetrieval.evidence || [];
+  } else {
+    evidence = await retrieveGraphEvidence(retrievalQuery, mapId, workspaceId);
+  }
   if (evidence.length === 0) {
     return {
       status: 200,
       data: {
         intent,
         type: 'answer',
-        reply: '当前知识库中没有足够证据回答这个问题。你可以先补充相关资料，我不会用猜测代替知识库证据。',
+        reply: articleRequest && articleRequest.task !== 'qa'
+          ? `已识别为${articleTaskLabel(articleRequest.task)}任务，但当前文章知识库中没有足够的论文原文执行。请先保存相关论文，或补充更明确的论文标题和范围。`
+          : '当前知识库中没有足够证据回答这个问题。你可以先补充相关资料，我不会用猜测代替知识库证据。',
         sources: [],
         grounded: true,
         abstained: true,
@@ -742,7 +961,7 @@ async function answerQuestion(input, mapId, intent, workspaceId, history) {
       },
     };
   }
-  if (isTableQuestion(input) && !hasReliableTableLayout(evidence)) {
+  if ((!articleRequest || articleRequest.task === 'qa') && isTableQuestion(input) && !hasReliableTableLayout(evidence)) {
     return {
       status: 200,
       data: {
@@ -770,23 +989,44 @@ async function answerQuestion(input, mapId, intent, workspaceId, history) {
   } catch (error) {
     console.warn('Source-document citations unavailable for answer', { code: error.publicCode || 'CITATION_LOOKUP_FAILED' });
   }
-  if (!DASHSCOPE_KEY) return deterministicEvidenceAnswer(evidence, intent);
+  if (!DASHSCOPE_KEY) {
+    if (articleRequest && articleRequest.task !== 'qa') {
+      return {
+        status: 200,
+        data: {
+          intent,
+          type: 'answer',
+          reply: `已识别为${articleTaskLabel(articleRequest.task)}任务，但当前环境没有配置可执行该任务的模型。原文不会被当作普通问答处理。`,
+          sources: [],
+          grounded: true,
+          abstained: true,
+          coverage: 'partial',
+          missingInformation: ['可用的语言模型'],
+          retrievalTrace: evidence.trace || null,
+        },
+      };
+    }
+    return deterministicEvidenceAnswer(evidence, intent);
+  }
 
   const allowedIds = new Set(evidence.map((node) => node.id));
   try {
     const raw = await dashscopeChat([
       {
         role: 'system',
-        content: '你是严格基于证据回答的知识助手。只返回 JSON：{"answer":"回答当前问题的结论","usedSourceIds":["证据ID"],"coverage":"complete|partial","missingInformation":["缺失信息"]}。可用最近对话理解“它/前者/后者/这个方法”等指代，但事实只能来自证据；不得使用证据之外的信息；证据不足时必须说明缺失，不得猜测。处理表格数值时必须按表头从左到右先确定任务、再确定指标、最后定位模型行；相邻任务出现同名指标时不得串列。若无法从同一证据块确认表头与数据行，就明确说明表格结构不足，不得选取看似接近的数字。',
+        content: articleTaskSystemPrompt(articleRequest || { task: 'qa', targetLanguage: 'zh-CN' }),
       },
       {
         role: 'user',
-        content: `最近对话：${JSON.stringify(contextMessages)}\n当前问题：${input}\n证据：${JSON.stringify(evidence.map((node) => ({ id: node.id, content: node.content, description: node.desc || '', citations: node.citations || [] })))}`,
+        content: `已识别任务：${articleTaskLabel(articleRequest && articleRequest.task)}\n最近对话：${JSON.stringify(contextMessages)}\n当前请求：${input}\n证据：${JSON.stringify(evidence.map((node) => ({ id: node.id, content: node.content, description: node.desc || '', citations: node.citations || [] })))}`,
       },
-    ], isTableQuestion(input) ? 'qwen-max' : 'qwen-plus', 900, 0.1);
+    ], (!articleRequest || articleRequest.task === 'qa') && isTableQuestion(input) ? 'qwen-max' : 'qwen-plus', articleRequest && articleRequest.task === 'translate' ? 4200 : 1400, 0.1);
     const parsed = JSON.parse(stripJsonFence(raw));
     if (!parsed || typeof parsed.answer !== 'string' || !Array.isArray(parsed.usedSourceIds)) throw new Error('Invalid answer schema');
-    const usedIds = [...new Set(parsed.usedSourceIds.map(String))].filter((id) => allowedIds.has(id));
+    let usedIds = [...new Set(parsed.usedSourceIds.map(String))].filter((id) => allowedIds.has(id));
+    if (usedIds.length === 0 && articleRequest && articleRequest.task === 'translate' && parsed.answer.trim()) {
+      usedIds = evidence.map((node) => node.id);
+    }
     if (usedIds.length === 0) {
       return {
         status: 200,
@@ -823,6 +1063,25 @@ async function answerQuestion(input, mapId, intent, workspaceId, history) {
     };
   } catch (error) {
     console.warn('Grounded answer validation failed; using deterministic answer', { message: error.message });
+    if (articleRequest && articleRequest.task !== 'qa') {
+      return {
+        status: 200,
+        data: {
+          intent,
+          type: 'answer',
+          reply: `已识别为${articleTaskLabel(articleRequest.task)}任务，但这次生成结果没有通过格式或来源校验，请重试。系统没有把它降级成普通 Citation 问答，以免返回错误任务的答案。`,
+          sources: evidence.slice(0, 6).map((node, index) => {
+            const citation = Array.isArray(node.citations) ? node.citations[0] : null;
+            return { id: node.id, title: citation && citation.title ? citation.title : node.content, index: index + 1, quote: citation ? citation.quote : '', locator: citation ? citation.locator : '', sourceUrl: citation ? citation.sourceUrl : '' };
+          }),
+          grounded: true,
+          abstained: true,
+          coverage: 'partial',
+          missingInformation: ['通过格式与来源校验的模型输出'],
+          retrievalTrace: evidence.trace || null,
+        },
+      };
+    }
     return deterministicEvidenceAnswer(evidence, intent);
   }
 }
@@ -837,14 +1096,19 @@ async function handleChat(body, context) {
   if (!input) return { status: 400, data: { error: 'Input is required', code: 'INVALID_INPUT' } };
   if (input.length > 10000) return { status: 413, data: { error: 'Input is too long', code: 'INPUT_TOO_LARGE' } };
 
-  const intent = { type: body && body.intent === 'question' ? 'question' : classifyInput(input), confidence: 0.9 };
+  const articleRequest = body && body.mode === 'article' ? classifyArticleRequest(input) : null;
+  const intent = {
+    type: articleRequest || (body && body.intent === 'question') ? 'question' : classifyInput(input),
+    confidence: articleRequest ? articleRequest.confidence : 0.9,
+    ...(articleRequest || {}),
+  };
   if (intent.type === 'chitchat') {
     return { status: 200, data: { intent, type: 'chitchat', reply: '你好，我可以帮你整理知识、检索已保存内容，并给出可追溯证据。' } };
   }
   if (intent.type === 'command') {
     return { status: 200, data: { intent, type: 'command', reply: '为了避免误操作，请使用界面中的重命名、清空或删除按钮执行管理操作。' } };
   }
-  if (intent.type === 'question') return answerQuestion(input, mapId, intent, context.workspaceId, history);
+  if (intent.type === 'question') return answerQuestion(input, mapId, intent, context.workspaceId, history, articleRequest);
 
   const generated = await dashscopeChat([
     {
@@ -1037,6 +1301,121 @@ function normalizedMindMap(value, fallbackTitle, allowedIndexes) {
     children,
     relatedTopics: [],
   };
+}
+
+function englishHeavyArticleText(value) {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  const chineseCharacters = (text.match(/[\u4e00-\u9fff]/g) || []).length;
+  const latinWords = text.match(/[A-Za-z][A-Za-z0-9-]{2,}/g) || [];
+  // Product names, acronyms and formulas may remain in English. A phrase made
+  // of multiple English words still needs a Chinese label for the primary UI.
+  const singleWord = latinWords.length === 1 ? latinWords[0] : '';
+  const looksLikeAcronymOrModel = singleWord && (/^[A-Z0-9-]+$/.test(singleWord) || /\d/.test(singleWord));
+  return chineseCharacters < 2 && (latinWords.length >= 2 || (singleWord.length >= 8 && !looksLikeAcronymOrModel));
+}
+
+function articleOutputTextFields(value) {
+  if (!value || typeof value !== 'object') return [];
+  const fields = [
+    value.title,
+    value.summary,
+    ...(Array.isArray(value.keyPoints) ? value.keyPoints.map((item) => item && item.text) : []),
+    ...(Array.isArray(value.arguments) ? value.arguments.flatMap((item) => [item && item.claim, item && item.evidence]) : []),
+    ...(Array.isArray(value.questions) ? value.questions : []),
+  ];
+  const mindMap = value.mindMap && typeof value.mindMap === 'object' ? value.mindMap : {};
+  fields.push(mindMap.root, mindMap.rootDesc);
+  (Array.isArray(mindMap.children) ? mindMap.children : []).forEach((child) => {
+    fields.push(child && child.topic, child && child.desc);
+    if (Array.isArray(child && child.items)) fields.push(...child.items);
+  });
+  return fields.map((item) => String(item || '').trim()).filter(Boolean);
+}
+
+function articleOutputNeedsChinese(value) {
+  return articleOutputTextFields(value).some(englishHeavyArticleText);
+}
+
+function mergeArticleChineseTranslation(original, translated) {
+  const source = original && typeof original === 'object' ? original : {};
+  const localized = translated && typeof translated === 'object' ? translated : {};
+  const prefer = (candidate, fallback) => {
+    const value = String(candidate || '').trim();
+    return value || String(fallback || '').trim();
+  };
+  const sourceMindMap = source.mindMap && typeof source.mindMap === 'object' ? source.mindMap : {};
+  const localizedMindMap = localized.mindMap && typeof localized.mindMap === 'object' ? localized.mindMap : {};
+  return {
+    ...source,
+    title: prefer(localized.title, source.title),
+    summary: prefer(localized.summary, source.summary),
+    keyPoints: (Array.isArray(source.keyPoints) ? source.keyPoints : []).map((item, index) => ({
+      ...item,
+      text: prefer(localized.keyPoints && localized.keyPoints[index] && localized.keyPoints[index].text, item && item.text),
+    })),
+    arguments: (Array.isArray(source.arguments) ? source.arguments : []).map((item, index) => ({
+      ...item,
+      claim: prefer(localized.arguments && localized.arguments[index] && localized.arguments[index].claim, item && item.claim),
+      evidence: prefer(localized.arguments && localized.arguments[index] && localized.arguments[index].evidence, item && item.evidence),
+    })),
+    questions: (Array.isArray(source.questions) ? source.questions : []).map((item, index) => (
+      prefer(localized.questions && localized.questions[index], item)
+    )),
+    mindMap: {
+      ...sourceMindMap,
+      root: prefer(localizedMindMap.root, sourceMindMap.root),
+      rootDesc: prefer(localizedMindMap.rootDesc, sourceMindMap.rootDesc),
+      children: (Array.isArray(sourceMindMap.children) ? sourceMindMap.children : []).map((child, index) => {
+        const translatedChild = Array.isArray(localizedMindMap.children) ? localizedMindMap.children[index] : null;
+        return {
+          ...child,
+          topic: prefer(translatedChild && translatedChild.topic, child && child.topic),
+          desc: prefer(translatedChild && translatedChild.desc, child && child.desc),
+          items: (Array.isArray(child && child.items) ? child.items : []).map((item, itemIndex) => (
+            prefer(translatedChild && translatedChild.items && translatedChild.items[itemIndex], item)
+          )),
+        };
+      }),
+    },
+  };
+}
+
+async function ensureChineseArticleOutput(value) {
+  if (!articleOutputNeedsChinese(value)) return value;
+  const translationPayload = {
+    title: value.title || '',
+    summary: value.summary || '',
+    keyPoints: (Array.isArray(value.keyPoints) ? value.keyPoints : []).map((item) => ({ text: String((item && item.text) || '') })),
+    arguments: (Array.isArray(value.arguments) ? value.arguments : []).map((item) => ({
+      claim: String((item && item.claim) || ''),
+      evidence: String((item && item.evidence) || ''),
+    })),
+    questions: (Array.isArray(value.questions) ? value.questions : []).map(String),
+    mindMap: {
+      root: String((value.mindMap && value.mindMap.root) || ''),
+      rootDesc: String((value.mindMap && value.mindMap.rootDesc) || ''),
+      children: (Array.isArray(value.mindMap && value.mindMap.children) ? value.mindMap.children : []).map((child) => ({
+        topic: String((child && child.topic) || ''),
+        desc: String((child && child.desc) || ''),
+        items: (Array.isArray(child && child.items) ? child.items : []).map(String),
+      })),
+    },
+  };
+  const raw = await dashscopeChat([
+    {
+      role: 'system',
+      content: '你是论文知识结构的中文本地化校验器。只返回与输入结构完全一致的严格 JSON。把所有自然语言字段准确翻译为简体中文；模型名、数据集名、公式和缩写可以保留，但应在需要时给出中文含义并把英文放在括号中。不得增删数组项、不得改变顺序、不得总结、不得补充输入中没有的事实。',
+    },
+    { role: 'user', content: JSON.stringify(translationPayload) },
+  ], 'qwen-plus', 3600, 0.05);
+  let translated;
+  try { translated = JSON.parse(stripJsonFence(raw)); } catch (_) { translated = null; }
+  const merged = mergeArticleChineseTranslation(value, translated);
+  if (articleOutputNeedsChinese(merged)) {
+    throw requestError(502, 'ARTICLE_CHINESE_LOCALIZATION_FAILED', '论文结构没有完整转换为中文，请重试解析');
+  }
+  return merged;
 }
 
 function fallbackMindMap(title, text) {
@@ -1292,6 +1671,23 @@ async function handleArticleTool(body) {
   ], 'qwen-plus', 3600, 0.1);
   let parsed;
   try { parsed = JSON.parse(stripJsonFence(raw)); } catch (_) { parsed = {}; }
+  if (!parsed || typeof parsed !== 'object') parsed = {};
+  if (!parsed.mindMap || typeof parsed.mindMap !== 'object') {
+    const fallbackTitle = String(parsed.title || content.split('\n')[0] || '文章解析').slice(0, 200);
+    parsed = {
+      ...parsed,
+      title: fallbackTitle,
+      summary: String(parsed.summary || ''),
+      keyPoints: Array.isArray(parsed.keyPoints) ? parsed.keyPoints : [],
+      arguments: Array.isArray(parsed.arguments) ? parsed.arguments : [],
+      questions: Array.isArray(parsed.questions) ? parsed.questions : [],
+      mindMap: fallbackMindMap(fallbackTitle, content),
+    };
+  }
+  // The first-pass prompt is not a sufficient language guarantee. Validate the
+  // actual structure and localize only when English-heavy fields remain. Source
+  // quotes and citation indexes are deliberately excluded from this pass.
+  parsed = await ensureChineseArticleOutput(parsed);
   const inferredTitle = String(parsed.title || content.split('\n')[0] || '文章解析').slice(0, 200);
   let mindMap = normalizedMindMap(parsed.mindMap, inferredTitle, allowedIndexes) || fallbackMindMap(inferredTitle, content);
   mindMap.rootCitationIndexes = verifiedIndexes(mindMap.rootCitationIndexes, allowedIndexes, `${mindMap.root} ${mindMap.rootDesc}`, citations);
@@ -2173,6 +2569,10 @@ module.exports = {
   normalizeDocumentLayout,
   sourcePages,
   classifyInput,
+  classifyArticleRequest,
+  articleTaskSystemPrompt,
+  articleOutputNeedsChinese,
+  mergeArticleChineseTranslation,
   needsConversationalContext,
   isTableQuestion,
   hasReliableTableLayout,

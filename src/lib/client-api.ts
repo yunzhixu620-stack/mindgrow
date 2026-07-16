@@ -438,6 +438,15 @@ function generateLocalMindMap(input: string): AIMindMap {
   };
 }
 
+function classifyLocalArticleTask(input: string) {
+  if (/(翻译|翻成|译成|translate|translation)/i.test(input)) return "translate";
+  if (/(总结|概括|摘要|summari[sz]e|summary)/i.test(input)) return "summarize";
+  if (/(比较|对比|区别|compare|comparison|\bvs\.?\b)/i.test(input)) return "compare";
+  if (/(提取|抽取|列出|extract)/i.test(input)) return "extract";
+  if (/(解释|解读|讲解|explain|interpret)/i.test(input)) return "explain";
+  return "qa";
+}
+
 function handleChat(init?: RequestInit): Response {
   const body = bodyOf(init);
   const input = String(body.input || "").trim();
@@ -448,13 +457,23 @@ function handleChat(init?: RequestInit): Response {
   const state = loadState();
   const mapId = body.mapId || "map_default";
   const mapNodes = state.nodes[mapId] || [];
-  const isQuestion = /[?？]$/.test(input) || /^(什么|如何|怎么|为什么|哪些|是否|能否|请问)/.test(input);
+  const articleTask = body.mode === "article" ? classifyLocalArticleTask(input) : null;
+  const isQuestion = Boolean(articleTask) || /[?？]$/.test(input) || /^(什么|如何|怎么|为什么|哪些|是否|能否|请问)/.test(input);
   if (isQuestion) {
+    if (articleTask === "translate") {
+      return json({
+        type: "question",
+        intent: { type: "question", task: "translate", confidence: 0.98 },
+        reply: "已识别为翻译任务。本地演示模式只保存知识节点，不保存可供逐段翻译的论文原文；请登录云端版并先保存论文，再指定摘要、章节或页码。",
+        sources: [],
+        retrievalTrace: { mode: "article_translation", task: "translate", seedNodes: 0, expandedNodes: 0, graphDocuments: 0, candidateChunks: 0 },
+      });
+    }
     const hits = search(mapNodes, input);
     if (!hits.length) {
       return json({
         type: "question",
-        intent: { type: "question", keywords: terms(input), summary: input },
+        intent: { type: "question", task: articleTask || "qa", keywords: terms(input), summary: input },
         reply: "当前知识库里还没有足够证据回答这个问题。\n\n你可以补充相关资料，或把问题改写为一条知识记录；我不会在没有依据时编造答案。",
         retrieval: { mode: "local", hits: [] },
       });
@@ -462,7 +481,7 @@ function handleChat(init?: RequestInit): Response {
     const evidence = hits.map(({ item }, index) => `**[${index + 1}] ${item.content}**\n${item.desc || "该节点暂无补充说明"}`).join("\n\n");
     return json({
       type: "question",
-      intent: { type: "question", keywords: terms(input), summary: input },
+      intent: { type: "question", task: articleTask || "qa", keywords: terms(input), summary: input },
       reply: `根据当前知识库，找到 ${hits.length} 条相关依据：\n\n${evidence}\n\n_以上回答仅基于当前知识库节点；建议打开导图核对上下文。_`,
       retrieval: { mode: "local", hits: hits.map(({ item, score }) => ({ id: item.id, title: item.content, score })) },
     });

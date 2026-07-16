@@ -56,7 +56,9 @@ const clickByText = async (page, selector, text) => {
   });
 
   await page.setViewport({ width: 1440, height: 900 });
-  await page.goto(BASE_URL, { waitUntil: "networkidle2", timeout: 60000 });
+  // Next dev keeps a live HMR connection, so DOM readiness plus the explicit
+  // feature waits below is a more stable gate than global network idleness.
+  await page.goto(BASE_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
 
   await check("seed knowledge map renders", async () => {
     await page.waitForFunction(() => document.querySelectorAll(".react-flow__node").length >= 10);
@@ -272,11 +274,16 @@ const clickByText = async (page, selector, text) => {
     await page.waitForFunction(() => document.body.innerText.includes("图谱增强检索（GraphRAG）论文结构预览"));
     await page.waitForFunction(() => document.querySelectorAll(".react-flow__node").length >= 3);
     if (!await page.$('input[aria-label="搜索论文链路"]')) throw new Error("Paper link navigator search is missing");
-    if (!await page.$('textarea[aria-label="向文章知识库提问"]')) throw new Error("Article-library Q&A input is missing");
+    if (!await page.$('textarea[aria-label="与文章知识库对话"]')) throw new Error("Article-library conversation input is missing");
+    if (!await page.evaluate(() => document.body.innerText.includes("自动识别翻译、总结、解释、比较、信息提取与事实问答"))) throw new Error("Article task guidance is missing");
     await clickByText(page, "button", "生成音频概览");
     await page.waitForFunction(() => document.body.innerText.includes("音频概览 ·"));
     await clickByText(page, "button", "保存到文章知识库");
     await page.waitForFunction(() => document.body.innerText.includes("文章知识节点"));
+    await page.type('textarea[aria-label="与文章知识库对话"]', "翻译这篇论文");
+    await clickByText(page, "button", "发送");
+    await page.waitForFunction(() => document.body.innerText.includes("翻译任务"));
+    await page.waitForFunction(() => document.body.innerText.includes("已识别为翻译任务"));
   });
 
   await check("article project cards keep the latest navigation target", async () => {

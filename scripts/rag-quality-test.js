@@ -9,6 +9,10 @@ const {
   normalizeCitationIndexes,
   sourcePages,
   classifyInput,
+  classifyArticleRequest,
+  articleTaskSystemPrompt,
+  articleOutputNeedsChinese,
+  mergeArticleChineseTranslation,
   needsConversationalContext,
   normalizeDocumentLayout,
   isTableQuestion,
@@ -119,6 +123,72 @@ check("meeting evidence keeps corrected dates and negative decisions traceable",
 check("Chinese questions remain retrieval questions when punctuation follows the question mark", () => {
   assert.strictEqual(classifyInput("哪种双编码器方法报告了提升？请给出论文名和数值。"), "question");
   assert.strictEqual(classifyInput("请给出 DPR 相对 BM25 的 top-20 accuracy"), "question");
+});
+
+check("article intent routing distinguishes translation from factual QA", () => {
+  assert.deepStrictEqual(
+    classifyArticleRequest("把这篇论文翻译成中文"),
+    { task: "translate", targetLanguage: "zh-CN", scope: "full", pageNumber: null, confidence: 0.98 },
+  );
+  assert.strictEqual(classifyArticleRequest("Translate page 3 into English").task, "translate");
+  assert.strictEqual(classifyArticleRequest("Translate page 3 into English").targetLanguage, "en");
+  assert.strictEqual(classifyArticleRequest("Translate page 3 into English").pageNumber, 3);
+  assert.strictEqual(classifyArticleRequest("这篇论文用了什么编码器？").task, "qa");
+});
+
+check("article intent routing covers summary comparison extraction and explanation", () => {
+  assert.strictEqual(classifyArticleRequest("总结这篇论文的主要贡献").task, "summarize");
+  assert.strictEqual(classifyArticleRequest("比较 RAG 与 DPR 的检索方法").task, "compare");
+  assert.strictEqual(classifyArticleRequest("提取所有实验指标").task, "extract");
+  assert.strictEqual(classifyArticleRequest("通俗解释这个损失函数").task, "explain");
+});
+
+check("translation prompt executes translation instead of falling back to citation QA", () => {
+  const prompt = articleTaskSystemPrompt(classifyArticleRequest("翻译这篇论文的摘要"));
+  assert(prompt.includes("论文翻译任务"));
+  assert(prompt.includes("不是 Citation 问答"));
+  assert(prompt.includes("简体中文"));
+});
+
+check("English-heavy paper nodes trigger localization while technical acronyms remain valid", () => {
+  assert.strictEqual(articleOutputNeedsChinese({
+    title: "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks",
+    summary: "A retrieval model improves factual generation.",
+    mindMap: { root: "Retrieval-Augmented Generation", rootDesc: "Combines retrieval and generation", children: [{ topic: "Model Architecture", desc: "Dense retriever", items: ["Sequence Generator"] }] },
+  }), true);
+  assert.strictEqual(articleOutputNeedsChinese({
+    title: "检索增强生成（RAG）",
+    summary: "通过检索外部知识增强生成。",
+    mindMap: { root: "RAG", rootDesc: "检索与生成结合", children: [{ topic: "DPR", desc: "稠密段落检索器", items: ["BERT 编码器"] }] },
+  }), false);
+});
+
+check("Chinese localization preserves citation indexes and graph shape", () => {
+  const original = {
+    title: "Retrieval-Augmented Generation",
+    summary: "A method for knowledge-intensive tasks.",
+    keyPoints: [{ text: "Uses a dense retriever", citationIndexes: [1] }],
+    arguments: [{ claim: "Retrieval improves generation", evidence: "Reported in experiments", citationIndexes: [2] }],
+    questions: ["What are the limitations?"],
+    mindMap: {
+      root: "Retrieval-Augmented Generation",
+      rootDesc: "Combines retrieval and generation",
+      rootCitationIndexes: [1],
+      children: [{ topic: "Architecture", desc: "Two components", citationIndexes: [2], items: ["Dense retriever"], itemCitationIndexes: [[2]] }],
+    },
+  };
+  const localized = mergeArticleChineseTranslation(original, {
+    title: "检索增强生成",
+    summary: "面向知识密集型任务的方法。",
+    keyPoints: [{ text: "使用稠密检索器" }],
+    arguments: [{ claim: "检索能够改进生成", evidence: "实验结果支持这一结论" }],
+    questions: ["有哪些局限？"],
+    mindMap: { root: "检索增强生成", rootDesc: "结合检索与生成", children: [{ topic: "系统架构", desc: "包含两个组件", items: ["稠密检索器"] }] },
+  });
+  assert.strictEqual(articleOutputNeedsChinese(localized), false);
+  assert.deepStrictEqual(localized.mindMap.rootCitationIndexes, [1]);
+  assert.deepStrictEqual(localized.mindMap.children[0].itemCitationIndexes, [[2]]);
+  assert.strictEqual(localized.mindMap.children.length, 1);
 });
 
 check("conversation context is used only for real follow-up references", () => {

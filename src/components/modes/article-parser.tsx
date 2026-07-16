@@ -56,9 +56,11 @@ interface ArticleQaMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
+  task?: "translate" | "summarize" | "compare" | "extract" | "explain" | "qa";
   sources?: ArticleQaSource[];
   retrievalTrace?: {
     mode: string;
+    task?: string;
     seedNodes: number;
     expandedNodes: number;
     graphDocuments: number;
@@ -196,6 +198,7 @@ export function ArticleParser() {
           input: question,
           mapId: currentMapId,
           intent: "question",
+          mode: "article",
           history: priorMessages.slice(-8).map((message) => ({ role: message.role, content: message.content })),
         }),
       });
@@ -205,6 +208,7 @@ export function ArticleParser() {
         id: `article_qa_${Date.now()}_assistant`,
         role: "assistant",
         content: data.reply || "知识库中暂时没有足够证据回答这个问题。",
+        task: data.intent?.task || "qa",
         sources: Array.isArray(data.sources) ? data.sources : [],
         retrievalTrace: data.retrievalTrace,
       }]);
@@ -258,13 +262,14 @@ export function ArticleParser() {
       </div>
       <div className="mt-4 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4">
         <div className="mb-3 flex items-start justify-between gap-3">
-          <div><h3 className="text-sm font-semibold">向文章知识库提问</h3><p className="mt-1 text-xs text-[var(--text-tertiary)]">检索当前文章库中已经保存的论文，支持跨文档问题、连续追问和原文定位。</p></div>
+          <div><h3 className="text-sm font-semibold">与文章知识库对话</h3><p className="mt-1 text-xs text-[var(--text-tertiary)]">自动识别翻译、总结、解释、比较、信息提取与事实问答；事实结论仍可回到原文核验。</p></div>
           {qaMessages.length > 0 && <button type="button" onClick={() => setQaMessages([])} className="shrink-0 rounded-lg border border-[var(--border)] px-2 py-1 text-[10px] text-[var(--text-tertiary)]">清空对话</button>}
         </div>
         {qaMessages.length > 0 && <div className="mb-3 max-h-[420px] space-y-3 overflow-y-auto rounded-xl bg-[var(--background)] p-3">
           {qaMessages.map((message) => <div key={message.id} className={message.role === "user" ? "ml-8 rounded-xl bg-[var(--primary)] px-3 py-2 text-sm text-black" : "mr-8 rounded-xl bg-[var(--bg-elevated)] px-3 py-2 text-sm"}>
+            {message.role === "assistant" && message.task && <div className="mb-1.5 text-[10px] font-semibold text-[var(--primary-hover)]" data-testid="article-intent-badge">{articleTaskName(message.task)}</div>}
             <div className="whitespace-pre-wrap leading-relaxed">{message.content}</div>
-            {message.role === "assistant" && message.retrievalTrace && <div className="mt-2 rounded-lg border border-violet-400/20 bg-violet-400/5 px-2 py-1.5 text-[10px] text-violet-200" data-testid="graphrag-trace">图谱增强检索（GraphRAG）· {message.retrievalTrace.seedNodes} 个入口节点 → {message.retrievalTrace.expandedNodes} 个邻域节点 · 关联 {message.retrievalTrace.graphDocuments} 篇来源 · 重排 {message.retrievalTrace.candidateChunks} 个证据块</div>}
+            {message.role === "assistant" && message.retrievalTrace && <div className="mt-2 rounded-lg border border-violet-400/20 bg-violet-400/5 px-2 py-1.5 text-[10px] text-violet-200" data-testid="graphrag-trace">{message.retrievalTrace.mode === "article_translation" ? `论文翻译 · ${message.retrievalTrace.graphDocuments} 篇来源 · ${message.retrievalTrace.candidateChunks} 个原文分块` : `图谱增强检索（GraphRAG）· ${message.retrievalTrace.seedNodes} 个入口节点 → ${message.retrievalTrace.expandedNodes} 个邻域节点 · 关联 ${message.retrievalTrace.graphDocuments} 篇来源 · 重排 ${message.retrievalTrace.candidateChunks} 个证据块`}</div>}
             {message.role === "assistant" && message.sources && message.sources.length > 0 && <div className="mt-2 space-y-1.5 border-t border-[var(--border)] pt-2">
               {message.sources.map((source) => <details key={`${message.id}-${source.id}-${source.index}`} className="rounded-lg bg-[var(--card)] px-2 py-1.5 text-[11px]">
                 <summary className="cursor-pointer text-[var(--primary-hover)]">[{source.index}] {source.title}{source.locator ? ` · ${source.locator}` : ""}</summary>
@@ -273,17 +278,28 @@ export function ArticleParser() {
               </details>)}
             </div>}
           </div>)}
-          {qaBusy && <div className="mr-8 rounded-xl bg-[var(--bg-elevated)] px-3 py-2 text-xs text-[var(--text-tertiary)]">正在检索、重排并核对原文…</div>}
+          {qaBusy && <div className="mr-8 rounded-xl bg-[var(--bg-elevated)] px-3 py-2 text-xs text-[var(--text-tertiary)]">正在识别意图并处理论文内容…</div>}
         </div>}
         <div className="flex items-end gap-2 rounded-xl border border-[var(--border)] bg-[var(--background)] p-2 focus-within:border-[var(--primary)]">
-          <textarea value={qaInput} onChange={(event) => setQaInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void askArticleLibrary(); } }} rows={2} aria-label="向文章知识库提问" placeholder="例如：三篇论文如何改进检索？它使用的编码器是什么？" className="min-h-[44px] flex-1 resize-none bg-transparent px-1 text-sm outline-none" />
-          <button type="button" onClick={() => void askArticleLibrary()} disabled={!qaInput.trim() || qaBusy} className="rounded-lg bg-[var(--primary)] px-3 py-2 text-xs font-semibold text-black disabled:opacity-40">{qaBusy ? "检索中" : "提问"}</button>
+          <textarea value={qaInput} onChange={(event) => setQaInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void askArticleLibrary(); } }} rows={2} aria-label="与文章知识库对话" placeholder="例如：翻译这篇论文的摘要；比较三篇论文的检索方法" className="min-h-[44px] flex-1 resize-none bg-transparent px-1 text-sm outline-none" />
+          <button type="button" onClick={() => void askArticleLibrary()} disabled={!qaInput.trim() || qaBusy} className="rounded-lg bg-[var(--primary)] px-3 py-2 text-xs font-semibold text-black disabled:opacity-40">{qaBusy ? "处理中" : "发送"}</button>
         </div>
-        <p className="mt-2 text-[10px] text-[var(--text-muted)]">回答只使用当前文章知识库的证据；证据不足时会明确说明，引用可展开逐字核验。</p>
+        <p className="mt-2 text-[10px] text-[var(--text-muted)]">长论文全文翻译会先请你指定摘要、章节或页码，避免单次输出截断；原文引用保持原语言。</p>
       </div>
       </div>
     </section>
   );
+}
+
+function articleTaskName(task: NonNullable<ArticleQaMessage["task"]>) {
+  return ({
+    translate: "翻译任务",
+    summarize: "总结任务",
+    compare: "比较任务",
+    extract: "信息提取任务",
+    explain: "解释任务",
+    qa: "事实问答",
+  })[task];
 }
 
 function ArticleWikiNavigator({ mindMap, showCitations }: { mindMap: AIMindMap; showCitations: (indexes?: number[]) => React.ReactNode }) {
