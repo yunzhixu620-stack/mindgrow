@@ -17,7 +17,7 @@ const PORT = Number.parseInt(process.env.FC_SERVER_PORT || process.env.PORT || '
 // into a false 503. Transient 429/5xx responses are retried below.
 const UPSTREAM_TIMEOUT_MS = Number.parseInt(process.env.UPSTREAM_TIMEOUT_MS || '45000', 10);
 const AUTH_REQUIRED = process.env.AUTH_REQUIRED !== 'false';
-const API_VERSION = '10.2.7';
+const API_VERSION = '10.2.8';
 const DASHSCOPE_AUDIO_ENDPOINT = process.env.DASHSCOPE_AUDIO_ENDPOINT || 'https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer';
 const ALLOWED_ORIGINS = new Set(
   (process.env.ALLOWED_ORIGINS || 'https://yunzhixu620-stack.github.io')
@@ -923,7 +923,7 @@ function articleTaskSystemPrompt(request) {
     return `你正在执行论文总结任务。${schema}${conciseFormat}使用简体中文概括核心问题、方法、结果与限制，区分作者结论和你的组织性表述。${grounding}`;
   }
   if (request && request.task === 'compare') {
-    return `你正在执行论文比较任务。${schema}answer 使用简体中文并按以下顺序：\n## 结论\n先用 1—3 句概括最关键差异，并只对关键词使用 **加粗**。\n## 对比表\n使用标准 Markdown 表格，列为比较对象、行为统一的比较维度；最多 5 列、8 行，单元格保持短句。\n## 差异解读\n用项目符号解释影响选择的关键差异。\n## 局限与待核验\n仅在必要时输出。\n缺少同一维度证据时填“未提供”，不得把不同数据集或指标串列。除非用户要求详细展开，answer 尽量控制在 900 个汉字以内。来源卡片由界面依据 usedSourceIds 单独生成，不要编造引用序号。${grounding}`;
+    return `你正在执行论文比较任务。${schema}answer 使用简体中文并按以下顺序：\n## 结论\n先用 1—3 句概括最关键差异，并只对关键词使用 **加粗**。\n## 对比表\n使用标准 Markdown 表格；表格只包含用户明确点名的比较对象，每个对象一行，不得自行加入基线、变体、参照模型或相关论文。总列数最多 5 列（包括“对象”列），只选择最影响判断的统一维度，单元格保持短句。\n## 差异解读\n用 2—4 条项目符号解释影响选择的关键差异。\n## 局限与待核验\n仅在必要时输出。\n缺少同一维度证据时填“未提供”，不得把不同数据集或指标串列。除非用户明确要求详细展开，answer 尽量控制在 700 个汉字以内。来源卡片由界面依据 usedSourceIds 单独生成，不要编造引用序号。${grounding}`;
   }
   if (request && request.task === 'extract') {
     return `你正在执行论文信息提取任务。${schema}${conciseFormat}使用简体中文只提取用户指定字段，尽量保留原始数字、单位和专有名词；提取多个同类对象时可在“详细说明”中改用标准 Markdown 表格。${grounding}`;

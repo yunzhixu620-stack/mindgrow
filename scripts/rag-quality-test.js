@@ -198,7 +198,8 @@ check("article answer prompts put the conclusion first and use readable structur
   assert(qaPrompt.includes("## 关键依据"));
   assert(qaPrompt.includes("700 个汉字以内"));
   assert(comparePrompt.includes("标准 Markdown 表格"));
-  assert(comparePrompt.includes("最多 5 列、8 行"));
+  assert(comparePrompt.includes("总列数最多 5 列"));
+  assert(comparePrompt.includes("不得自行加入基线、变体、参照模型或相关论文"));
 });
 
 check("English-heavy paper nodes trigger localization while technical acronyms remain valid", () => {
