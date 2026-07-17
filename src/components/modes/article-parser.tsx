@@ -68,6 +68,15 @@ interface ArticleQaMessage {
   };
 }
 
+function articleApiError(data: Record<string, unknown>, fallback: string) {
+  const code = typeof data.code === "string" ? data.code : "";
+  const rawMessage = typeof data.error === "string" ? data.error : "";
+  const message = rawMessage === "Service temporarily unavailable"
+    ? "文章服务暂时不可用"
+    : (rawMessage || fallback);
+  return code ? `${message}（错误代码：${code}）` : message;
+}
+
 export function ArticleParser() {
   const currentMapId = useMindGrowStore((state) => state.currentMapId);
   const currentMap = useMindGrowStore((state) => state.maps.find((map) => map.id === state.currentMapId));
@@ -111,7 +120,7 @@ export function ArticleParser() {
     if (!url.trim() && content.trim().length < 50) { setNotice("请输入文章网址、选择 PDF，或粘贴至少 50 个字的正文"); return; }
     setBusy(true); setNotice(""); setResult(null); setAudio(null); setSelectedCitation(null); speech.stop();
     try {
-      const response = await apiFetch("/api/tools/article", {
+      const response = await apiFetch(`/api/tools/article?client=10.2.6&request=${Date.now()}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -122,7 +131,7 @@ export function ArticleParser() {
         }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "解析失败");
+      if (!response.ok) throw new Error(articleApiError(data, "解析失败"));
       setResult(data);
       if (data.mindMap) {
         const preview = mindMapToPreviewGraph(data.mindMap, "article", data.citations || []);
@@ -146,7 +155,7 @@ export function ArticleParser() {
         }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "音频概览生成失败");
+      if (!response.ok) throw new Error(articleApiError(data, "音频概览生成失败"));
       setAudio(data);
       if (!data.audioUrl) setNotice("云端音频暂不可用，已切换为浏览器双角色朗读");
     } catch (error) { setNotice(error instanceof Error ? error.message : "音频概览生成失败"); }
@@ -171,7 +180,7 @@ export function ArticleParser() {
         }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "保存失败");
+      if (!response.ok) throw new Error(articleApiError(data, "保存失败"));
       const savedMapId = String(data.mapId || currentMapId);
       if (savedMapId !== currentMapId) setCurrentMapId(savedMapId);
       const reload = await apiFetch(`/api/knowledge?mapId=${encodeURIComponent(savedMapId)}`);
@@ -203,7 +212,7 @@ export function ArticleParser() {
         }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "文章知识库问答失败");
+      if (!response.ok) throw new Error(articleApiError(data, "文章知识库问答失败"));
       setQaMessages((messages) => [...messages, {
         id: `article_qa_${Date.now()}_assistant`,
         role: "assistant",

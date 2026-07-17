@@ -10,8 +10,14 @@ const {
   sourcePages,
   classifyInput,
   classifyArticleRequest,
+  selectArticleDocument,
+  selectAbstractTranslationChunks,
   articleTaskSystemPrompt,
   articleOutputNeedsChinese,
+  articleTranslationTargets,
+  applyArticleFieldTranslations,
+  applyDeterministicChineseArticleFallback,
+  recoveredChineseArticleResponse,
   mergeArticleChineseTranslation,
   needsConversationalContext,
   normalizeDocumentLayout,
@@ -143,11 +149,45 @@ check("article intent routing covers summary comparison extraction and explanati
   assert.strictEqual(classifyArticleRequest("通俗解释这个损失函数").task, "explain");
 });
 
+check("article translation selects the title in the current user request", () => {
+  const documents = [
+    { id: "layout", title: "LayoutLMv3: Pre-training for Document AI with Unified Text and Image Masking" },
+    { id: "dpr", title: "Dense Passage Retrieval for Open-Domain Question Answering" },
+    { id: "rag", title: "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks" },
+  ];
+  const assistantChoices = [{
+    role: "assistant",
+    content: documents.map((document) => document.title).join("\n"),
+  }];
+  assert.strictEqual(
+    selectArticleDocument(documents, "翻译《Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks》的摘要", assistantChoices).id,
+    "rag",
+  );
+  assert.strictEqual(selectArticleDocument(documents, "翻译这篇论文的摘要", assistantChoices), null);
+  assert.strictEqual(
+    selectArticleDocument(documents, "翻译它的摘要", [{ role: "user", content: "我想看 Dense Passage Retrieval for Open-Domain Question Answering" }]).id,
+    "dpr",
+  );
+});
+
+check("abstract translation spans chunk boundaries and stops before introduction", () => {
+  const selected = selectAbstractTranslationChunks([
+    { id: "meta", content: "Paper title and authors Abstract" },
+    { id: "a1", content: "We introduce a retriever and com-" },
+    { id: "a2", content: "pare two model variants. Results improve factuality. 1 Introduction This must not be translated." },
+    { id: "intro", content: "More introduction text." },
+  ]);
+  assert.deepStrictEqual(selected.map((item) => item.id), ["a1", "a2"]);
+  assert(selected[1].content.endsWith("Results improve factuality."));
+  assert(!selected.some((item) => item.content.includes("This must not be translated")));
+});
+
 check("translation prompt executes translation instead of falling back to citation QA", () => {
   const prompt = articleTaskSystemPrompt(classifyArticleRequest("翻译这篇论文的摘要"));
   assert(prompt.includes("论文翻译任务"));
   assert(prompt.includes("不是 Citation 问答"));
   assert(prompt.includes("简体中文"));
+  assert(prompt.includes("完整翻译全部证据块"));
 });
 
 check("English-heavy paper nodes trigger localization while technical acronyms remain valid", () => {
@@ -161,6 +201,27 @@ check("English-heavy paper nodes trigger localization while technical acronyms r
     summary: "通过检索外部知识增强生成。",
     mindMap: { root: "RAG", rootDesc: "检索与生成结合", children: [{ topic: "DPR", desc: "稠密段落检索器", items: ["BERT 编码器"] }] },
   }), false);
+});
+
+check("field-level localization changes only English natural-language fields", () => {
+  const original = {
+    title: "Retrieval-Augmented Generation",
+    summary: "通过检索外部知识增强生成。",
+    keyPoints: [{ text: "Dense vector index", citationIndexes: [2] }],
+    mindMap: { root: "RAG", rootDesc: "Combines retrieval and generation", children: [] },
+  };
+  const targets = articleTranslationTargets(original);
+  assert.deepStrictEqual(targets.map((item) => item.path.join(".")), ["title", "keyPoints.0.text", "mindMap.rootDesc"]);
+  const localized = applyArticleFieldTranslations(original, targets, [
+    { index: 0, text: "检索增强生成（Retrieval-Augmented Generation）" },
+    { index: 1, text: "稠密向量索引（Dense vector index）" },
+    { index: 2, text: "结合检索与生成" },
+  ]);
+  assert.strictEqual(localized.title, "检索增强生成（Retrieval-Augmented Generation）");
+  assert.strictEqual(localized.keyPoints[0].citationIndexes[0], 2);
+  assert.strictEqual(localized.mindMap.root, "RAG");
+  assert.strictEqual(original.title, "Retrieval-Augmented Generation");
+  assert.strictEqual(articleOutputNeedsChinese(localized), false);
 });
 
 check("Chinese localization preserves citation indexes and graph shape", () => {
@@ -189,6 +250,39 @@ check("Chinese localization preserves citation indexes and graph shape", () => {
   assert.deepStrictEqual(localized.mindMap.rootCitationIndexes, [1]);
   assert.deepStrictEqual(localized.mindMap.children[0].itemCitationIndexes, [[2]]);
   assert.strictEqual(localized.mindMap.children.length, 1);
+});
+
+check("deterministic Chinese fallback keeps parsing available when localization times out", () => {
+  const original = {
+    title: "Retrieval-Augmented Generation",
+    summary: "A method for knowledge-intensive tasks.",
+    keyPoints: [{ text: "Dense vector index", citationIndexes: [3] }],
+    questions: ["What are the limitations?"],
+    mindMap: {
+      root: "RAG Framework",
+      rootDesc: "Combines retrieval and generation",
+      rootCitationIndexes: [1],
+      children: [{ topic: "Architecture", desc: "Two components", citationIndexes: [2], items: ["Dense retriever"], itemCitationIndexes: [[2]] }],
+    },
+  };
+  const fallback = applyDeterministicChineseArticleFallback(original);
+  assert.strictEqual(articleOutputNeedsChinese(fallback), false);
+  assert.deepStrictEqual(fallback.keyPoints[0].citationIndexes, [3]);
+  assert.deepStrictEqual(fallback.mindMap.rootCitationIndexes, [1]);
+  assert.deepStrictEqual(fallback.mindMap.children[0].itemCitationIndexes, [[2]]);
+  assert.strictEqual(fallback.mindMap.children.length, 1);
+});
+
+check("handler-boundary article recovery returns a usable Chinese graph with verbatim citations", () => {
+  const content = "[PAGE 1]\nRetrieval-Augmented Generation for Knowledge-Intensive NLP Tasks\nAbstract\nLarge language models have limited access to explicit knowledge. Retrieval-augmented generation combines parametric and non-parametric memory.\n1 Introduction\nThe retriever accesses Wikipedia passages.";
+  const response = recoveredChineseArticleResponse({ content, sourceType: "pdf", fileName: "rag.pdf" }, { content, sourceType: "pdf", fileName: "rag.pdf" });
+  assert.strictEqual(response.status, 200);
+  assert.strictEqual(response.data.degraded, true);
+  assert.strictEqual(response.data.warningCode, "ARTICLE_CHINESE_LOCALIZATION_RECOVERED");
+  assert.strictEqual(articleOutputNeedsChinese(response.data), false);
+  assert(response.data.citations.length > 0);
+  assert(content.replace(/\s+/g, " ").includes(response.data.citations[0].quote.replace(/\s+/g, " ")));
+  assert(response.data.mindMap.children.every((child) => child.citationIndexes.length > 0));
 });
 
 check("conversation context is used only for real follow-up references", () => {

@@ -507,7 +507,8 @@ function handleChat(init?: RequestInit): Response {
 
 function handleLocalTool(path: string, init?: RequestInit): Response {
   const body = bodyOf(init);
-  if (path.endsWith("/meeting")) {
+  const toolPath = new URL(path, "http://mindgrow.local").pathname;
+  if (toolPath.endsWith("/meeting")) {
     const transcript = String(body.transcript || "").trim();
     if (transcript.length < 10) return json({ error: "请至少输入 10 个字的会议内容" }, 400);
     const mindMap = generateLocalMindMap(transcript);
@@ -531,7 +532,7 @@ function handleLocalTool(path: string, init?: RequestInit): Response {
       citationAudit: { claimCount: 1, citedClaimCount: citations.length ? 1 : 0, coverage: citations.length ? 1 : 0, verifiedQuoteCount: citations.length, warnings: [] },
     });
   }
-  if (path.endsWith("/article")) {
+  if (toolPath.endsWith("/article")) {
     const content = String(body.content || "").trim();
     if (content.length < 50) return json({ error: "本地模式请粘贴至少 50 个字的文章正文" }, 400);
     const mindMap = generateLocalMindMap(content);
@@ -558,7 +559,7 @@ function handleLocalTool(path: string, init?: RequestInit): Response {
       mimeType: body.mimeType || "",
     });
   }
-  if (path.endsWith("/audio-overview")) {
+  if (toolPath.endsWith("/audio-overview")) {
     const keyPoints = Array.isArray(body.keyPoints) ? body.keyPoints : [];
     const segments = keyPoints.slice(0, 6).map((item, index) => ({
       speaker: index % 2 === 0 ? "主持人" : "分析师",
@@ -579,7 +580,7 @@ export async function apiFetch(path: string, init?: RequestInit): Promise<Respon
     if (data.session?.access_token) headers.set("Authorization", `Bearer ${data.session.access_token}`);
     const workspaceId = activeWorkspaceId || (typeof window !== "undefined" ? window.localStorage.getItem("mindgrow.workspace.v1") : null);
     if (workspaceId) headers.set("X-Workspace-Id", workspaceId);
-    return fetch(`${API_BASE_URL}${path}`, { ...init, headers });
+    return fetch(`${API_BASE_URL}${path}`, { ...init, cache: "no-store", headers });
   }
   if (typeof window === "undefined") return fetch(path, init);
   if (path.startsWith("/api/knowledge")) return handleKnowledge(path, init);

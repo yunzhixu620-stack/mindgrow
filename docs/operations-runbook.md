@@ -21,7 +21,7 @@
 
 ## 3. 合成监控与发布门禁
 
-- 每 5 分钟：`GET /health`，要求 HTTP 200、`version=10.2.0`、model/store/hybridRetrieval 均为 ready 或 ok。
+- 每 5 分钟：`GET /health`，要求 HTTP 200、`version=10.2.6`、model/store/hybridRetrieval 均为 ready 或 ok。
 - 每 15 分钟：匿名访问 knowledge/workspaces/audio 均应为 401；任何 2xx 视为 SEV0。
 - 每 60 分钟：专用测试账号列出 workspaces/maps，不执行付费模型。
 - 每天：专用测试知识库解析一篇固定短文，验证 citation quote 与来源一致；生成一次 Audio 脚本。
