@@ -276,13 +276,15 @@ const clickByText = async (page, selector, text) => {
     if (!await page.$('input[aria-label="搜索论文链路"]')) throw new Error("Paper link navigator search is missing");
     if (!await page.$('textarea[aria-label="与文章知识库对话"]')) throw new Error("Article-library conversation input is missing");
     if (!await page.evaluate(() => document.body.innerText.includes("自动识别翻译、总结、解释、比较、信息提取与事实问答"))) throw new Error("Article task guidance is missing");
+    const articleTaskCategories = await page.$$eval('[aria-label="文章问答任务分类"] button', (buttons) => buttons.map((button) => button.textContent.trim()));
+    if (articleTaskCategories.length !== 6 || !["翻译", "总结", "比较", "提取", "解释", "问答"].every((label) => articleTaskCategories.some((item) => item.includes(label)))) throw new Error(`Article task categories are unclear: ${articleTaskCategories.join(", ")}`);
     await clickByText(page, "button", "生成音频概览");
     await page.waitForFunction(() => document.body.innerText.includes("音频概览 ·"));
     await clickByText(page, "button", "保存到文章知识库");
     await page.waitForFunction(() => document.body.innerText.includes("文章知识节点"));
     await page.type('textarea[aria-label="与文章知识库对话"]', "翻译这篇论文");
     await clickByText(page, "button", "发送");
-    await page.waitForFunction(() => document.body.innerText.includes("翻译任务"));
+    await page.waitForFunction(() => document.body.innerText.includes("论文翻译"));
     await page.waitForFunction(() => document.body.innerText.includes("已识别为翻译任务"));
     await page.type('textarea[aria-label="与文章知识库对话"]', "这篇论文为什么强调引用？");
     const articleQuestionSent = await page.$eval('textarea[aria-label="与文章知识库对话"]', (textarea) => {
@@ -293,7 +295,7 @@ const clickByText = async (page, selector, text) => {
     });
     if (!articleQuestionSent) throw new Error("Article-library send action is missing");
     await page.waitForFunction(() => document.querySelectorAll('[data-testid="structured-answer"] h4').length > 0);
-    const structuredHeading = await page.$$eval('[data-testid="structured-answer"]', (answers) => answers.at(-1)?.querySelector("h4")?.textContent.trim());
+    const structuredHeading = await page.$$eval('[data-testid="structured-answer"]', (answers) => answers.at(-1)?.querySelector("section[data-answer-section]")?.getAttribute("data-answer-section"));
     if (structuredHeading !== "结论") throw new Error(`Structured answer did not put the conclusion first: ${structuredHeading}`);
     await page.$$eval('[data-testid="structured-answer"]', (answers) => answers.at(-1)?.scrollIntoView({ block: "center" }));
     await page.screenshot({ path: path.join(artifactDir, "desktop-article-structured-answer.png"), fullPage: true });
