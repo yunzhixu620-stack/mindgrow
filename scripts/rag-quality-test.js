@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const assert = require("assert");
+const acorn = require("acorn");
 const {
   buildDocumentChunks,
   buildMeetingCitations,
@@ -41,6 +42,11 @@ function check(name, fn) {
   try { fn(); results.push({ name, ok: true }); console.log(`PASS ${name}`); }
   catch (error) { results.push({ name, ok: false, error: error.message }); console.error(`FAIL ${name}: ${error.message}`); }
 }
+
+check("Aliyun custom runtime syntax stays ECMAScript 2018 compatible", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "fc-proxy", "index.js"), "utf8");
+  acorn.parse(source, { ecmaVersion: 2018, sourceType: "script", allowHashBang: true });
+});
 
 const all = fixtures.map((fixture) => {
   const content = fs.readFileSync(path.join(root, fixture.file), "utf8");
@@ -147,6 +153,8 @@ check("article intent routing covers summary comparison extraction and explanati
   assert.strictEqual(classifyArticleRequest("比较 RAG 与 DPR 的检索方法").task, "compare");
   assert.strictEqual(classifyArticleRequest("提取所有实验指标").task, "extract");
   assert.strictEqual(classifyArticleRequest("通俗解释这个损失函数").task, "explain");
+  assert.strictEqual(classifyArticleRequest("解释 RAG-Token 与 RAG-Sequence 的区别").task, "explain");
+  assert.strictEqual(classifyArticleRequest("比较 RAG-Token 与 RAG-Sequence 的区别").task, "compare");
 });
 
 check("article translation selects the title in the current user request", () => {

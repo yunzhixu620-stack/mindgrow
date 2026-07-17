@@ -17,7 +17,7 @@ const PORT = Number.parseInt(process.env.FC_SERVER_PORT || process.env.PORT || '
 // into a false 503. Transient 429/5xx responses are retried below.
 const UPSTREAM_TIMEOUT_MS = Number.parseInt(process.env.UPSTREAM_TIMEOUT_MS || '45000', 10);
 const AUTH_REQUIRED = process.env.AUTH_REQUIRED !== 'false';
-const API_VERSION = '10.2.8';
+const API_VERSION = '10.2.9';
 const DASHSCOPE_AUDIO_ENDPOINT = process.env.DASHSCOPE_AUDIO_ENDPOINT || 'https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer';
 const ALLOWED_ORIGINS = new Set(
   (process.env.ALLOWED_ORIGINS || 'https://yunzhixu620-stack.github.io')
@@ -396,7 +396,14 @@ function needsConversationalContext(input) {
 function classifyArticleRequest(input) {
   const value = normalizeSpaces(input);
   let task = 'qa';
-  if (/(翻译|翻成|译成|英译中|中译英|translate|translation)/i.test(value)) task = 'translate';
+  const explicitCommandMatch = value.match(/^(?:请(?:你)?|帮我|请帮我)?\s*(翻译|翻成|译成|英译中|中译英|translate|translation|总结|概括|摘要|综述|summari[sz]e|summary|overview|比较|对比|compare|comparison|提取|抽取|列出|整理出|extract|list out|解释|解读|讲解|通俗解释|explain|interpret)(?:\s|[：:，,]|$)/i);
+  const explicitCommand = explicitCommandMatch ? explicitCommandMatch[1] : '';
+  if (/^(翻译|翻成|译成|英译中|中译英|translate|translation)$/i.test(explicitCommand)) task = 'translate';
+  else if (/^(总结|概括|摘要|综述|summari[sz]e|summary|overview)$/i.test(explicitCommand)) task = 'summarize';
+  else if (/^(比较|对比|compare|comparison)$/i.test(explicitCommand)) task = 'compare';
+  else if (/^(提取|抽取|列出|整理出|extract|list out)$/i.test(explicitCommand)) task = 'extract';
+  else if (/^(解释|解读|讲解|通俗解释|explain|interpret)$/i.test(explicitCommand)) task = 'explain';
+  else if (/(翻译|翻成|译成|英译中|中译英|translate|translation)/i.test(value)) task = 'translate';
   else if (/(总结|概括|摘要|综述|summari[sz]e|summary|overview)/i.test(value)) task = 'summarize';
   else if (/(比较|对比|区别|异同|compare|comparison|versus|\bvs\.?\b)/i.test(value)) task = 'compare';
   else if (/(提取|抽取|列出|整理出|extract|list out)/i.test(value)) task = 'extract';

@@ -287,13 +287,14 @@ function MindMapPreview({
 // ============================================================
 function TypingIndicator() {
   return (
-    <div className="flex justify-start animate-fade-in">
-      <div className="bg-[var(--muted)] rounded-2xl rounded-bl-sm px-4 py-3">
+    <div className="flex justify-start animate-fade-in" role="status" aria-live="polite" data-testid="knowledge-typing-indicator">
+      <div className="flex items-center gap-2.5 bg-[var(--muted)] rounded-2xl rounded-bl-sm px-4 py-3">
         <div className="flex gap-1.5 items-center">
           <span className="w-1.5 h-1.5 bg-[var(--primary)] rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
           <span className="w-1.5 h-1.5 bg-[var(--primary)] rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
           <span className="w-1.5 h-1.5 bg-[var(--primary)] rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
         </div>
+        <span className="text-[11px] text-[var(--text-tertiary)]">正在检索知识库并组织回答…</span>
       </div>
     </div>
   );

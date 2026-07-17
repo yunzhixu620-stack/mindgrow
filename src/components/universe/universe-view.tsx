@@ -13,6 +13,27 @@ interface LibraryGraph {
   edges: KnowledgeEdge[];
 }
 
+const UNIVERSE_REQUEST_TIMEOUT_MS = 12000;
+
+async function fetchUniverseJson<T>(path: string, attempts = 2): Promise<T> {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), UNIVERSE_REQUEST_TIMEOUT_MS);
+    try {
+      const response = await apiFetch(path, { signal: controller.signal });
+      if (!response.ok) throw new Error(`请求失败（HTTP ${response.status}）`);
+      return await response.json() as T;
+    } catch (error) {
+      lastError = error;
+    } finally {
+      window.clearTimeout(timer);
+    }
+  }
+  if (lastError instanceof Error && lastError.name !== "AbortError") throw lastError;
+  throw new Error(`连接超时（已自动重试，单次上限 ${UNIVERSE_REQUEST_TIMEOUT_MS / 1000} 秒）`);
+}
+
 interface GraphNode {
   id: string;
   mapId: string;
@@ -246,6 +267,8 @@ export function UniverseView() {
   const [libraries, setLibraries] = useState<LibraryGraph[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [warning, setWarning] = useState("");
+  const [reloadToken, setReloadToken] = useState(0);
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(0.82);
@@ -261,22 +284,28 @@ export function UniverseView() {
     const requestId = ++loadRequestRef.current;
     setLoading(true);
     setError("");
+    setWarning("");
     setLibraries([]);
     setHoveredNode(null);
     setOffset({ x: 0, y: 0 });
     setZoom(0.82);
-    void apiFetch("/api/knowledge?action=maps")
-      .then(async (response) => {
-        if (!response.ok) throw new Error("知识库目录加载失败");
-        const data = await response.json();
+    void fetchUniverseJson<{ maps?: MindMap[] }>("/api/knowledge?action=maps")
+      .then(async (data) => {
         const maps = ((data.maps || []) as MindMap[]).filter((map) => isMapForMode(map, currentMode));
+        let failedGraphs = 0;
         const graphs = await Promise.all(maps.map(async (map) => {
-          const graphResponse = await apiFetch(`/api/knowledge?mapId=${encodeURIComponent(map.id)}`);
-          if (!graphResponse.ok) return { map, nodes: [], edges: [] };
-          const graph = await graphResponse.json();
-          return { map, nodes: graph.nodes || [], edges: graph.edges || [] } as LibraryGraph;
+          try {
+            const graph = await fetchUniverseJson<{ nodes?: KnowledgeNode[]; edges?: KnowledgeEdge[] }>(`/api/knowledge?mapId=${encodeURIComponent(map.id)}`);
+            return { map, nodes: graph.nodes || [], edges: graph.edges || [] } as LibraryGraph;
+          } catch (_) {
+            failedGraphs += 1;
+            return { map, nodes: [], edges: [] } as LibraryGraph;
+          }
         }));
-        if (requestId === loadRequestRef.current) setLibraries(graphs);
+        if (requestId === loadRequestRef.current) {
+          setLibraries(graphs);
+          if (failedGraphs > 0) setWarning(`${failedGraphs} 个知识库暂时未加载，可点击重试；其余数据已正常展示。`);
+        }
       })
       .catch((reason) => {
         if (requestId === loadRequestRef.current) setError(reason instanceof Error ? reason.message : "知识宇宙加载失败");
@@ -284,7 +313,7 @@ export function UniverseView() {
       .finally(() => {
         if (requestId === loadRequestRef.current) setLoading(false);
       });
-  }, [currentMode]);
+  }, [currentMode, reloadToken]);
 
   const universeData = useMemo(() => buildUniverseData(libraries), [libraries]);
   const positionedNodes = useMemo(
@@ -459,12 +488,18 @@ export function UniverseView() {
         <button type="button" onClick={() => changeZoom(zoom * 1.18)} aria-label="放大知识宇宙" title="放大" className="flex h-8 w-8 items-center justify-center rounded-lg text-base text-zinc-300 hover:bg-white/10">＋</button>
       </div>
 
+      {warning && <div role="status" className="absolute bottom-4 left-1/2 z-40 flex max-w-[min(620px,calc(100%-2rem))] -translate-x-1/2 items-center gap-3 rounded-xl border border-amber-300/25 bg-amber-950/90 px-4 py-2 text-xs text-amber-100 shadow-xl backdrop-blur">
+        <span>{warning}</span>
+        <button type="button" onClick={() => setReloadToken((value) => value + 1)} className="shrink-0 rounded-lg border border-amber-200/30 px-2 py-1 font-semibold hover:bg-white/10">重新加载</button>
+      </div>}
+
       {(loading || error || (!loading && libraries.length === 0)) && (
         <div className="absolute inset-0 z-20 flex items-center justify-center bg-[#0a0a0f]/80 px-6">
           <div className="max-w-sm rounded-2xl border border-white/10 bg-zinc-950/90 p-6 text-center shadow-2xl">
             <div className="text-4xl">{error ? "⚠️" : loading ? "🪐" : "🌱"}</div>
             <h2 className="mt-4 text-base font-semibold text-white">{error ? "知识宇宙加载失败" : loading ? `正在连接${modeConfig.label}知识库…` : `${modeConfig.label}宇宙还是一片空地`}</h2>
-            <p className="mt-2 text-xs leading-6 text-zinc-400">{error || (loading ? "正在汇总库内关系与跨库共享概念" : "先创建知识库并保存内容，新增节点会在这里继续生长。")}</p>
+            <p className="mt-2 text-xs leading-6 text-zinc-400">{error || (loading ? "正在汇总库内关系与跨库共享概念；慢请求会自动重试，不会无限等待。" : "先创建知识库并保存内容，新增节点会在这里继续生长。")}</p>
+            {error && <button type="button" onClick={() => setReloadToken((value) => value + 1)} className="mt-4 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-xs font-semibold text-white hover:bg-white/10">重新连接</button>}
           </div>
         </div>
       )}

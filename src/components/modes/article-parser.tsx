@@ -296,7 +296,7 @@ export function ArticleParser() {
     if (!url.trim() && content.trim().length < 50) { setNotice("请输入文章网址、选择 PDF，或粘贴至少 50 个字的正文"); return; }
     setBusy(true); setNotice(""); setResult(null); setAudio(null); setSelectedCitation(null); speech.stop();
     try {
-      const response = await apiFetch(`/api/tools/article?client=10.2.8&request=${Date.now()}`, {
+      const response = await apiFetch(`/api/tools/article?client=10.2.9&request=${Date.now()}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

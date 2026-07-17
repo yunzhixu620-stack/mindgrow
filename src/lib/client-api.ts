@@ -439,11 +439,18 @@ function generateLocalMindMap(input: string): AIMindMap {
 }
 
 function classifyLocalArticleTask(input: string) {
-  if (/(翻译|翻成|译成|translate|translation)/i.test(input)) return "translate";
-  if (/(总结|概括|摘要|summari[sz]e|summary)/i.test(input)) return "summarize";
-  if (/(比较|对比|区别|compare|comparison|\bvs\.?\b)/i.test(input)) return "compare";
-  if (/(提取|抽取|列出|extract)/i.test(input)) return "extract";
-  if (/(解释|解读|讲解|explain|interpret)/i.test(input)) return "explain";
+  const normalized = input.trim();
+  const explicitCommand = normalized.match(/^(?:请(?:你)?|帮我|请帮我)?\s*(翻译|翻成|译成|translate|translation|总结|概括|摘要|summari[sz]e|summary|比较|对比|compare|comparison|提取|抽取|列出|extract|解释|解读|讲解|explain|interpret)(?:\s|[：:，,]|$)/i)?.[1] || "";
+  if (/^(翻译|翻成|译成|translate|translation)$/i.test(explicitCommand)) return "translate";
+  if (/^(总结|概括|摘要|summari[sz]e|summary)$/i.test(explicitCommand)) return "summarize";
+  if (/^(比较|对比|compare|comparison)$/i.test(explicitCommand)) return "compare";
+  if (/^(提取|抽取|列出|extract)$/i.test(explicitCommand)) return "extract";
+  if (/^(解释|解读|讲解|explain|interpret)$/i.test(explicitCommand)) return "explain";
+  if (/(翻译|翻成|译成|translate|translation)/i.test(normalized)) return "translate";
+  if (/(总结|概括|摘要|summari[sz]e|summary)/i.test(normalized)) return "summarize";
+  if (/(比较|对比|区别|compare|comparison|\bvs\.?\b)/i.test(normalized)) return "compare";
+  if (/(提取|抽取|列出|extract)/i.test(normalized)) return "extract";
+  if (/(解释|解读|讲解|explain|interpret)/i.test(normalized)) return "explain";
   return "qa";
 }
 
