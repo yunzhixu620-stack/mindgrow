@@ -17,7 +17,7 @@ const PORT = Number.parseInt(process.env.FC_SERVER_PORT || process.env.PORT || '
 // into a false 503. Transient 429/5xx responses are retried below.
 const UPSTREAM_TIMEOUT_MS = Number.parseInt(process.env.UPSTREAM_TIMEOUT_MS || '45000', 10);
 const AUTH_REQUIRED = process.env.AUTH_REQUIRED !== 'false';
-const API_VERSION = '10.2.6';
+const API_VERSION = '10.2.7';
 const DASHSCOPE_AUDIO_ENDPOINT = process.env.DASHSCOPE_AUDIO_ENDPOINT || 'https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer';
 const ALLOWED_ORIGINS = new Set(
   (process.env.ALLOWED_ORIGINS || 'https://yunzhixu620-stack.github.io')
@@ -915,22 +915,23 @@ async function retrieveArticleTranslationEvidence(input, mapId, workspaceId, req
 function articleTaskSystemPrompt(request) {
   const schema = '只返回 JSON：{"answer":"按任务要求生成的内容","usedSourceIds":["证据ID"],"coverage":"complete|partial","missingInformation":["缺失信息"]}。';
   const grounding = '事实只能来自提供的证据，不得补充证据之外的事实；证据不足时说明缺失，不得猜测。usedSourceIds 只能填写提供的证据 ID。';
+  const conciseFormat = 'answer 必须使用 Markdown（不得使用 HTML），按“结论→依据→细节→限制”的阅读顺序组织。默认使用以下结构：\n## 结论\n用 1—3 句直接回答，第一句必须给出最重要结论；只对关键词使用 **加粗**。\n## 关键依据\n用 2—5 条短项目符号列出支撑结论的证据，不得重复同一信息。\n## 详细说明\n只补充理解结论必需的机制、条件或步骤。\n## 局限与待核验\n仅在证据不完整、结论有边界或仍需核验时输出；没有则省略。\n每段最多 4 行；除非用户明确要求详细展开，answer 尽量控制在 700 个汉字以内。来源卡片由界面依据 usedSourceIds 单独生成，不要在 answer 中编造引用序号。';
   if (request && request.task === 'translate') {
-    return `你正在执行论文翻译任务，不是 Citation 问答，也不是摘要任务。${schema}证据块按 ID 顺序组成连续原文，必须先按顺序拼接并完整翻译全部证据块，usedSourceIds 必须包含每一个证据 ID；跨分块的英文断词（例如前块以 com- 结束、后块以 pare 开始）应还原为完整单词后翻译，不得只翻译第一个分块或以半个单词、半句话结束。把原文准确翻译为${targetLanguageLabel(request.targetLanguage)}，保留标题层级、编号、公式、数字、模型名和数据集名；专业术语首次出现时可保留原文括注。除非用户明确要求，不得改写成摘要、解释或问答。${grounding}`;
+    return `你正在执行论文翻译任务，不是 Citation 问答，也不是摘要任务。${schema}answer 以“## 翻译结果”开头，按原文自然分段；可对原文标题使用 Markdown 标题，但不得添加结论、摘要或原文没有的信息。证据块按 ID 顺序组成连续原文，必须先按顺序拼接并完整翻译全部证据块，usedSourceIds 必须包含每一个证据 ID；跨分块的英文断词（例如前块以 com- 结束、后块以 pare 开始）应还原为完整单词后翻译，不得只翻译第一个分块或以半个单词、半句话结束。把原文准确翻译为${targetLanguageLabel(request.targetLanguage)}，保留标题层级、编号、公式、数字、模型名和数据集名；专业术语首次出现时可保留原文括注。除非用户明确要求，不得改写成摘要、解释或问答。${grounding}`;
   }
   if (request && request.task === 'summarize') {
-    return `你正在执行论文总结任务。${schema}使用简体中文概括核心问题、方法、结果与限制，区分作者结论和你的组织性表述。${grounding}`;
+    return `你正在执行论文总结任务。${schema}${conciseFormat}使用简体中文概括核心问题、方法、结果与限制，区分作者结论和你的组织性表述。${grounding}`;
   }
   if (request && request.task === 'compare') {
-    return `你正在执行论文比较任务。${schema}使用简体中文按统一维度比较对象；缺少同一维度证据时明确留空，不得把不同数据集或指标串列。${grounding}`;
+    return `你正在执行论文比较任务。${schema}answer 使用简体中文并按以下顺序：\n## 结论\n先用 1—3 句概括最关键差异，并只对关键词使用 **加粗**。\n## 对比表\n使用标准 Markdown 表格，列为比较对象、行为统一的比较维度；最多 5 列、8 行，单元格保持短句。\n## 差异解读\n用项目符号解释影响选择的关键差异。\n## 局限与待核验\n仅在必要时输出。\n缺少同一维度证据时填“未提供”，不得把不同数据集或指标串列。除非用户要求详细展开，answer 尽量控制在 900 个汉字以内。来源卡片由界面依据 usedSourceIds 单独生成，不要编造引用序号。${grounding}`;
   }
   if (request && request.task === 'extract') {
-    return `你正在执行论文信息提取任务。${schema}使用简体中文只提取用户指定字段，尽量保留原始数字、单位和专有名词。${grounding}`;
+    return `你正在执行论文信息提取任务。${schema}${conciseFormat}使用简体中文只提取用户指定字段，尽量保留原始数字、单位和专有名词；提取多个同类对象时可在“详细说明”中改用标准 Markdown 表格。${grounding}`;
   }
   if (request && request.task === 'explain') {
-    return `你正在执行论文解释任务。${schema}使用简体中文先给直观解释，再说明论文中的技术机制与边界；不能把常识补充冒充为论文事实。${grounding}`;
+    return `你正在执行论文解释任务。${schema}${conciseFormat}使用简体中文先给直观解释，再说明论文中的技术机制与边界；不能把常识补充冒充为论文事实。${grounding}`;
   }
-  return `你是严格基于证据回答的论文知识助手。${schema}使用简体中文直接回答当前问题。可用最近对话理解“它/前者/后者/这个方法”等指代。${grounding}处理表格数值时必须按表头从左到右先确定任务、再确定指标、最后定位模型行；相邻任务出现同名指标时不得串列。若无法从同一证据块确认表头与数据行，就明确说明表格结构不足，不得选取看似接近的数字。`;
+  return `你是严格基于证据回答的论文知识助手。${schema}${conciseFormat}使用简体中文直接回答当前问题。可用最近对话理解“它/前者/后者/这个方法”等指代。${grounding}处理表格数值时必须按表头从左到右先确定任务、再确定指标、最后定位模型行；相邻任务出现同名指标时不得串列。若无法从同一证据块确认表头与数据行，就明确说明表格结构不足，不得选取看似接近的数字。`;
 }
 
 function deterministicEvidenceAnswer(evidence, intent) {
@@ -943,7 +944,7 @@ function deterministicEvidenceAnswer(evidence, intent) {
     data: {
       intent,
       type: 'answer',
-      reply: `根据当前知识库，找到以下直接相关证据：\n\n${lines.join('\n')}\n\n以上结论仅基于已保存内容；如需更完整结论，请继续补充资料。`,
+      reply: `## 结论\n\n当前知识库找到了与问题直接相关的证据，以下内容可作为回答依据。\n\n## 关键依据\n\n${lines.join('\n')}\n\n## 局限与待核验\n\n以上结论仅基于已保存内容；如需更完整结论，请继续补充资料。`,
       sources: evidence.slice(0, 12).map((node, index) => {
         const citation = Array.isArray(node.citations) ? node.citations[0] : null;
         return { id: node.id, title: citation && citation.title ? citation.title : node.content, index: index + 1, quote: citation ? citation.quote : '', locator: citation ? citation.locator : '', sourceUrl: citation ? citation.sourceUrl : '' };

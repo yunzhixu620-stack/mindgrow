@@ -68,6 +68,145 @@ interface ArticleQaMessage {
   };
 }
 
+interface AnswerSection {
+  title: string;
+  lines: string[];
+}
+
+function renderAnswerInline(text: string) {
+  return text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).filter(Boolean).map((part, index) => {
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return <strong key={index} className="font-semibold text-[var(--text-primary)]">{part.slice(2, -2)}</strong>;
+    }
+    if (part.startsWith("`") && part.endsWith("`")) {
+      return <code key={index} className="rounded bg-black/20 px-1 py-0.5 font-mono text-[0.92em] text-[var(--primary-hover)]">{part.slice(1, -1)}</code>;
+    }
+    return <span key={index}>{part}</span>;
+  });
+}
+
+function splitTableRow(line: string) {
+  return line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
+}
+
+function isTableDivider(line: string) {
+  const cells = splitTableRow(line);
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+}
+
+function isAnswerBlockStart(lines: string[], index: number) {
+  const line = lines[index]?.trim() || "";
+  return !line
+    || /^[-*•]\s+/.test(line)
+    || /^\d+[.)、]\s+/.test(line)
+    || /^>\s?/.test(line)
+    || (line.includes("|") && isTableDivider(lines[index + 1] || ""));
+}
+
+function renderAnswerBlocks(lines: string[]) {
+  const blocks: React.ReactNode[] = [];
+  let index = 0;
+  while (index < lines.length) {
+    const line = lines[index].trim();
+    if (!line) { index += 1; continue; }
+
+    if (line.includes("|") && isTableDivider(lines[index + 1] || "")) {
+      const header = splitTableRow(line);
+      const rows: string[][] = [];
+      index += 2;
+      while (index < lines.length && lines[index].includes("|") && lines[index].trim()) {
+        rows.push(splitTableRow(lines[index]));
+        index += 1;
+      }
+      blocks.push(
+        <div key={`table-${index}`} className="my-3 overflow-x-auto rounded-lg border border-[var(--border)]">
+          <table className="w-full min-w-[460px] border-collapse text-left text-xs">
+            <thead className="bg-[var(--card)] text-[var(--text-primary)]"><tr>{header.map((cell, cellIndex) => <th key={cellIndex} className="border-b border-r border-[var(--border)] px-3 py-2 font-semibold last:border-r-0">{renderAnswerInline(cell)}</th>)}</tr></thead>
+            <tbody>{rows.map((row, rowIndex) => <tr key={rowIndex} className="border-b border-[var(--border)] last:border-b-0 odd:bg-white/[0.015]">{header.map((_, cellIndex) => <td key={cellIndex} className="border-r border-[var(--border)] px-3 py-2 align-top text-[var(--text-secondary)] last:border-r-0">{renderAnswerInline(row[cellIndex] || "—")}</td>)}</tr>)}</tbody>
+          </table>
+        </div>,
+      );
+      continue;
+    }
+
+    if (/^[-*•]\s+/.test(line)) {
+      const items: string[] = [];
+      while (index < lines.length && /^[-*•]\s+/.test(lines[index].trim())) {
+        items.push(lines[index].trim().replace(/^[-*•]\s+/, ""));
+        index += 1;
+      }
+      blocks.push(<ul key={`ul-${index}`} className="my-2 space-y-1.5 pl-4 text-[var(--text-secondary)]">{items.map((item, itemIndex) => <li key={itemIndex} className="list-disc pl-1 marker:text-[var(--primary)]">{renderAnswerInline(item)}</li>)}</ul>);
+      continue;
+    }
+
+    if (/^\d+[.)、]\s+/.test(line)) {
+      const items: string[] = [];
+      while (index < lines.length && /^\d+[.)、]\s+/.test(lines[index].trim())) {
+        items.push(lines[index].trim().replace(/^\d+[.)、]\s+/, ""));
+        index += 1;
+      }
+      blocks.push(<ol key={`ol-${index}`} className="my-2 space-y-1.5 pl-5 text-[var(--text-secondary)]">{items.map((item, itemIndex) => <li key={itemIndex} className="list-decimal pl-1 marker:font-semibold marker:text-[var(--primary)]">{renderAnswerInline(item)}</li>)}</ol>);
+      continue;
+    }
+
+    if (/^>\s?/.test(line)) {
+      const quote: string[] = [];
+      while (index < lines.length && /^>\s?/.test(lines[index].trim())) {
+        quote.push(lines[index].trim().replace(/^>\s?/, ""));
+        index += 1;
+      }
+      blocks.push(<blockquote key={`quote-${index}`} className="my-2 border-l-2 border-[var(--primary)] pl-3 text-[var(--text-tertiary)]">{renderAnswerInline(quote.join(" "))}</blockquote>);
+      continue;
+    }
+
+    const paragraph: string[] = [];
+    while (index < lines.length && !isAnswerBlockStart(lines, index)) {
+      paragraph.push(lines[index].trim());
+      index += 1;
+    }
+    blocks.push(<p key={`p-${index}`} className="my-2 leading-6 text-[var(--text-secondary)]">{renderAnswerInline(paragraph.join(" "))}</p>);
+  }
+  return blocks;
+}
+
+function splitAnswerSections(content: string) {
+  const sections: AnswerSection[] = [];
+  let current: AnswerSection = { title: "", lines: [] };
+  for (const rawLine of content.replace(/\r\n?/g, "\n").split("\n")) {
+    const heading = rawLine.trim().match(/^#{1,4}\s+(.+)$/);
+    if (heading) {
+      if (current.title || current.lines.some((line) => line.trim())) sections.push(current);
+      current = { title: heading[1].trim(), lines: [] };
+    } else {
+      current.lines.push(rawLine);
+    }
+  }
+  if (current.title || current.lines.some((line) => line.trim())) sections.push(current);
+  return sections;
+}
+
+function AnswerSectionView({ section }: { section: AnswerSection }) {
+  const isConclusion = /^(一句话)?(核心)?结论|^翻译结果$/.test(section.title);
+  return <section className={isConclusion ? "rounded-xl border border-[var(--primary-border)] bg-[var(--primary-subtle)] px-3 py-2.5" : "py-1"}>
+    {section.title && <h4 className={`mb-1.5 font-semibold ${isConclusion ? "text-[var(--primary-hover)]" : "text-[var(--text-primary)]"}`}>{section.title}</h4>}
+    {renderAnswerBlocks(section.lines)}
+  </section>;
+}
+
+function StructuredAnswer({ content, task }: { content: string; task?: ArticleQaMessage["task"] }) {
+  const sections = splitAnswerSections(content);
+  const collapsible = task !== "translate" && content.length > 850 && sections.length > 2;
+  const visibleSections = collapsible ? sections.slice(0, 2) : sections;
+  const detailSections = collapsible ? sections.slice(2) : [];
+  return <div className="space-y-2 break-words" data-testid="structured-answer">
+    {visibleSections.map((section, index) => <AnswerSectionView key={`${section.title}-${index}`} section={section} />)}
+    {detailSections.length > 0 && <details className="rounded-lg border border-[var(--border)] bg-black/10 px-3 py-2">
+      <summary className="cursor-pointer text-xs font-medium text-[var(--primary-hover)]">展开详细说明（{detailSections.length} 部分）</summary>
+      <div className="mt-2 space-y-2">{detailSections.map((section, index) => <AnswerSectionView key={`${section.title}-${index}`} section={section} />)}</div>
+    </details>}
+  </div>;
+}
+
 function articleApiError(data: Record<string, unknown>, fallback: string) {
   const code = typeof data.code === "string" ? data.code : "";
   const rawMessage = typeof data.error === "string" ? data.error : "";
@@ -120,7 +259,7 @@ export function ArticleParser() {
     if (!url.trim() && content.trim().length < 50) { setNotice("请输入文章网址、选择 PDF，或粘贴至少 50 个字的正文"); return; }
     setBusy(true); setNotice(""); setResult(null); setAudio(null); setSelectedCitation(null); speech.stop();
     try {
-      const response = await apiFetch(`/api/tools/article?client=10.2.6&request=${Date.now()}`, {
+      const response = await apiFetch(`/api/tools/article?client=10.2.7&request=${Date.now()}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -277,7 +416,7 @@ export function ArticleParser() {
         {qaMessages.length > 0 && <div className="mb-3 max-h-[420px] space-y-3 overflow-y-auto rounded-xl bg-[var(--background)] p-3">
           {qaMessages.map((message) => <div key={message.id} className={message.role === "user" ? "ml-8 rounded-xl bg-[var(--primary)] px-3 py-2 text-sm text-black" : "mr-8 rounded-xl bg-[var(--bg-elevated)] px-3 py-2 text-sm"}>
             {message.role === "assistant" && message.task && <div className="mb-1.5 text-[10px] font-semibold text-[var(--primary-hover)]" data-testid="article-intent-badge">{articleTaskName(message.task)}</div>}
-            <div className="whitespace-pre-wrap leading-relaxed">{message.content}</div>
+            {message.role === "assistant" ? <StructuredAnswer content={message.content} task={message.task} /> : <div className="whitespace-pre-wrap leading-relaxed">{message.content}</div>}
             {message.role === "assistant" && message.retrievalTrace && <div className="mt-2 rounded-lg border border-violet-400/20 bg-violet-400/5 px-2 py-1.5 text-[10px] text-violet-200" data-testid="graphrag-trace">{message.retrievalTrace.mode === "article_translation" ? `论文翻译 · ${message.retrievalTrace.graphDocuments} 篇来源 · ${message.retrievalTrace.candidateChunks} 个原文分块` : `图谱增强检索（GraphRAG）· ${message.retrievalTrace.seedNodes} 个入口节点 → ${message.retrievalTrace.expandedNodes} 个邻域节点 · 关联 ${message.retrievalTrace.graphDocuments} 篇来源 · 重排 ${message.retrievalTrace.candidateChunks} 个证据块`}</div>}
             {message.role === "assistant" && message.sources && message.sources.length > 0 && <div className="mt-2 space-y-1.5 border-t border-[var(--border)] pt-2">
               {message.sources.map((source) => <details key={`${message.id}-${source.id}-${source.index}`} className="rounded-lg bg-[var(--card)] px-2 py-1.5 text-[11px]">

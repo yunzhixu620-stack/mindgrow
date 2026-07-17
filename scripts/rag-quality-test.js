@@ -188,6 +188,17 @@ check("translation prompt executes translation instead of falling back to citati
   assert(prompt.includes("不是 Citation 问答"));
   assert(prompt.includes("简体中文"));
   assert(prompt.includes("完整翻译全部证据块"));
+  assert(prompt.includes("## 翻译结果"));
+});
+
+check("article answer prompts put the conclusion first and use readable structures", () => {
+  const qaPrompt = articleTaskSystemPrompt(classifyArticleRequest("这篇论文的核心结论是什么？"));
+  const comparePrompt = articleTaskSystemPrompt(classifyArticleRequest("比较 RAG 与 DPR 的检索方法"));
+  assert(qaPrompt.includes("## 结论"));
+  assert(qaPrompt.includes("## 关键依据"));
+  assert(qaPrompt.includes("700 个汉字以内"));
+  assert(comparePrompt.includes("标准 Markdown 表格"));
+  assert(comparePrompt.includes("最多 5 列、8 行"));
 });
 
 check("English-heavy paper nodes trigger localization while technical acronyms remain valid", () => {

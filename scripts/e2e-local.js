@@ -284,6 +284,19 @@ const clickByText = async (page, selector, text) => {
     await clickByText(page, "button", "发送");
     await page.waitForFunction(() => document.body.innerText.includes("翻译任务"));
     await page.waitForFunction(() => document.body.innerText.includes("已识别为翻译任务"));
+    await page.type('textarea[aria-label="与文章知识库对话"]', "这篇论文为什么强调引用？");
+    const articleQuestionSent = await page.$eval('textarea[aria-label="与文章知识库对话"]', (textarea) => {
+      const send = textarea.parentElement?.querySelector("button");
+      if (!send) return false;
+      send.click();
+      return true;
+    });
+    if (!articleQuestionSent) throw new Error("Article-library send action is missing");
+    await page.waitForFunction(() => document.querySelectorAll('[data-testid="structured-answer"] h4').length > 0);
+    const structuredHeading = await page.$$eval('[data-testid="structured-answer"]', (answers) => answers.at(-1)?.querySelector("h4")?.textContent.trim());
+    if (structuredHeading !== "结论") throw new Error(`Structured answer did not put the conclusion first: ${structuredHeading}`);
+    await page.$$eval('[data-testid="structured-answer"]', (answers) => answers.at(-1)?.scrollIntoView({ block: "center" }));
+    await page.screenshot({ path: path.join(artifactDir, "desktop-article-structured-answer.png"), fullPage: true });
   });
 
   await check("article project cards keep the latest navigation target", async () => {

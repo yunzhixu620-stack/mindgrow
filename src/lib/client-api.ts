@@ -474,7 +474,9 @@ function handleChat(init?: RequestInit): Response {
       return json({
         type: "question",
         intent: { type: "question", task: articleTask || "qa", keywords: terms(input), summary: input },
-        reply: "当前知识库里还没有足够证据回答这个问题。\n\n你可以补充相关资料，或把问题改写为一条知识记录；我不会在没有依据时编造答案。",
+        reply: articleTask
+          ? "## 结论\n\n**当前证据不足，暂时无法可靠回答。**\n\n## 建议\n\n- 补充相关论文或原文分块\n- 缩小问题范围后重新提问\n\n## 局限与待核验\n\n本地知识库没有命中可核验内容，因此不会用猜测补全答案。"
+          : "当前知识库里还没有足够证据回答这个问题。\n\n你可以补充相关资料，或把问题改写为一条知识记录；我不会在没有依据时编造答案。",
         retrieval: { mode: "local", hits: [] },
       });
     }
@@ -482,7 +484,9 @@ function handleChat(init?: RequestInit): Response {
     return json({
       type: "question",
       intent: { type: "question", task: articleTask || "qa", keywords: terms(input), summary: input },
-      reply: `根据当前知识库，找到 ${hits.length} 条相关依据：\n\n${evidence}\n\n_以上回答仅基于当前知识库节点；建议打开导图核对上下文。_`,
+      reply: articleTask
+        ? `## 结论\n\n当前知识库找到 **${hits.length} 条直接相关依据**，可以据此继续核对问题。\n\n## 关键依据\n\n${evidence}\n\n## 局限与待核验\n\n以上回答仅基于当前知识库节点；建议打开导图核对上下文。`
+        : `根据当前知识库，找到 ${hits.length} 条相关依据：\n\n${evidence}\n\n_以上回答仅基于当前知识库节点；建议打开导图核对上下文。_`,
       retrieval: { mode: "local", hits: hits.map(({ item, score }) => ({ id: item.id, title: item.content, score })) },
     });
   }
