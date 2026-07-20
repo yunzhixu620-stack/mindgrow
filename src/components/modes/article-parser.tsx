@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/client-api";
 import { extractPdfText } from "@/lib/pdf-text";
 import { useScriptSpeech, type SpeechSegment } from "@/hooks/use-script-speech";
@@ -276,6 +276,17 @@ export function ArticleParser() {
   const [qaMessages, setQaMessages] = useState<ArticleQaMessage[]>([]);
   const [notice, setNotice] = useState("");
   const speech = useScriptSpeech(audio?.segments || []);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  const isActiveArticleMap = (mapId: string) => {
+    const latest = useMindGrowStore.getState();
+    return mountedRef.current && latest.currentMode === "article" && latest.currentMapId === mapId;
+  };
 
   async function choosePdf(file?: File) {
     if (!file) return;
@@ -294,9 +305,10 @@ export function ArticleParser() {
 
   async function parse() {
     if (!url.trim() && content.trim().length < 50) { setNotice("请输入文章网址、选择 PDF，或粘贴至少 50 个字的正文"); return; }
+    const requestMapId = currentMapId;
     setBusy(true); setNotice(""); setResult(null); setAudio(null); setSelectedCitation(null); speech.stop();
     try {
-      const response = await apiFetch(`/api/tools/article?client=10.2.9&request=${Date.now()}`, {
+      const response = await apiFetch(`/api/tools/article?client=10.3.0&request=${Date.now()}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -307,6 +319,7 @@ export function ArticleParser() {
         }),
       });
       const data = await response.json();
+      if (!isActiveArticleMap(requestMapId)) return;
       if (!response.ok) throw new Error(articleApiError(data, "解析失败"));
       setResult(data);
       if (data.mindMap) {
@@ -314,8 +327,8 @@ export function ArticleParser() {
         setNodes(preview.nodes);
         setEdges(preview.edges);
       }
-    } catch (error) { setNotice(error instanceof Error ? error.message : "解析失败"); }
-    finally { setBusy(false); }
+    } catch (error) { if (isActiveArticleMap(requestMapId)) setNotice(error instanceof Error ? error.message : "解析失败"); }
+    finally { if (mountedRef.current) setBusy(false); }
   }
 
   async function createAudioOverview() {
@@ -340,13 +353,14 @@ export function ArticleParser() {
 
   async function save() {
     if (!result?.mindMap) return;
+    const requestMapId = currentMapId;
     setSaving(true); setNotice("");
     try {
       const response = await apiFetch("/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          mapId: currentMapId, mindMap: result.mindMap, source: "article", citations: result.citations,
+          mapId: requestMapId, mindMap: result.mindMap, source: "article", citations: result.citations,
           documentChunks: result.documentChunks || result.citations,
           extraction: result.extraction,
           document: {
@@ -356,15 +370,17 @@ export function ArticleParser() {
         }),
       });
       const data = await response.json();
+      if (!isActiveArticleMap(requestMapId)) return;
       if (!response.ok) throw new Error(articleApiError(data, "保存失败"));
-      const savedMapId = String(data.mapId || currentMapId);
-      if (savedMapId !== currentMapId) setCurrentMapId(savedMapId);
+      const savedMapId = String(data.mapId || requestMapId);
+      if (savedMapId !== requestMapId) setCurrentMapId(savedMapId);
       const reload = await apiFetch(`/api/knowledge?mapId=${encodeURIComponent(savedMapId)}`);
       const graph = await reload.json();
+      if (!isActiveArticleMap(savedMapId)) return;
       if (reload.ok) { setNodes(graph.nodes || []); setEdges(graph.edges || []); }
       setNotice(`已保存 ${data.totalNodes || 0} 个文章知识节点、${data.totalCitations || 0} 条节点引用和 ${data.indexedChunks || 0} 个检索分块${data.indexStatus === "ready" ? "（向量索引就绪）" : data.indexStatus ? `（${data.indexStatus}）` : ""}`);
-    } catch (error) { setNotice(error instanceof Error ? error.message : "保存失败"); }
-    finally { setSaving(false); }
+    } catch (error) { if (isActiveArticleMap(requestMapId)) setNotice(error instanceof Error ? error.message : "保存失败"); }
+    finally { if (mountedRef.current) setSaving(false); }
   }
 
   async function askArticleLibrary() {

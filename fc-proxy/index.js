@@ -17,7 +17,7 @@ const PORT = Number.parseInt(process.env.FC_SERVER_PORT || process.env.PORT || '
 // into a false 503. Transient 429/5xx responses are retried below.
 const UPSTREAM_TIMEOUT_MS = Number.parseInt(process.env.UPSTREAM_TIMEOUT_MS || '45000', 10);
 const AUTH_REQUIRED = process.env.AUTH_REQUIRED !== 'false';
-const API_VERSION = '10.2.9';
+const API_VERSION = '10.3.0';
 const DASHSCOPE_AUDIO_ENDPOINT = process.env.DASHSCOPE_AUDIO_ENDPOINT || 'https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer';
 const ALLOWED_ORIGINS = new Set(
   (process.env.ALLOWED_ORIGINS || 'https://yunzhixu620-stack.github.io')
@@ -1142,6 +1142,17 @@ async function answerQuestion(input, mapId, intent, workspaceId, history, articl
   }
 }
 
+function standaloneHttpUrl(value) {
+  const input = String(value || '').trim();
+  if (!input || /\s/.test(input)) return null;
+  try {
+    const parsed = new URL(input);
+    return ['http:', 'https:'].includes(parsed.protocol) ? parsed.toString() : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 async function handleChat(body, context) {
   const input = body && typeof body.input === 'string' ? body.input.trim() : '';
   const mapId = body && body.mapId ? String(body.mapId) : context.defaultMapId;
@@ -1152,9 +1163,28 @@ async function handleChat(body, context) {
   if (!input) return { status: 400, data: { error: 'Input is required', code: 'INVALID_INPUT' } };
   if (input.length > 10000) return { status: 413, data: { error: 'Input is too long', code: 'INPUT_TOO_LARGE' } };
 
+  const submittedUrl = body && body.mode === 'article' ? null : standaloneHttpUrl(input);
+  let structureInput = input;
+  let resolvedSourceUrl = '';
+  if (submittedUrl) {
+    let fetched;
+    try {
+      fetched = await fetchArticleText(submittedUrl, 0);
+    } catch (error) {
+      if (error && error.statusCode) throw error;
+      throw requestError(422, 'ARTICLE_SOURCE_FETCH_FAILED', '无法读取该链接，请检查网页是否公开可访问后重试');
+    }
+    structureInput = htmlToReadableText(fetched.html);
+    if (structureInput.length < 80) {
+      throw requestError(422, 'ARTICLE_CONTENT_TOO_SHORT', '链接可以打开，但没有提取到足够的正文内容，因此不会生成或猜测答案');
+    }
+    structureInput = structureInput.slice(0, 30000);
+    resolvedSourceUrl = fetched.finalUrl;
+  }
+
   const articleRequest = body && body.mode === 'article' ? classifyArticleRequest(input) : null;
   const intent = {
-    type: articleRequest || (body && body.intent === 'question') ? 'question' : classifyInput(input),
+    type: submittedUrl ? 'knowledge' : (articleRequest || (body && body.intent === 'question') ? 'question' : classifyInput(input)),
     confidence: articleRequest ? articleRequest.confidence : 0.9,
     ...(articleRequest || {}),
   };
@@ -1169,9 +1199,14 @@ async function handleChat(body, context) {
   const generated = await dashscopeChat([
     {
       role: 'system',
-      content: '你是知识结构提取器。只返回严格 JSON：{"root":"核心主题","rootDesc":"简短描述","children":[{"topic":"子主题","desc":"描述","items":["要点"]}],"relatedTopics":["相关主题"]}。不得输出 Markdown。',
+      content: '你是严格忠实于输入证据的知识结构提取器。只返回严格 JSON：{"root":"核心主题","rootDesc":"简短描述","children":[{"topic":"子主题","desc":"描述","items":["要点"]}],"relatedTopics":["可继续探索的相关主题"]}。children 必须按语义聚合为 3-6 个一级分支，具体事实、方法、案例与指标放入各分支的 items，不得把大量细节平铺为一级分支；不得因聚合而删减输入中的重要信息。root、rootDesc、children 只能包含输入明确支持的事实，不得补写产品能力、时间、人物、数字或结论。必须保留否定、未批准、风险、负责人、日期、版本号和精确指标。relatedTopics 只能作为探索建议，不得写成既成事实。不得输出 Markdown。',
     },
-    { role: 'user', content: input },
+    {
+      role: 'user',
+      content: resolvedSourceUrl
+        ? `来源网址：${resolvedSourceUrl}\n\n以下是实际抓取的网页正文。只依据正文整理，不要根据网址或常识猜测：\n${structureInput}`
+        : structureInput,
+    },
   ], 'qwen-plus', 900, 0.4);
 
   let mindMap;
@@ -1191,7 +1226,7 @@ async function handleChat(body, context) {
     if (topics.length > 0) {
       const placementText = await dashscopeChat([
         { role: 'system', content: '判断新知识应该归入哪个已有主题。只返回 JSON：{"targetTopic":null,"confidence":0,"reason":"独立主题"}。targetTopic 必须是候选主题之一，否则为 null。' },
-        { role: 'user', content: `新知识：${input}\n候选主题：${topics.join('、')}` },
+        { role: 'user', content: `新知识：${structureInput.slice(0, 6000)}\n候选主题：${topics.join('、')}` },
       ], 'qwen-turbo', 200, 0.1);
       const candidate = JSON.parse(stripJsonFence(placementText));
       if (candidate && topics.includes(candidate.targetTopic)) placement = candidate;
@@ -1209,7 +1244,15 @@ async function handleChat(body, context) {
     '',
     '确认后可将这些节点保存到当前知识库。',
   ].join('\n');
-  return { status: 200, data: { intent, reply, type: 'knowledge', placement, mindMap } };
+  const sources = resolvedSourceUrl ? [{
+    id: `url_${Buffer.from(resolvedSourceUrl).toString('base64url').slice(0, 24)}`,
+    title: mindMap.root || resolvedSourceUrl,
+    index: 1,
+    quote: structureInput.slice(0, 320),
+    locator: '网页正文',
+    sourceUrl: resolvedSourceUrl,
+  }] : undefined;
+  return { status: 200, data: { intent, reply, type: 'knowledge', placement, mindMap, sources, sourceUrl: resolvedSourceUrl || undefined } };
 }
 
 function isPrivateAddress(address) {
@@ -1805,7 +1848,7 @@ async function handleMeetingTool(body) {
   const raw = await dashscopeChat([
     {
       role: 'system',
-      content: '你是严谨且可追溯的会议助手。只返回 JSON：{"title":"","summary":"","summaryCitationIndexes":[1],"topics":[{"title":"","citationIndexes":[1],"details":[{"text":"","citationIndexes":[1]}]}],"decisions":[{"text":"","citationIndexes":[1]}],"actionItems":[{"task":"","owner":"","due":"","status":"待办","citationIndexes":[1]}],"risks":[{"text":"","citationIndexes":[1]}],"openQuestions":[{"text":"","citationIndexes":[1]}],"mindMap":{"root":"","rootDesc":"","rootCitationIndexes":[1],"children":[{"topic":"","desc":"","citationIndexes":[1],"items":[""],"itemCitationIndexes":[[1]]}]}}。只能引用提供的 C 编号；每项结论必须有直接证据；更正后的信息覆盖旧信息；未决定、未批准和开放问题不得写成决议；不得编造人名、日期或结论。',
+      content: '你是严谨且可追溯的会议助手。只返回 JSON：{"title":"","summary":"","summaryCitationIndexes":[1],"topics":[{"title":"","citationIndexes":[1],"details":[{"text":"","citationIndexes":[1]}]}],"decisions":[{"text":"","citationIndexes":[1]}],"actionItems":[{"task":"","owner":"","due":"","status":"待办","citationIndexes":[1]}],"risks":[{"text":"","citationIndexes":[1]}],"openQuestions":[{"text":"","citationIndexes":[1]}],"mindMap":{"root":"","rootDesc":"","rootCitationIndexes":[1],"children":[{"topic":"","desc":"","citationIndexes":[1],"items":[""],"itemCitationIndexes":[[1]]}]}}。mindMap.children 必须聚合为 3-6 个会议主干，行动项、证据与细节放到 items，不能把每句话都平铺为一级节点，也不得删减重要信息。只能引用提供的 C 编号；每项结论必须有直接证据；更正后的信息覆盖旧信息；未决定、未批准和开放问题不得写成决议；不得编造人名、日期或结论。',
     },
     { role: 'user', content: `会议标题：${title}\n参会人：${participants || '未提供'}\n带编号的会议原文：\n${evidencePrompt(citations)}` },
   ], 'qwen-plus', 2400, 0.1);
@@ -1902,7 +1945,7 @@ async function handleArticleTool(body) {
   const raw = await dashscopeChat([
     {
       role: 'system',
-      content: '你是忠于原文的论文与文章解析助手。只返回严格 JSON：{"title":"","summary":"","summaryCitationIndexes":[1],"keyPoints":[{"text":"","citationIndexes":[1]}],"arguments":[{"claim":"","evidence":"","citationIndexes":[1]}],"questions":[""],"mindMap":{"root":"","rootDesc":"","rootCitationIndexes":[1],"children":[{"topic":"","desc":"","citationIndexes":[1],"items":[""],"itemCitationIndexes":[[1]]}]}}。所有标题、摘要、要点、论证、问题和导图节点必须使用简体中文；英文原文要准确翻译成中文，专业术语或缩写可在中文后用括号保留英文。输入由带页码/段落定位的 C 编号证据块组成。每个结论、数字、表格结论和导图分支必须引用直接支持它的 C 编号；只能引用给定编号；不得自行填写 quote 或页码；引用原文保持原始语言，不得伪造中文原文；证据不足就省略结论，不得补充原文没有的事实。',
+      content: '你是忠于原文的论文与文章解析助手。只返回严格 JSON：{"title":"","summary":"","summaryCitationIndexes":[1],"keyPoints":[{"text":"","citationIndexes":[1]}],"arguments":[{"claim":"","evidence":"","citationIndexes":[1]}],"questions":[""],"mindMap":{"root":"","rootDesc":"","rootCitationIndexes":[1],"children":[{"topic":"","desc":"","citationIndexes":[1],"items":[""],"itemCitationIndexes":[[1]]}]}}。论文的 mindMap.children 优先使用“研究问题、方法/架构、数据与实验、结果、局限与启示”等 3-6 个语义主干；具体模型、指标、对比和证据放入 items，不得把大量细节平铺为一级节点，也不得因聚合而删减原文信息。所有标题、摘要、要点、论证、问题和导图节点必须使用简体中文；英文原文要准确翻译成中文，专业术语或缩写可在中文后用括号保留英文。输入由带页码/段落定位的 C 编号证据块组成。每个结论、数字、表格结论和导图分支必须引用直接支持它的 C 编号；只能引用给定编号；不得自行填写 quote 或页码；引用原文保持原始语言，不得伪造中文原文；证据不足就省略结论，不得补充原文没有的事实。',
     },
     { role: 'user', content: `文章来源：${sourceUrl || fileName || '用户粘贴'}\n可核验证据块：\n${evidencePrompt(citations)}` },
   ], 'qwen-plus', 3600, 0.1);
@@ -2829,6 +2872,9 @@ module.exports = {
   normalizeCitationIndexes,
   normalizeDocumentLayout,
   sourcePages,
+  standaloneHttpUrl,
+  handleChat,
+  assertPublicUrl,
   classifyInput,
   classifyArticleRequest,
   selectArticleDocument,

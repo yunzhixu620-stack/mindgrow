@@ -329,6 +329,7 @@ export function ChatPanel() {
     IS_LOCAL_MODE ? "connected" : "checking"
   );
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const activeChatRequestRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768);
@@ -366,21 +367,12 @@ export function ChatPanel() {
 
   useEffect(() => { scrollToBottom(); }, [messages, pendingMindMap, scrollToBottom]);
 
-  // Load initial data
   useEffect(() => {
-    apiFetch(`/api/knowledge?mapId=${currentMapId}`)
-      .then((res) => res.json())
-      .then(({ nodes, edges }) => {
-        if (nodes.length > 0) {
-          useMindGrowStore.getState().setNodes(nodes);
-          useMindGrowStore.getState().setEdges(edges);
-        }
-      })
-      .catch(console.error);
-  }, [currentMapId]);
+    return () => activeChatRequestRef.current?.abort();
+  }, []);
 
   const handleSend = useCallback(async () => {
-    if (!input.trim() || isProcessing) return;
+    if (!input.trim() || isProcessing || confirming) return;
     const userMessage: ChatMessage = {
       id: `msg_${Date.now()}`,
       role: "user",
@@ -390,18 +382,34 @@ export function ChatPanel() {
     addMessage(userMessage);
     setInput("");
     setProcessing(true);
+    const requestMapId = currentMapId;
+    activeChatRequestRef.current?.abort();
+    const controller = new AbortController();
+    activeChatRequestRef.current = controller;
 
     try {
       const res = await apiFetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           input: userMessage.content,
-          mapId: currentMapId,
+          mapId: requestMapId,
           history: messages.filter((message) => message.role !== "system" && !message.id.startsWith("welcome_")).slice(-8).map((message) => ({ role: message.role, content: message.content })),
         }),
       });
       const data = await res.json();
+      const latest = useMindGrowStore.getState();
+      if (controller.signal.aborted || latest.currentMode !== "knowledge" || latest.currentMapId !== requestMapId) return;
+      if (!res.ok || data.error) {
+        addMessage({
+          id: `msg_${Date.now()}_rejected`,
+          role: "assistant",
+          content: data.error || "当前内容无法读取，请检查后重试。",
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
       const aiMessage: ChatMessage = {
         id: `msg_${Date.now()}_ai`,
         role: "assistant",
@@ -415,6 +423,7 @@ export function ChatPanel() {
         setPendingPlacement(data.placement || null);
       }
     } catch (error) {
+      if (controller.signal.aborted) return;
       console.error("Chat error:", error);
       addMessage({
         id: `msg_${Date.now()}_err`,
@@ -423,14 +432,17 @@ export function ChatPanel() {
         timestamp: new Date().toISOString(),
       });
     } finally {
-      setProcessing(false);
+      if (activeChatRequestRef.current === controller) activeChatRequestRef.current = null;
+      const latest = useMindGrowStore.getState();
+      if (!controller.signal.aborted && latest.currentMode === "knowledge" && latest.currentMapId === requestMapId) setProcessing(false);
     }
-  }, [input, isProcessing, currentMapId, messages, addMessage, setProcessing, setPendingMindMap, setPendingPlacement]);
+  }, [input, isProcessing, confirming, currentMapId, messages, addMessage, setProcessing, setPendingMindMap, setPendingPlacement]);
 
   // Confirm with selected nodes only
   const handleConfirm = useCallback(async (selectedChildren: { childIdx: number; items: string[] }[]) => {
     if (!pendingMindMap || confirming) return;
     setConfirming(true);
+    const requestMapId = currentMapId;
 
     // Build filtered mindMap with only selected nodes
     const filteredMindMap = {
@@ -460,12 +472,14 @@ export function ChatPanel() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           mindMap: filteredMindMap,
-          mapId: currentMapId,
+          mapId: requestMapId,
           source: "ai_generated",
           placement: pendingPlacement,
         }),
       });
       const data = await res.json();
+      const latest = useMindGrowStore.getState();
+      if (latest.currentMode !== "knowledge" || latest.currentMapId !== requestMapId) return;
 
       if (data.error) {
         addMessage({
@@ -475,12 +489,17 @@ export function ChatPanel() {
           timestamp: new Date().toISOString(),
         });
       } else {
-        const reloadRes = await apiFetch(`/api/knowledge?mapId=${currentMapId}`);
+        const reloadRes = await apiFetch(`/api/knowledge?mapId=${requestMapId}`);
         if (reloadRes.ok) {
           const { nodes, edges } = await reloadRes.json();
-          setNodes(nodes);
-          setEdges(edges);
+          const current = useMindGrowStore.getState();
+          if (current.currentMode === "knowledge" && current.currentMapId === requestMapId) {
+            setNodes(nodes);
+            setEdges(edges);
+          }
         }
+        const current = useMindGrowStore.getState();
+        if (current.currentMode !== "knowledge" || current.currentMapId !== requestMapId) return;
         addMessage({
           id: `msg_${Date.now()}_confirm`,
           role: "assistant",
@@ -491,6 +510,8 @@ export function ChatPanel() {
         });
       }
     } catch (error) {
+      const latest = useMindGrowStore.getState();
+      if (latest.currentMode !== "knowledge" || latest.currentMapId !== requestMapId) return;
       console.error("Confirm error:", error);
       addMessage({
         id: `msg_${Date.now()}_err3`,
@@ -499,8 +520,11 @@ export function ChatPanel() {
         timestamp: new Date().toISOString(),
       });
     } finally {
-      setPendingMindMap(null);
-      setPendingPlacement(null);
+      const latest = useMindGrowStore.getState();
+      if (latest.currentMode === "knowledge" && latest.currentMapId === requestMapId) {
+        setPendingMindMap(null);
+        setPendingPlacement(null);
+      }
       setConfirming(false);
     }
   }, [pendingMindMap, pendingPlacement, confirming, currentMapId, setNodes, setEdges, addMessage, setPendingMindMap, setPendingPlacement]);
@@ -583,6 +607,7 @@ export function ChatPanel() {
         <div className="flex items-end gap-2 bg-[var(--background)] rounded-2xl px-4 py-2">
           <textarea
             value={input}
+            disabled={isProcessing || confirming}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="输入知识点、粘贴文章片段..."
@@ -607,7 +632,7 @@ export function ChatPanel() {
           </button>
           <button
             onClick={handleSend}
-            disabled={!input.trim() || isProcessing}
+            disabled={!input.trim() || isProcessing || confirming}
             aria-label="发送"
             className="flex-shrink-0 w-8 h-8 bg-[var(--primary)] text-[var(--primary-foreground)] rounded-xl flex items-center justify-center hover:opacity-90 transition-opacity disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"
           >

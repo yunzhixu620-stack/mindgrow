@@ -358,10 +358,10 @@ export default function Home() {
       </div>
     )
     : currentMode === "meeting"
-      ? <MeetingAssistant />
+      ? <MeetingAssistant key={`meeting:${currentMapId}`} />
       : currentMode === "article"
-        ? <ArticleParser />
-        : <ChatPanel />;
+        ? <ArticleParser key={`article:${currentMapId}`} />
+        : <ChatPanel key={`knowledge:${currentMapId}`} />;
 
   // Mobile layout
   if (isMobile) {
@@ -783,7 +783,7 @@ export default function Home() {
     <main className="flex h-full w-full overflow-hidden" data-testid={`${currentMode}-workspace`} data-current-map-id={currentMapId} data-library-busy={modeLibraryBusy ? "true" : "false"}>
       <Sidebar />
       <div className={currentMode === "knowledge" ? "flex h-full shrink-0" : "h-full w-[clamp(360px,36vw,520px)] shrink-0 border-r border-[var(--border)]"}>
-        {currentMode === "knowledge" ? <ChatPanel /> : activeModePanel}
+        {activeModePanel}
       </div>
       <MindMapPanel />
     </main>

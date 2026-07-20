@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/client-api";
 import { useMindGrowStore } from "@/store/mindgrow-store";
 import { useSpeechInput } from "@/hooks/use-speech-input";
@@ -39,12 +39,24 @@ export function MeetingAssistant() {
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
   const [selectedCitation, setSelectedCitation] = useState<Citation | null>(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  const isActiveMeetingMap = (mapId: string) => {
+    const latest = useMindGrowStore.getState();
+    return mountedRef.current && latest.currentMode === "meeting" && latest.currentMapId === mapId;
+  };
 
   const appendSpeech = useCallback((text: string) => setTranscript((current) => `${current}${current && !current.endsWith("\n") ? " " : ""}${text}`), []);
   const speech = useSpeechInput(appendSpeech);
 
   async function generate() {
     if (transcript.trim().length < 10) { setNotice("请先输入或录入会议内容"); return; }
+    const requestMapId = currentMapId;
     setBusy(true); setNotice(""); setResult(null); setSelectedCitation(null);
     try {
       const response = await apiFetch("/api/tools/meeting", {
@@ -53,6 +65,7 @@ export function MeetingAssistant() {
         body: JSON.stringify({ title, participants, transcript }),
       });
       const data = await response.json();
+      if (!isActiveMeetingMap(requestMapId)) return;
       if (!response.ok) throw new Error(data.error || "生成失败");
       setResult(data);
       if (data.mindMap) {
@@ -60,19 +73,20 @@ export function MeetingAssistant() {
         setNodes(preview.nodes);
         setEdges(preview.edges);
       }
-    } catch (error) { setNotice(error instanceof Error ? error.message : "生成失败"); }
-    finally { setBusy(false); }
+    } catch (error) { if (isActiveMeetingMap(requestMapId)) setNotice(error instanceof Error ? error.message : "生成失败"); }
+    finally { if (mountedRef.current) setBusy(false); }
   }
 
   async function save() {
     if (!result?.mindMap) return;
+    const requestMapId = currentMapId;
     setSaving(true); setNotice("");
     try {
       const response = await apiFetch("/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          mapId: currentMapId, mindMap: result.mindMap, source: "meeting",
+          mapId: requestMapId, mindMap: result.mindMap, source: "meeting",
           citations: result.citations,
           documentChunks: result.documentChunks || result.citations,
           document: { title: result.title, sourceType: "meeting", fileName: "" },
@@ -80,15 +94,17 @@ export function MeetingAssistant() {
         }),
       });
       const data = await response.json();
+      if (!isActiveMeetingMap(requestMapId)) return;
       if (!response.ok) throw new Error(data.error || "保存失败");
-      const savedMapId = String(data.mapId || currentMapId);
-      if (savedMapId !== currentMapId) setCurrentMapId(savedMapId);
+      const savedMapId = String(data.mapId || requestMapId);
+      if (savedMapId !== requestMapId) setCurrentMapId(savedMapId);
       const reload = await apiFetch(`/api/knowledge?mapId=${encodeURIComponent(savedMapId)}`);
       const graph = await reload.json();
+      if (!isActiveMeetingMap(savedMapId)) return;
       if (reload.ok) { setNodes(graph.nodes || []); setEdges(graph.edges || []); }
       setNotice(`已保存 ${data.totalNodes || 0} 个会议知识节点、${data.totalCitations || 0} 条引用和 ${data.indexedChunks || 0} 个可检索分块`);
-    } catch (error) { setNotice(error instanceof Error ? error.message : "保存失败"); }
-    finally { setSaving(false); }
+    } catch (error) { if (isActiveMeetingMap(requestMapId)) setNotice(error instanceof Error ? error.message : "保存失败"); }
+    finally { if (mountedRef.current) setSaving(false); }
   }
 
   const citationByIndex = new Map((result?.citations || []).map((item) => [item.index, item]));

@@ -52,6 +52,7 @@ interface MindGrowState {
   // Chat
   messages: ChatMessage[];
   chatHistory: Record<string, ChatMessage[]>;
+  messageMapId: string | null;
   isProcessing: boolean;
   addMessage: (message: ChatMessage) => void;
   setMessages: (messages: ChatMessage[]) => void;
@@ -127,6 +128,9 @@ export const useMindGrowStore = create<MindGrowState>((set, get) => ({
     pendingSuggestion: null,
     pendingMindMap: null,
     pendingPlacement: null,
+    messages: [],
+    messageMapId: null,
+    isProcessing: false,
   })),
 
   maps: [],
@@ -190,11 +194,16 @@ export const useMindGrowStore = create<MindGrowState>((set, get) => ({
 
   messages: [],
   chatHistory: {},
+  messageMapId: null,
   isProcessing: false,
-  addMessage: (message) => set((state) => ({ messages: [...state.messages, message] })),
-  setMessages: (messages) => set({ messages }),
+  addMessage: (message) => set((state) => ({
+    messages: [...state.messages, message],
+    messageMapId: state.messageMapId || state.currentMapId,
+  })),
+  setMessages: (messages) => set((state) => ({ messages, messageMapId: state.currentMapId })),
   saveChatHistory: () => set((state) => {
-    const mapId = state.currentMapId;
+    const mapId = state.messageMapId;
+    if (!mapId) return {};
     if (state.messages.length > 0) {
       return {
         chatHistory: { ...state.chatHistory, [mapId]: [...state.messages] },
@@ -205,9 +214,10 @@ export const useMindGrowStore = create<MindGrowState>((set, get) => ({
   loadChatHistory: (mapId) => set((state) => {
     const saved = state.chatHistory[mapId];
     if (saved && saved.length > 0) {
-      return { messages: [...saved] };
+      return { messages: [...saved], messageMapId: mapId };
     }
     return {
+      messageMapId: mapId,
       messages: [
         {
           id: `welcome_${mapId}`,
@@ -255,20 +265,31 @@ export const useMindGrowStore = create<MindGrowState>((set, get) => ({
   setSidebarOpen: (open) => set({ sidebarOpen: open }),
 
   currentMode: "knowledge",
-  setCurrentMode: (mode) => set((state) => state.currentMode === mode ? {} : ({
-    currentMode: mode,
-    // Product-board switches must never render the previous board's graph.
-    // The page controller will select and load the last library for this mode.
-    nodes: [],
-    edges: [],
-    searchResults: [],
-    highlightedNodeId: null,
-    collapsedNodes: new Set<string>(),
-    contextMenu: null,
-    pendingSuggestion: null,
-    pendingMindMap: null,
-    pendingPlacement: null,
-  })),
+  setCurrentMode: (mode) => set((state) => {
+    if (state.currentMode === mode) return {};
+    const chatHistory = state.messageMapId && state.messages.length > 0
+      ? { ...state.chatHistory, [state.messageMapId]: [...state.messages] }
+      : state.chatHistory;
+    return {
+      currentMode: mode,
+      // Product-board switches must never render cached graph, draft or
+      // response state from the previous board. The page controller selects
+      // and reloads the board-owned library after this atomic reset.
+      nodes: [],
+      edges: [],
+      messages: [],
+      messageMapId: null,
+      chatHistory,
+      isProcessing: false,
+      searchResults: [],
+      highlightedNodeId: null,
+      collapsedNodes: new Set<string>(),
+      contextMenu: null,
+      pendingSuggestion: null,
+      pendingMindMap: null,
+      pendingPlacement: null,
+    };
+  }),
   layoutDirection: "vertical",
   setLayoutDirection: (dir) => set({ layoutDirection: dir }),
 

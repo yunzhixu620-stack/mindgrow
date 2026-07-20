@@ -32,6 +32,66 @@ const BRANCH_COLORS = [
   "#f43f5e", "#8b5cf6", "#ec4899", "#14b8a6",
 ];
 
+const DISPLAY_OVERVIEW_PREFIX = "__mindgrow_overview__";
+const MAX_UNGROUPED_ROOTS = 5;
+
+function isDisplayOverviewNode(nodeId: string) {
+  return nodeId.startsWith(DISPLAY_OVERVIEW_PREFIX);
+}
+
+/**
+ * A knowledge map can accumulate many independent source roots over time. They
+ * are valid retrieval entities, so rewriting the stored GraphRAG topology just
+ * to improve the canvas would add false semantic relationships. Instead, add a
+ * display-only overview parent once the root count becomes hard to scan. The
+ * original roots become visual children while stored nodes, citations and
+ * retrieval edges remain untouched.
+ */
+function buildDisplayHierarchy(
+  dbNodes: KnowledgeNode[],
+  dbEdges: KnowledgeEdge[],
+  mapId: string | null,
+  overviewLabel: string,
+) {
+  const childIds = new Set(
+    dbEdges.filter((edge) => edge.relation === "contains").map((edge) => edge.targetId),
+  );
+  const roots = dbNodes.filter((node) => !childIds.has(node.id));
+  if (roots.length <= MAX_UNGROUPED_ROOTS) {
+    return { nodes: dbNodes, edges: dbEdges, syntheticNodeCount: 0 };
+  }
+
+  const overviewId = `${DISPLAY_OVERVIEW_PREFIX}:${mapId || "current"}`;
+  const timestamps = roots.map((node) => node.createdAt).filter(Boolean).sort();
+  const createdAt = timestamps[0] || "1970-01-01T00:00:00.000Z";
+  const updatedAt = roots.map((node) => node.updatedAt).filter(Boolean).sort().at(-1) || createdAt;
+  const overviewNode: KnowledgeNode = {
+    id: overviewId,
+    content: overviewLabel,
+    desc: `已将 ${roots.length} 个一级主题收纳为二级主题；展开任一分支可继续查看原始内容。`,
+    type: "topic",
+    status: "active",
+    source: "template",
+    confidence: 1,
+    createdAt,
+    updatedAt,
+  };
+  const overviewEdges: KnowledgeEdge[] = roots.map((root, index) => ({
+    id: `${overviewId}:edge:${index}`,
+    sourceId: overviewId,
+    targetId: root.id,
+    relation: "contains",
+    weight: 1,
+    createdAt,
+  }));
+
+  return {
+    nodes: [overviewNode, ...dbNodes],
+    edges: [...overviewEdges, ...dbEdges],
+    syntheticNodeCount: 1,
+  };
+}
+
 // ============================================================
 // Custom Node Component
 // ============================================================
@@ -64,6 +124,7 @@ function MindGrowNode({ data, selected }: NodeProps) {
 
   return (
     <div
+      data-display-overview={isDisplayOverviewNode(data.nodeId as string) ? "true" : undefined}
       className={`
         relative rounded-xl ${compact ? "min-w-[132px] max-w-[172px] px-2.5 py-2" : "min-w-[150px] max-w-[220px] px-3.5 py-2.5"}
         text-center transition-all duration-200 cursor-grab active:cursor-grabbing
@@ -138,6 +199,16 @@ function getOutlineCollapsedNodes(dbNodes: KnowledgeNode[], dbEdges: KnowledgeEd
   }
   const roots = dbNodes.filter((node) => !childSet.has(node.id));
   const collapsed = new Set<string>();
+
+  // Dense multi-source maps open as one display-only overview card. Expanding
+  // that card is handled as an explicit "show everything" action below, so no
+  // original branch is silently downgraded or left partially folded.
+  const displayOverview = roots.find((node) => isDisplayOverviewNode(node.id));
+  if (displayOverview) {
+    collapsed.add(displayOverview.id);
+    return collapsed;
+  }
+
   const firstLevelByRoot = new Map<string, string[]>();
   let outlineVisibleCount = roots.length;
   for (const root of roots) {
@@ -579,6 +650,15 @@ export function MindMapPanel() {
   }, [setContextMenu]);
 
   const sv = useMemo(() => ({ compact: { h: 16, v: 30, tree: 100 }, normal: { h: 30, v: 50, tree: 200 }, wide: { h: 55, v: 80, tree: 400 } }[spacing]), [spacing]);
+  const overviewLabel = currentMode === "article"
+    ? "论文主题总览"
+    : currentMode === "meeting"
+      ? "会议主题总览"
+      : "知识主题总览";
+  const displayHierarchy = useMemo(
+    () => buildDisplayHierarchy(storeNodes, storeEdges, currentMapId, overviewLabel),
+    [storeNodes, storeEdges, currentMapId, overviewLabel],
+  );
 
   const refitGraph = useCallback(() => {
     window.setTimeout(() => {
@@ -592,18 +672,24 @@ export function MindMapPanel() {
   }, [isMobile]);
 
   const handleToggleBranch = useCallback((nodeId: string) => {
+    if (isDisplayOverviewNode(nodeId)) {
+      setCollapsedNodes(collapsedNodes.has(nodeId) ? new Set<string>() : new Set<string>([nodeId]));
+      setViewMode(collapsedNodes.has(nodeId) ? "all" : "outline");
+      refitGraph();
+      return;
+    }
     toggleCollapse(nodeId);
     setViewMode("custom");
     refitGraph();
-  }, [toggleCollapse, refitGraph]);
+  }, [collapsedNodes, setCollapsedNodes, toggleCollapse, refitGraph]);
 
   const showOutline = useCallback(() => {
     setFocusedNodeId(null);
     setDirection("horizontal");
-    setCollapsedNodes(getOutlineCollapsedNodes(storeNodes, storeEdges));
+    setCollapsedNodes(getOutlineCollapsedNodes(displayHierarchy.nodes, displayHierarchy.edges));
     setViewMode("outline");
     refitGraph();
-  }, [setCollapsedNodes, storeNodes, storeEdges, refitGraph]);
+  }, [setCollapsedNodes, displayHierarchy, refitGraph]);
 
   const showAllNodes = useCallback(() => {
     setFocusedNodeId(null);
@@ -631,20 +717,21 @@ export function MindMapPanel() {
     initializedLargeMapRef.current = largeMapKey;
     setDirection("horizontal");
     setFocusedNodeId(null);
-    setCollapsedNodes(getOutlineCollapsedNodes(storeNodes, storeEdges));
+    setCollapsedNodes(getOutlineCollapsedNodes(displayHierarchy.nodes, displayHierarchy.edges));
     setViewMode("outline");
     refitGraph();
-  }, [currentMapId, storeNodes, storeEdges, isMobile, setCollapsedNodes, refitGraph]);
+  }, [currentMapId, storeNodes, storeEdges, displayHierarchy, isMobile, setCollapsedNodes, refitGraph]);
 
   const graph = useMemo(
     () => buildGraph(
-      storeNodes, storeEdges, highlightedNodeId, searchResults, direction, sv,
+      displayHierarchy.nodes, displayHierarchy.edges, highlightedNodeId, searchResults, direction, sv,
       collapsedNodes, focusedNodeId, showNodeDetails, isMobile, handleToggleBranch,
     ),
-    [storeNodes, storeEdges, highlightedNodeId, searchResults, direction, sv, collapsedNodes, focusedNodeId, showNodeDetails, isMobile, handleToggleBranch],
+    [displayHierarchy, highlightedNodeId, searchResults, direction, sv, collapsedNodes, focusedNodeId, showNodeDetails, isMobile, handleToggleBranch],
   );
 
-  const hiddenNodeCount = Math.max(0, storeNodes.length - graph.nodes.length);
+  const visibleStoredNodeCount = Math.max(0, graph.nodes.length - displayHierarchy.syntheticNodeCount);
+  const hiddenNodeCount = Math.max(0, storeNodes.length - visibleStoredNodeCount);
   const relationCount = storeEdges.filter((edge) => edge.relation !== "contains").length;
   const citedNodeCount = storeNodes.filter((node) => (node.citations || []).length > 0).length;
 
@@ -670,6 +757,7 @@ export function MindMapPanel() {
     async (changes: NodeChange[]) => {
       onNodesChange(changes);
       for (const change of changes) {
+        if ("id" in change && isDisplayOverviewNode(change.id)) continue;
         if (change.type === "remove") {
           try { await apiFetch("/api/knowledge?nodeId=" + change.id, { method: "DELETE" }); }
           catch (e) { console.error("Failed to delete node:", e); }
@@ -691,7 +779,7 @@ export function MindMapPanel() {
       if (e.key === "Delete" || e.key === "Backspace") {
         const active = document.activeElement;
         if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA")) return;
-        const selected = flowNodes.filter((n) => n.selected);
+        const selected = flowNodes.filter((n) => n.selected && !isDisplayOverviewNode(n.id));
         if (selected.length === 0) return;
         e.preventDefault();
         pushHistory();
@@ -789,6 +877,7 @@ export function MindMapPanel() {
       if (!nodeEl) return;
       const nodeId = nodeEl.getAttribute('data-id');
       if (!nodeId) return;
+      if (isDisplayOverviewNode(nodeId)) return;
       e.preventDefault();
       setContextMenu({ nodeId, x: e.clientX, y: e.clientY });
     };
@@ -963,7 +1052,7 @@ export function MindMapPanel() {
                   viewMode === "outline" ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
                 }`}
                 title="只显示主题和主要分支"
-              >主干 {graph.nodes.length}/{storeNodes.length}</button>
+              >主干 {visibleStoredNodeCount}/{storeNodes.length}</button>
               <button
                 onClick={showAllNodes}
                 className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
@@ -1175,7 +1264,7 @@ export function MindMapPanel() {
 
       {hiddenNodeCount > 0 && (
         <div className="pointer-events-none absolute bottom-4 left-3 z-40 rounded-xl border border-[var(--border)] bg-[var(--card)]/95 px-3 py-2 text-[11px] text-[var(--muted-foreground)] shadow-lg backdrop-blur">
-          当前显示 {graph.nodes.length}/{storeNodes.length} 个节点 · 点击节点上的 ＋N 展开
+          当前显示 {visibleStoredNodeCount}/{storeNodes.length} 个节点 · 点击节点上的 ＋N 展开
         </div>
       )}
 
