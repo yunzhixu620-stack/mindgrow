@@ -17,7 +17,7 @@ const PORT = Number.parseInt(process.env.FC_SERVER_PORT || process.env.PORT || '
 // into a false 503. Transient 429/5xx responses are retried below.
 const UPSTREAM_TIMEOUT_MS = Number.parseInt(process.env.UPSTREAM_TIMEOUT_MS || '45000', 10);
 const AUTH_REQUIRED = process.env.AUTH_REQUIRED !== 'false';
-const API_VERSION = '10.4.3';
+const API_VERSION = '10.5.2';
 const DASHSCOPE_AUDIO_ENDPOINT = process.env.DASHSCOPE_AUDIO_ENDPOINT || 'https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer';
 const ALLOWED_ORIGINS = new Set(
   (process.env.ALLOWED_ORIGINS || 'https://yunzhixu620-stack.github.io')
@@ -146,10 +146,12 @@ function dependencyError(service, status) {
   return error;
 }
 
-function supabaseHeaders(prefer) {
+function supabaseHeaders(prefer, key = SUPABASE_KEY) {
   return {
-    apikey: SUPABASE_KEY,
-    Authorization: `Bearer ${SUPABASE_KEY}`,
+    apikey: key,
+    // Supabase's new sb_secret_ keys authenticate through the apikey header.
+    // Only legacy JWT-style service_role keys are valid Bearer tokens.
+    ...(!key.startsWith('sb_') ? { Authorization: `Bearer ${key}` } : {}),
     ...(prefer ? { Prefer: prefer } : {}),
   };
 }
@@ -674,10 +676,253 @@ async function retrieveDocumentEvidence(question, mapId, workspaceId) {
   }
 }
 
+const GRAPH_DEFAULT_RELATION_TYPES = [
+  'uses', 'depends_on', 'retrieves_from', 'proposes', 'evaluated_on', 'has_metric',
+  'achieves', 'part_of', 'contains', 'contradicts', 'responsible_for', 'due_on', 'is',
+];
+
+function entityGraphQueryPlan(question) {
+  const value = String(question || '').toLowerCase();
+  const relationTypes = new Set();
+  const typeHints = new Set();
+  let focused = false;
+  const addRelations = (values) => {
+    values.forEach((item) => relationTypes.add(item));
+    focused = true;
+  };
+  if (/(谁|作者|提出|发明|创建|who|author|propos|introduc|invent)/i.test(value)) {
+    addRelations(['proposes']);
+    typeHints.add('person');
+  }
+  if (/(使用|采用|依赖|检索|调用|use|adopt|depend|rely|retriev)/i.test(value)) {
+    addRelations(['uses', 'depends_on', 'retrieves_from']);
+  }
+  if (/(评估|数据集|指标|分数|准确率|召回率|accuracy|recall|precision|f1|score|metric|dataset)/i.test(value)) {
+    addRelations(['evaluated_on', 'has_metric', 'achieves']);
+  }
+  if (/(属于|归属|包含|组成|组件|模块|part of|belongs? to|contain|component)/i.test(value)) {
+    addRelations(['part_of', 'contains', 'uses', 'related_to']);
+  }
+  if (/(负责|负责人|行动项|截止|到期|owner|responsible|due|deadline|action item)/i.test(value)) {
+    addRelations(['responsible_for', 'due_on']);
+    if (/(谁|负责人|owner|responsible)/i.test(value)) typeHints.add('person');
+    if (/(截止|到期|due|deadline)/i.test(value)) typeHints.add('time');
+  }
+  if (/(否定|不是|并非|未批准|取消|反驳|冲突|not|reject|cancel|contradict)/i.test(value)) {
+    addRelations(['contradicts', 'is']);
+  }
+  if (/(数据集|dataset)/i.test(value)) typeHints.add('dataset');
+  if (/(指标|accuracy|recall|precision|f1|score|metric)/i.test(value)) typeHints.add('metric');
+  if (/(模型|model)/i.test(value)) typeHints.add('model');
+  if (/(组织|公司|机构|organization|company)/i.test(value)) typeHints.add('organization');
+  const broad = /(图谱|关系|关联|链路|路径|全局|概览|脉络|知识网络|graph|relationship|path|overview|global)/i.test(value);
+  if (!focused) GRAPH_DEFAULT_RELATION_TYPES.forEach((item) => relationTypes.add(item));
+  if (broad) relationTypes.add('related_to');
+  const maxHops = broad || /(两跳|多跳|如何影响|为什么|链路|路径|2[- ]?hop|multi[- ]?hop|path)/i.test(value) ? 2 : 1;
+  return {
+    broad,
+    focused,
+    maxHops,
+    relationTypes: [...relationTypes],
+    typeHints: [...typeHints],
+  };
+}
+
+function rankEntityGraphSeeds(question, entities) {
+  const plan = entityGraphQueryPlan(question);
+  const normalizedQuery = normalizedEntityName(question);
+  const anchors = queryAnchors(question);
+  const ranked = (Array.isArray(entities) ? entities : []).map((entity) => {
+    const names = [
+      entity && (entity.canonicalName || entity.canonical_name),
+      ...(Array.isArray(entity && entity.aliases) ? entity.aliases : []),
+    ].map((item) => normalizedEntityName(item)).filter((item) => item.length >= 2);
+    const exactNames = names.filter((item) => normalizedQuery.includes(item));
+    const matchedName = exactNames.sort((left, right) => right.length - left.length)[0] || names[0] || '';
+    const anchorScore = anchorCoverage(anchors, names.join(' ') + ' ' + String((entity && entity.description) || ''));
+    const entityType = String((entity && (entity.entityType || entity.entity_type)) || 'other');
+    const typeScore = plan.typeHints.includes(entityType) ? 0.12 : 0;
+    const exactScore = exactNames.length ? 0.68 : 0;
+    const confidenceScore = Math.max(0, Math.min(1, Number((entity && entity.confidence) || 0))) * 0.04;
+    return {
+      entity,
+      matchedName,
+      exact: exactNames.length > 0,
+      anchorScore,
+      score: exactScore + anchorScore * 0.24 + typeScore + confidenceScore,
+    };
+  }).filter((item) => item.exact || item.anchorScore >= 0.34)
+    .sort((left, right) => right.score - left.score);
+  const exactRanked = ranked.filter((item) => item.exact);
+  const seeds = (exactRanked.length ? exactRanked : ranked).slice(0, 5);
+  let ambiguityCandidates = [];
+  if (seeds.length > 1 && seeds[0].exact) {
+    ambiguityCandidates = seeds.filter((item) => item.exact
+      && item.matchedName === seeds[0].matchedName
+      && seeds[0].score - item.score < 0.08);
+  }
+  return {
+    plan,
+    seeds,
+    ambiguous: ambiguityCandidates.length > 1,
+    ambiguityCandidates,
+  };
+}
+
+function relationStatusPenalty(status, question) {
+  const value = String(question || '').toLowerCase();
+  if (status === 'negated' && !/(否定|不是|并非|未|取消|反驳|not|reject|cancel|contradict)/i.test(value)) return 0.12;
+  if ((status === 'historical' || status === 'proposed')
+    && !/(原来|曾经|历史|计划|拟|proposal|histor|previous|original)/i.test(value)) return 0.05;
+  return 0;
+}
+
+async function retrieveEntityGraphEvidence(question, mapId, workspaceId) {
+  const graph = await loadEntityGraph(workspaceId, mapId);
+  const ranked = rankEntityGraphSeeds(question, graph.entities);
+  const empty = [];
+  empty.trace = {
+    entityGraphStatus: graph.status,
+    entitySeeds: 0,
+    entityRelations: 0,
+    entityEvidence: 0,
+    entityQueryPlan: ranked.plan,
+    needsDisambiguation: false,
+    disambiguationCandidates: [],
+  };
+  if (graph.status !== 'ready' || ranked.seeds.length === 0) return empty;
+
+  const entityById = new Map(graph.entities.map((entity) => [entity.id, entity]));
+  const adjacency = new Map();
+  graph.relations.forEach((relation) => {
+    const sourceRows = adjacency.get(relation.sourceId) || [];
+    const targetRows = adjacency.get(relation.targetId) || [];
+    sourceRows.push(relation);
+    targetRows.push(relation);
+    adjacency.set(relation.sourceId, sourceRows);
+    adjacency.set(relation.targetId, targetRows);
+  });
+  const allowedRelations = new Set(ranked.plan.relationTypes);
+  const entityPathScore = new Map();
+  ranked.seeds.forEach((item) => entityPathScore.set(item.entity.id, item.score));
+  let frontier = ranked.seeds.map((item) => item.entity.id);
+  const visitedEntities = new Set(frontier);
+  const selectedRelations = [];
+  const selectedRelationIds = new Set();
+
+  for (let depth = 1; depth <= ranked.plan.maxHops && frontier.length; depth += 1) {
+    const candidates = [];
+    frontier.forEach((entityId) => {
+      const degree = (adjacency.get(entityId) || []).length;
+      (adjacency.get(entityId) || []).forEach((relation) => {
+        if (selectedRelationIds.has(relation.id)) return;
+        if (!allowedRelations.has(relation.relationType)) return;
+        if (!Array.isArray(relation.citations) || relation.citations.length === 0) return;
+        const neighborId = relation.sourceId === entityId ? relation.targetId : relation.sourceId;
+        if (!entityById.has(neighborId)) return;
+        const policyBoost = ranked.plan.focused ? 0.1 : 0.04;
+        const degreePenalty = Math.min(0.14, Math.max(0, degree - 8) * 0.01);
+        const score = Number(entityPathScore.get(entityId) || 0)
+          + Number(relation.confidence || 0) * 0.18 + policyBoost
+          - depth * 0.08 - degreePenalty - relationStatusPenalty(relation.status, question);
+        candidates.push({ relation, neighborId, depth, score });
+      });
+    });
+    candidates.sort((left, right) => right.score - left.score);
+    const nextFrontier = [];
+    candidates.slice(0, depth === 1 ? 18 : 12).forEach((candidate) => {
+      if (selectedRelationIds.has(candidate.relation.id)) return;
+      selectedRelationIds.add(candidate.relation.id);
+      selectedRelations.push(candidate);
+      const previousScore = Number(entityPathScore.get(candidate.neighborId) || 0);
+      if (candidate.score > previousScore) entityPathScore.set(candidate.neighborId, candidate.score);
+      if (!visitedEntities.has(candidate.neighborId)) {
+        visitedEntities.add(candidate.neighborId);
+        nextFrontier.push(candidate.neighborId);
+      }
+    });
+    frontier = nextFrontier.slice(0, 16);
+  }
+
+  const evidenceRows = [];
+  selectedRelations.forEach((item) => {
+    const relation = item.relation;
+    const source = entityById.get(relation.sourceId);
+    const target = entityById.get(relation.targetId);
+    const pathLabel = String((source && source.canonicalName) || '')
+      + ' —' + String(relation.label || relation.relationType) + '→ '
+      + String((target && target.canonicalName) || '');
+    relation.citations.slice(0, 3).forEach((citation) => {
+      evidenceRows.push({
+        id: 'entity-relation:' + relation.id + ':' + String(citation.documentId || '') + ':' + String(citation.index || 0),
+        content: String(citation.quote || ''),
+        desc: '实体路径：' + pathLabel + ' · ' + String(citation.locator || ''),
+        type: 'detail',
+        score: item.score,
+        anchorScore: anchorCoverage(queryAnchors(question), String(citation.quote || '')),
+        sourceKind: 'entity_graph_evidence',
+        documentId: String(citation.documentId || ''),
+        documentTitle: String(citation.title || '来源文档'),
+        graphDepth: item.depth,
+        graphRelation: relation.relationType,
+        graphRelationStatus: relation.status,
+        citations: [citation],
+      });
+    });
+  });
+  ranked.seeds.forEach((item) => {
+    const entity = item.entity;
+    (Array.isArray(entity.citations) ? entity.citations : []).slice(0, 2).forEach((citation) => {
+      evidenceRows.push({
+        id: 'entity:' + entity.id + ':' + String(citation.documentId || '') + ':' + String(citation.index || 0),
+        content: String(citation.quote || ''),
+        desc: '实体命中：' + String(entity.canonicalName || '') + '（' + String(entity.entityType || 'other') + '） · ' + String(citation.locator || ''),
+        type: 'detail',
+        score: item.score,
+        anchorScore: item.anchorScore,
+        sourceKind: 'entity_graph_evidence',
+        documentId: String(citation.documentId || ''),
+        documentTitle: String(citation.title || '来源文档'),
+        graphDepth: 0,
+        entitySeedEvidence: true,
+        citations: [citation],
+      });
+    });
+  });
+  const deduplicated = new Map();
+  evidenceRows.sort((left, right) => Number(right.score || 0) - Number(left.score || 0)).forEach((item) => {
+    const citation = item.citations[0] || {};
+    const key = String(citation.documentId || '') + '|' + String(citation.locator || '') + '|' + String(citation.quote || '');
+    if (!deduplicated.has(key)) deduplicated.set(key, item);
+  });
+  const evidence = [...deduplicated.values()].slice(0, 12);
+  const ambiguityCandidates = ranked.ambiguityCandidates.map((item) => {
+    const firstCitation = Array.isArray(item.entity.citations) ? item.entity.citations[0] : null;
+    return {
+      id: item.entity.id,
+      name: item.entity.canonicalName,
+      type: item.entity.entityType,
+      sourceTitle: firstCitation && firstCitation.title ? firstCitation.title : '',
+      matchedName: item.matchedName,
+    };
+  });
+  evidence.trace = {
+    entityGraphStatus: graph.status,
+    entitySeeds: ranked.seeds.length,
+    entityRelations: selectedRelations.length,
+    entityEvidence: evidence.length,
+    entityQueryPlan: ranked.plan,
+    needsDisambiguation: ranked.ambiguous,
+    disambiguationCandidates: ambiguityCandidates,
+  };
+  return evidence;
+}
+
 async function retrieveGraphEvidence(question, mapId, workspaceId) {
-  const [documentEvidence, graphNodes] = await Promise.all([
+  const [documentEvidence, graphNodes, entityEvidence] = await Promise.all([
     retrieveDocumentEvidence(question, mapId, workspaceId),
     retrieveNodeEvidence(question, mapId, workspaceId),
+    retrieveEntityGraphEvidence(question, mapId, workspaceId),
   ]);
 
   // The node→citation→document bridge is the graph-conditioned part of the
@@ -694,6 +939,9 @@ async function retrieveGraphEvidence(question, mapId, workspaceId) {
   graphNodes.forEach((node) => (node.citations || []).forEach((citation) => {
     if (citation.documentId) graphDocumentIds.add(citation.documentId);
   }));
+  entityEvidence.forEach((item) => {
+    if (item.documentId) graphDocumentIds.add(item.documentId);
+  });
   const seedTitleScores = graphNodes.filter((node) => node.seed).map((node) => Number(node.titleAnchorScore || 0));
   const bestSeedTitleScore = seedTitleScores.length ? Math.max(...seedTitleScores) : 0;
   const primaryGraphDocumentIds = new Set();
@@ -708,6 +956,11 @@ async function retrieveGraphEvidence(question, mapId, workspaceId) {
         if (citation.documentId) primaryGraphDocumentIds.add(citation.documentId);
     }));
   }
+  entityEvidence.forEach((item) => {
+    if (item.documentId && (item.entitySeedEvidence || Number(item.graphDepth || 0) <= 1)) {
+      primaryGraphDocumentIds.add(item.documentId);
+    }
+  });
   const graphLabelsByDocument = new Map();
   graphNodes.forEach((node) => (node.citations || []).forEach((citation) => {
     if (!citation.documentId) return;
@@ -738,7 +991,7 @@ async function retrieveGraphEvidence(question, mapId, workspaceId) {
     ? [...primaryChunks.slice(0, 10), ...linkedChunks.slice(0, 5), ...unlinkedChunks.slice(0, 2)]
     : scoredChunks.slice(0, 16);
   const deduplicated = new Map();
-  [...graphConditionedChunks, ...graphNodes].forEach((item) => {
+  [...entityEvidence, ...graphConditionedChunks, ...graphNodes].forEach((item) => {
     if (!deduplicated.has(item.id)) deduplicated.set(item.id, item);
   });
   const evidence = [...deduplicated.values()].slice(0, 24);
@@ -749,6 +1002,14 @@ async function retrieveGraphEvidence(question, mapId, workspaceId) {
     graphDocuments: graphDocumentIds.size,
     primaryGraphDocuments: primaryGraphDocumentIds.size,
     candidateChunks: documentEvidence.length,
+    entityGraphStatus: entityEvidence.trace && entityEvidence.trace.entityGraphStatus,
+    entitySeeds: entityEvidence.trace && entityEvidence.trace.entitySeeds,
+    entityRelations: entityEvidence.trace && entityEvidence.trace.entityRelations,
+    entityEvidence: entityEvidence.trace && entityEvidence.trace.entityEvidence,
+    entityQueryPlan: entityEvidence.trace && entityEvidence.trace.entityQueryPlan,
+    needsDisambiguation: Boolean(entityEvidence.trace && entityEvidence.trace.needsDisambiguation),
+    disambiguationCandidates: entityEvidence.trace && entityEvidence.trace.disambiguationCandidates
+      ? entityEvidence.trace.disambiguationCandidates : [],
   };
   return evidence;
 }
@@ -941,24 +1202,89 @@ function articleTaskSystemPrompt(request) {
   return `你是严格基于证据回答的论文知识助手。${schema}${conciseFormat}使用简体中文直接回答当前问题。可用最近对话理解“它/前者/后者/这个方法”等指代。${grounding}处理表格数值时必须按表头从左到右先确定任务、再确定指标、最后定位模型行；相邻任务出现同名指标时不得串列。若无法从同一证据块确认表头与数据行，就明确说明表格结构不足，不得选取看似接近的数字。`;
 }
 
+function sanitizeGroundedAnswer(answer, evidence) {
+  const sourceText = (Array.isArray(evidence) ? evidence : []).flatMap((item) => [
+    String((item && item.content) || ''),
+    ...(Array.isArray(item && item.citations) ? item.citations.map((citation) => String((citation && citation.quote) || '')) : []),
+  ]).join(' ').toLowerCase();
+  const lines = String(answer || '').replace(/\r\n?/g, '\n').split('\n');
+  let removedLines = 0;
+  const provisional = lines.map((line) => {
+    const trimmed = line.trim();
+    if (!trimmed || /^#{1,6}\s+/.test(trimmed)) return { line, heading: /^#{1,6}\s+/.test(trimmed), keep: true };
+    const plain = trimmed.replace(/^[-*+]\s+/, '').replace(/\*\*/g, '');
+    if (plain.length < 5) return { line, heading: false, keep: true };
+    const numbers = plain.match(/\d+(?:\.\d+)?(?:%|％)?/g) || [];
+    const unsupportedNumber = numbers.some((number) => !sourceText.includes(number.toLowerCase()));
+    const anchors = queryAnchors(plain);
+    const coverage = anchorCoverage(anchors, sourceText);
+    const inferenceClaim = /(提升|改善|增强|降低|导致|因此|从而|优于|劣于|证明|表明|实现|improv|increase|decrease|lead to|therefore|outperform|demonstrat)/i.test(plain);
+    const unsupported = unsupportedNumber
+      || (inferenceClaim && anchors.length >= 2 && coverage < 0.45)
+      || (anchors.length >= 3 && coverage < 0.16);
+    if (unsupported) removedLines += 1;
+    return { line, heading: false, keep: !unsupported };
+  });
+  const kept = provisional.filter((item, index) => {
+    if (!item.keep) return false;
+    if (!item.heading) return true;
+    for (let cursor = index + 1; cursor < provisional.length; cursor += 1) {
+      if (provisional[cursor].heading) return false;
+      if (provisional[cursor].keep && provisional[cursor].line.trim()) return true;
+    }
+    return false;
+  }).map((item) => item.line);
+  return {
+    answer: kept.join('\n').replace(/\n{3,}/g, '\n\n').trim(),
+    removedLines,
+  };
+}
+
+function compactGroundedEvidence(evidence, limit = 5) {
+  const priority = { entity_graph_evidence: 0, document_chunk: 1, concept_node: 2 };
+  const seen = new Set();
+  return (Array.isArray(evidence) ? evidence : [])
+    .map((node, index) => ({ node, index }))
+    .sort((a, b) => {
+      const aPriority = Object.prototype.hasOwnProperty.call(priority, a.node.sourceKind) ? priority[a.node.sourceKind] : 3;
+      const bPriority = Object.prototype.hasOwnProperty.call(priority, b.node.sourceKind) ? priority[b.node.sourceKind] : 3;
+      if (aPriority !== bPriority) return aPriority - bPriority;
+      const scoreDiff = Number(b.node.score || 0) - Number(a.node.score || 0);
+      return scoreDiff || a.index - b.index;
+    })
+    .filter(({ node }) => {
+      const citation = Array.isArray(node.citations) ? node.citations[0] : null;
+      const quote = normalizedEntityName(citation && citation.quote ? citation.quote : (node.desc || node.content || '')).slice(0, 240);
+      const key = String((citation && citation.documentId) || node.documentId || '') + '|' + quote;
+      if (!quote || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, Math.max(1, Math.min(Number(limit) || 5, 5)))
+    .map(({ node }) => node);
+}
+
 function deterministicEvidenceAnswer(evidence, intent) {
-  const lines = evidence.slice(0, 12).map((node, index) => {
-    const description = node.desc ? `：${node.desc}` : '';
-    return `${index + 1}. **${node.content}**${description} 〔来源 ${index + 1}〕`;
+  const selected = compactGroundedEvidence(evidence, 5);
+  selected.trace = evidence.trace || null;
+  const lines = selected.map((node, index) => {
+    const citation = Array.isArray(node.citations) ? node.citations[0] : null;
+    const quote = String((citation && citation.quote) || node.desc || node.content || '').replace(/\s+/g, ' ').trim().slice(0, 700);
+    return `${index + 1}. ${quote} 〔来源 ${index + 1}〕`;
   });
   return {
     status: 200,
     data: {
       intent,
       type: 'answer',
-      reply: `## 结论\n\n当前知识库找到了与问题直接相关的证据，以下内容可作为回答依据。\n\n## 关键依据\n\n${lines.join('\n')}\n\n## 局限与待核验\n\n以上结论仅基于已保存内容；如需更完整结论，请继续补充资料。`,
-      sources: evidence.slice(0, 12).map((node, index) => {
+      reply: `## 结论\n\n模型生成的回答未通过证据校验，以下仅返回可直接核验的原文。\n\n## 关键依据\n\n${lines.join('\n')}\n\n## 局限与待核验\n\n系统没有补充证据之外的解释；如需完整结论，请补充资料或缩小问题范围。`,
+      sources: selected.map((node, index) => {
         const citation = Array.isArray(node.citations) ? node.citations[0] : null;
         return { id: node.id, title: citation && citation.title ? citation.title : node.content, index: index + 1, quote: citation ? citation.quote : '', locator: citation ? citation.locator : '', sourceUrl: citation ? citation.sourceUrl : '' };
       }),
       grounded: true,
       abstained: false,
-      coverage: evidence.some((node) => node.expanded) ? 'partial' : 'direct',
+      coverage: selected.some((node) => node.expanded) ? 'partial' : 'direct',
       missingInformation: [],
       retrievalTrace: evidence.trace || null,
     },
@@ -1017,6 +1343,31 @@ async function answerQuestion(input, mapId, intent, workspaceId, history, articl
       },
     };
   }
+  if (evidence.trace && evidence.trace.needsDisambiguation) {
+    const candidates = (Array.isArray(evidence.trace.disambiguationCandidates)
+      ? evidence.trace.disambiguationCandidates : []).slice(0, 5);
+    const labels = candidates.map((candidate, index) => {
+      const source = candidate.sourceTitle ? '，来源《' + candidate.sourceTitle + '》' : '';
+      return String(index + 1) + '. **' + candidate.name + '**（' + String(candidate.type || '未分类') + source + '）';
+    });
+    const matchedName = candidates[0] && candidates[0].matchedName ? candidates[0].matchedName : input;
+    return {
+      status: 200,
+      data: {
+        intent,
+        type: 'answer',
+        reply: '当前知识库中有多个实体都匹配“' + matchedName
+          + '”，直接选择可能导致 GraphRAG 定位错误。请补充实体类型、来源文档或时间范围：\n\n'
+          + labels.join('\n'),
+        sources: [],
+        grounded: true,
+        abstained: true,
+        coverage: 'partial',
+        missingInformation: ['用于实体消歧的类型、来源文档或时间范围'],
+        retrievalTrace: evidence.trace,
+      },
+    };
+  }
   if ((!articleRequest || articleRequest.task === 'qa') && isTableQuestion(input) && !hasReliableTableLayout(evidence)) {
     return {
       status: 200,
@@ -1037,10 +1388,13 @@ async function answerQuestion(input, mapId, intent, workspaceId, history, articl
     };
   }
   try {
-    const graphNodeIds = evidence.filter((node) => node.sourceKind !== 'document_chunk').map((node) => node.id);
+    const graphNodeIds = evidence.filter((node) => node.sourceKind !== 'document_chunk'
+      && node.sourceKind !== 'entity_graph_evidence').map((node) => node.id);
     const citationsByNode = await loadNodeCitations(workspaceId, mapId, graphNodeIds);
     evidence.forEach((node) => {
-      if (node.sourceKind !== 'document_chunk') node.citations = citationsByNode.get(node.id) || [];
+      if (node.sourceKind !== 'document_chunk' && node.sourceKind !== 'entity_graph_evidence') {
+        node.citations = citationsByNode.get(node.id) || [];
+      }
     });
   } catch (error) {
     console.warn('Source-document citations unavailable for answer', { code: error.publicCode || 'CITATION_LOOKUP_FAILED' });
@@ -1099,13 +1453,23 @@ async function answerQuestion(input, mapId, intent, workspaceId, history, articl
         },
       };
     }
-    const used = usedIds.map((id) => evidence.find((node) => node.id === id)).filter(Boolean);
+    const usedRaw = usedIds.map((id) => evidence.find((node) => node.id === id)).filter(Boolean);
+    const used = (!articleRequest || articleRequest.task === 'qa')
+      ? compactGroundedEvidence(usedRaw, 5) : usedRaw;
+    const answerAudit = (!articleRequest || articleRequest.task === 'qa')
+      ? sanitizeGroundedAnswer(parsed.answer, used) : { answer: parsed.answer, removedLines: 0 };
+    if (!answerAudit.answer) return deterministicEvidenceAnswer(used, intent);
+    const missingInformation = Array.isArray(parsed.missingInformation)
+      ? parsed.missingInformation.map(String).slice(0, 8) : [];
+    if (answerAudit.removedLines > 0) {
+      missingInformation.push('已移除 ' + String(answerAudit.removedLines) + ' 行无法由引用直接支持的扩展解释');
+    }
     return {
       status: 200,
       data: {
         intent,
         type: 'answer',
-        reply: parsed.answer,
+        reply: answerAudit.answer,
         sources: used.map((node, index) => {
           const citation = Array.isArray(node.citations) ? node.citations[0] : null;
           return { id: node.id, title: citation && citation.title ? citation.title : node.content, index: index + 1, quote: citation ? citation.quote : '', locator: citation ? citation.locator : '', sourceUrl: citation ? citation.sourceUrl : '' };
@@ -1113,7 +1477,7 @@ async function answerQuestion(input, mapId, intent, workspaceId, history, articl
         grounded: true,
         abstained: false,
         coverage: parsed.coverage === 'complete' ? 'complete' : 'partial',
-        missingInformation: Array.isArray(parsed.missingInformation) ? parsed.missingInformation.map(String).slice(0, 8) : [],
+        missingInformation,
         retrievalTrace: evidence.trace || null,
       },
     };
@@ -1226,6 +1590,8 @@ async function handleChat(body, context) {
   } catch (_) {
     return { status: 502, data: { error: 'The model returned an invalid structure', code: 'MODEL_OUTPUT_INVALID' } };
   }
+  const structureCoverage = ensureMindMapSourceCoverage(mindMap, structureInput, [], null);
+  mindMap = structureCoverage.mindMap;
 
   let placement = null;
   try {
@@ -1262,7 +1628,19 @@ async function handleChat(body, context) {
     locator: '网页正文',
     sourceUrl: resolvedSourceUrl,
   }] : undefined;
-  return { status: 200, data: { intent, reply, type: 'knowledge', placement, mindMap, sources, sourceUrl: resolvedSourceUrl || undefined } };
+  return {
+    status: 200,
+    data: {
+      intent,
+      reply,
+      type: 'knowledge',
+      placement,
+      mindMap,
+      sources,
+      sourceUrl: resolvedSourceUrl || undefined,
+      sourceCoverage: structureCoverage.audit,
+    },
+  };
 }
 
 function isPrivateAddress(address) {
@@ -1415,6 +1793,131 @@ function normalizedMindMap(value, fallbackTitle, allowedIndexes) {
     rootCitationIndexes: normalizeCitationIndexes(value.rootCitationIndexes, allowedIndexes),
     children,
     relatedTopics: [],
+  };
+}
+
+function sourceCriticalFacts(value, limit) {
+  const rows = String(value || '').replace(/\r\n?/g, '\n')
+    .split(/\n+|(?<=[。！？!?；;])\s*/)
+    .map((item, index) => ({ index, text: normalizeSpaces(item).slice(0, 420) }))
+    .filter((item) => item.text.length >= 6);
+  const scored = rows.map((item) => {
+    const text = item.text;
+    let score = 0;
+    if (/\d+(?:\.\d+)?\s*(?:%|％|ms|秒|分钟|小时|天|元|万|亿|个|份|篇|条|次|人|月|日|年)?/i.test(text)) score += 4;
+    if (/(不|未|不得|禁止|取消|否决|风险|失败|尚未|not|never|reject|cancel|risk|fail)/i.test(text)) score += 3;
+    if (/(负责|负责人|截止|行动项|待办|owner|responsible|deadline|due|action item)/i.test(text)) score += 3;
+    if (/(因为|由于|导致|因此|根因|影响|修复|回滚|because|caused|therefore|root cause|impact|fixed)/i.test(text)) score += 3;
+    if (/^[^：:\n]{1,24}[：:]/.test(text)) score += 2;
+    if (/[A-Z][A-Z0-9@.+-]{1,20}/.test(text)) score += 1;
+    return { ...item, score };
+  }).filter((item) => item.score >= 2)
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .slice(0, Math.max(1, limit || 24))
+    .sort((left, right) => left.index - right.index);
+  return scored.map((item) => item.text);
+}
+
+function structureFactCovered(fact, renderedStructure) {
+  const factText = normalizeSpaces(fact).toLowerCase();
+  const rendered = normalizeSpaces(renderedStructure).toLowerCase();
+  if (!factText) return true;
+  if (rendered.includes(factText)) return true;
+  const numbers = factText.match(/\d+(?:\.\d+)?(?:%|％)?/g) || [];
+  if (numbers.length && !numbers.every((item) => rendered.includes(item))) return false;
+  const anchors = queryAnchors(factText);
+  return anchors.length > 0 && anchorCoverage(anchors, rendered) >= 0.72;
+}
+
+function structureItemGrounded(item, sourceText) {
+  const value = normalizeSpaces(item);
+  if (!value) return false;
+  const source = normalizeSpaces(sourceText).toLowerCase();
+  const numbers = value.match(/\d+(?:\.\d+)?(?:%|％)?/g) || [];
+  if (numbers.some((number) => !source.includes(number.toLowerCase()))) return false;
+  const anchors = queryAnchors(value);
+  if (anchors.length >= 2 && anchorCoverage(anchors, source) === 0) return false;
+  const itemIsNegative = /(不|未|不得|没有|尚未|取消|否决|not|never|without|reject|cancel)/i.test(value);
+  if (!itemIsNegative && anchors.length >= 2) {
+    const rankedSentences = String(sourceText || '').split(/\n+|(?<=[。！？!?；;])\s*/)
+      .map((sentence) => ({ sentence, score: anchorCoverage(anchors, sentence) }))
+      .filter((item) => item.score > 0)
+      .sort((left, right) => right.score - left.score);
+    const bestScore = rankedSentences.length ? rankedSentences[0].score : 0;
+    const relatedSentences = rankedSentences.filter((item) => item.score >= 0.2 && item.score >= bestScore * 0.8)
+      .map((item) => item.sentence);
+    if (relatedSentences.length > 0 && relatedSentences.every((sentence) => (
+      /(不|未|不得|没有|尚未|取消|否决|not|never|without|reject|cancel)/i.test(sentence)
+    ))) return false;
+  }
+  return true;
+}
+
+function ensureMindMapSourceCoverage(mindMap, sourceText, citations, allowedIndexes, options) {
+  const input = mindMap && typeof mindMap === 'object' ? mindMap : {};
+  const evidence = Array.isArray(citations) ? citations : [];
+  const children = (Array.isArray(input.children) ? input.children : []).slice(0, 6).map((child) => {
+    const items = [];
+    const itemCitationIndexes = [];
+    (Array.isArray(child && child.items) ? child.items : []).slice(0, 20).forEach((item, index) => {
+      const text = normalizeSpaces(item).slice(0, 1000);
+      if (!structureItemGrounded(text, sourceText)) return;
+      items.push(text);
+      itemCitationIndexes.push(normalizeCitationIndexes(
+        child && child.itemCitationIndexes && child.itemCitationIndexes[index], allowedIndexes,
+      ));
+    });
+    return {
+      ...child,
+      topic: normalizeSpaces((child && child.topic) || '要点').slice(0, 200),
+      desc: normalizeSpaces((child && child.desc) || '').slice(0, 1000),
+      items,
+      itemCitationIndexes,
+    };
+  }).filter((child) => child.topic);
+  const rendered = [
+    input.root,
+    input.rootDesc,
+    ...children.flatMap((child) => [child.topic, child.desc, ...child.items]),
+  ].join(' ');
+  const criticalFacts = sourceCriticalFacts(sourceText, 24);
+  const missingFacts = criticalFacts.filter((fact) => !structureFactCovered(fact, rendered));
+  const appendFacts = !options || options.appendFacts !== false;
+  if (missingFacts.length && appendFacts) {
+    let targetIndex = children.findIndex((child) => /(关键|事实|数据|指标|结果|行动|风险|用户|访谈|复盘|证据)/i.test(child.topic));
+    if (targetIndex < 0 && children.length < 6) {
+      children.push({
+        topic: '原文关键事实',
+        desc: '直接保留输入中的数字、责任、否定条件与因果链',
+        items: [],
+        citationIndexes: [],
+        itemCitationIndexes: [],
+      });
+      targetIndex = children.length - 1;
+    }
+    if (targetIndex < 0) {
+      targetIndex = children.map((child, index) => ({ index, size: child.items.length }))
+        .sort((left, right) => left.size - right.size)[0].index;
+    }
+    const target = children[targetIndex];
+    missingFacts.forEach((fact) => {
+      if (target.items.length >= 20) return;
+      target.items.push(fact);
+      target.itemCitationIndexes.push(verifiedIndexes([], allowedIndexes, fact, evidence));
+    });
+  }
+  const output = {
+    ...input,
+    children,
+  };
+  return {
+    mindMap: output,
+    audit: {
+      criticalFacts: criticalFacts.length,
+      appendedFacts: appendFacts ? missingFacts.length : 0,
+      coveredFacts: criticalFacts.length - missingFacts.length,
+      uncoveredFacts: appendFacts ? 0 : missingFacts.length,
+    },
   };
 }
 
@@ -1704,7 +2207,7 @@ function recoveredChineseArticleResponse(body, context) {
   if (/retrieval[- ]augmented generation|\bRAG\b/i.test(content)) title = '检索增强生成（RAG）论文';
   else if (/dense passage retriev|\bDPR\b/i.test(content)) title = '稠密段落检索（DPR）论文';
   else if (/LayoutLMv3/i.test(content)) title = '文档智能预训练（LayoutLMv3）论文';
-  const mindMap = {
+  let mindMap = {
     root: title,
     rootDesc: '中文字段修复出现波动，系统已保留原文证据并生成可继续使用的中文结构。',
     rootCitationIndexes: citationAt(0),
@@ -1715,6 +2218,10 @@ function recoveredChineseArticleResponse(body, context) {
     ],
     relatedTopics: [],
   };
+  const recoveredCoverage = ensureMindMapSourceCoverage(
+    mindMap, content, citations, allowedIndexes, { appendFacts: !englishHeavyArticleText(content) },
+  );
+  mindMap = recoveredCoverage.mindMap;
   const summary = '文章已完成证据切分；部分中文节点采用安全标签，原文内容和页码仍完整保留在引用中。';
   const keyPoints = [
     { text: '研究问题与背景', citationIndexes: citationAt(0) },
@@ -1742,6 +2249,7 @@ function recoveredChineseArticleResponse(body, context) {
       citations,
       documentChunks: citations,
       citationAudit: audit,
+      sourceCoverage: recoveredCoverage.audit,
       extraction: {
         pageCount: Number(extraction.pageCount || 0),
         tablePages: Array.isArray(extraction.tablePages) ? extraction.tablePages.slice(0, 300) : [],
@@ -1882,6 +2390,82 @@ function buildMeetingCitations(transcript) {
   }));
 }
 
+function fallbackMeetingAnalysis(title, transcript, citations, allowedIndexes) {
+  const evidence = Array.isArray(citations) && citations.length
+    ? citations
+    : buildMeetingCitations(transcript);
+  const allowed = allowedIndexes || new Set(evidence.map((item) => item.index));
+  const groups = [
+    { topic: '行动项与负责人', test: /(负责|负责人|截止|行动项|待办|复测|跟进|owner|responsible|deadline|due|action item)/i, rows: [] },
+    { topic: '风险、根因与修复', test: /(因为|由于|导致|根因|风险|失败|错误|修复|回滚|未刷新|旧文档|because|caused|risk|fail|fixed)/i, rows: [] },
+    { topic: '决策边界与未决事项', test: /(尚未|未批准|没有|不得|禁止|取消|否决|待确认|未决定|not approved|pending|undecided|reject|cancel)/i, rows: [] },
+    { topic: '关键指标与范围', test: /\d+(?:\.\d+)?\s*(?:%|％|ms|秒|分钟|小时|天|元|万|亿|个|份|篇|条|次|人|月|日|年)?|Recall|Precision|Accuracy|F1|BLEU|ROUGE|mAP/i, rows: [] },
+    { topic: '其他讨论', test: /[\s\S]/, rows: [] },
+  ];
+  evidence.forEach((citation) => {
+    const text = normalizeSpaces(citation.quote || citation.content).slice(0, 1000);
+    if (!text) return;
+    const group = groups.find((candidate) => candidate.test.test(text)) || groups[groups.length - 1];
+    group.rows.push({ text, index: citation.index });
+  });
+  const children = groups.filter((group) => group.rows.length > 0).map((group) => ({
+    topic: group.topic,
+    desc: `${group.rows.length} 条可核验原文`,
+    citationIndexes: normalizeCitationIndexes(group.rows.map((row) => row.index), allowed),
+    items: group.rows.slice(0, 20).map((row) => row.text),
+    itemCitationIndexes: group.rows.slice(0, 20).map((row) => normalizeCitationIndexes([row.index], allowed)),
+  }));
+  const summaryRows = evidence.slice(0, Math.min(3, evidence.length));
+  const exactItems = evidence.map((citation) => ({
+    text: normalizeSpaces(citation.quote || citation.content).slice(0, 1200),
+    citationIndexes: normalizeCitationIndexes([citation.index], allowed),
+  })).filter((item) => item.text);
+  const negativeDecision = /(尚未|未批准|没有批准|未决定|不得|禁止|取消|否决|not approved|undecided|reject|cancel)/i;
+  const decisions = exactItems.filter((item) => (
+    /(决定|批准|通过|确认|确定|同意|结论|decided|approved|confirmed)/i.test(item.text)
+    && !negativeDecision.test(item.text)
+  )).slice(0, 30);
+  const risks = exactItems.filter((item) => (
+    /(因为|由于|导致|根因|风险|失败|错误|回滚|未刷新|旧文档|because|caused|risk|fail)/i.test(item.text)
+  )).slice(0, 30);
+  const openQuestions = exactItems.filter((item) => negativeDecision.test(item.text)).slice(0, 30);
+  const actionItems = exactItems.filter((item) => (
+    /(负责|负责人|截止|行动项|待办|复测|跟进|owner|responsible|deadline|due|action item)/i.test(item.text)
+  )).slice(0, 50).map((item) => {
+    const ownerMatch = item.text.match(/(?:^|[，,。；;\s])([\u4e00-\u9fff]{2,4})\s*(?:将负责|负责)/);
+    const dueMatch = item.text.match(/(?:截止|期限(?:为|至)?|due(?:\s+on)?)[：:\s]*([0-9]{4}[-/.年][0-9]{1,2}(?:[-/.月][0-9]{1,2}日?)?)/i);
+    return {
+      task: item.text,
+      owner: ownerMatch ? ownerMatch[1] : '',
+      due: dueMatch ? dueMatch[1] : '',
+      status: '待办',
+      citationIndexes: item.citationIndexes,
+    };
+  });
+  return {
+    title: String(title || '会议纪要').slice(0, 200),
+    summary: summaryRows.map((item) => normalizeSpaces(item.quote || item.content)).filter(Boolean).join('；').slice(0, 3000),
+    summaryCitationIndexes: normalizeCitationIndexes(summaryRows.map((item) => item.index), allowed),
+    topics: children.map((child) => ({
+      title: child.topic,
+      citationIndexes: child.citationIndexes,
+      details: child.items.map((text, index) => ({ text, citationIndexes: child.itemCitationIndexes[index] })),
+    })),
+    decisions,
+    actionItems,
+    risks,
+    openQuestions,
+    mindMap: {
+      root: String(title || '会议纪要').slice(0, 200),
+      rootDesc: '模型响应超时，已按原文证据生成可继续使用的会议结构。',
+      rootCitationIndexes: normalizeCitationIndexes(summaryRows.map((item) => item.index), allowed),
+      children,
+      relatedTopics: [],
+    },
+    entityGraph: deterministicEvidenceEntityGraph(evidence, allowed),
+  };
+}
+
 function citationAudit(claims, citations) {
   const rows = claims.filter((item) => item && normalizeSpaces(item.text));
   const cited = rows.filter((item) => Array.isArray(item.citationIndexes) && item.citationIndexes.length > 0);
@@ -1905,7 +2489,7 @@ function normalizedCitedTexts(value, allowedIndexes) {
   })).filter((item) => item.text);
 }
 
-const ENTITY_GRAPH_SCHEMA_PROMPT = '同时返回 entityGraph：{"entities":[{"tempId":"E1","name":"规范名称","type":"person|organization|model|method|dataset|metric|task|event|decision|time|concept|claim|other","aliases":[],"description":"","citationIndexes":[1],"confidence":0.9}],"relations":[{"source":"E1","target":"E2","type":"uses|proposes|evaluated_on|achieves|depends_on|contradicts|responsible_for|due_on|related_to","label":"中文关系标签","status":"asserted|historical|negated|proposed","citationIndexes":[1],"confidence":0.9}]}。实体最多 24 个、关系最多 36 条；每个实体和每条关系都必须有直接支持它的 C 编号。关系必须有明确方向，不能仅因语义相似生成；没有逐字证据的关系不要输出。实体名称保留论文/会议中的规范原名，中英文别名放 aliases。';
+const ENTITY_GRAPH_SCHEMA_PROMPT = '同时返回 entityGraph：{"entities":[{"tempId":"E1","name":"规范名称","type":"person|organization|model|method|dataset|metric|task|event|decision|time|concept|claim|other","aliases":[],"description":"","citationIndexes":[1],"confidence":0.9}],"relations":[{"source":"E1","target":"E2","type":"uses|proposes|evaluated_on|achieves|depends_on|retrieves_from|has_metric|part_of|contains|contradicts|responsible_for|due_on|is|related_to","label":"中文关系标签","status":"asserted|historical|negated|proposed","citationIndexes":[1],"confidence":0.9}]}。实体最多 24 个、关系最多 36 条；每个实体和每条关系都必须有直接支持它的 C 编号。关系必须有明确方向，不能仅因语义相似生成；没有逐字证据的关系不要输出。实体名称保留论文/会议中的规范原名，中英文别名放 aliases。';
 
 function deterministicEvidenceEntityGraph(citations, allowedIndexes) {
   const entities = [];
@@ -2051,15 +2635,30 @@ async function handleMeetingTool(body) {
   const participants = String(body.participants || '').trim().slice(0, 2000);
   const citations = buildMeetingCitations(transcript);
   const allowedIndexes = new Set(citations.map((item) => item.index));
-  const raw = await dashscopeChat([
-    {
-      role: 'system',
-      content: `你是严谨且可追溯的会议助手。只返回 JSON：{"title":"","summary":"","summaryCitationIndexes":[1],"topics":[{"title":"","citationIndexes":[1],"details":[{"text":"","citationIndexes":[1]}]}],"decisions":[{"text":"","citationIndexes":[1]}],"actionItems":[{"task":"","owner":"","due":"","status":"待办","citationIndexes":[1]}],"risks":[{"text":"","citationIndexes":[1]}],"openQuestions":[{"text":"","citationIndexes":[1]}],"mindMap":{"root":"","rootDesc":"","rootCitationIndexes":[1],"children":[{"topic":"","desc":"","citationIndexes":[1],"items":[""],"itemCitationIndexes":[[1]]}]},"entityGraph":{"entities":[],"relations":[]}}。mindMap.children 必须聚合为 3-6 个会议主干，行动项、证据与细节放到 items，不能把每句话都平铺为一级节点，也不得删减重要信息。只能引用提供的 C 编号；每项结论必须有直接证据；更正后的信息覆盖旧信息；未决定、未批准和开放问题不得写成决议；不得编造人名、日期或结论。${ENTITY_GRAPH_SCHEMA_PROMPT}`,
-    },
-    { role: 'user', content: `会议标题：${title}\n参会人：${participants || '未提供'}\n带编号的会议原文：\n${evidencePrompt(citations)}` },
-  ], 'qwen-plus', 2400, 0.1);
   let parsed;
-  try { parsed = JSON.parse(stripJsonFence(raw)); } catch (_) { parsed = {}; }
+  let usedDeterministicFallback = false;
+  try {
+    const raw = await dashscopeChat([
+      {
+        role: 'system',
+        content: `你是严谨且可追溯的会议助手。只返回 JSON：{"title":"","summary":"","summaryCitationIndexes":[1],"topics":[{"title":"","citationIndexes":[1],"details":[{"text":"","citationIndexes":[1]}]}],"decisions":[{"text":"","citationIndexes":[1]}],"actionItems":[{"task":"","owner":"","due":"","status":"待办","citationIndexes":[1]}],"risks":[{"text":"","citationIndexes":[1]}],"openQuestions":[{"text":"","citationIndexes":[1]}],"mindMap":{"root":"","rootDesc":"","rootCitationIndexes":[1],"children":[{"topic":"","desc":"","citationIndexes":[1],"items":[""],"itemCitationIndexes":[[1]]}]},"entityGraph":{"entities":[],"relations":[]}}。mindMap.children 必须聚合为 3-6 个会议主干，行动项、证据与细节放到 items，不能把每句话都平铺为一级节点，也不得删减重要信息。只能引用提供的 C 编号；每项结论必须有直接证据；更正后的信息覆盖旧信息；未决定、未批准和开放问题不得写成决议；不得编造人名、日期或结论。${ENTITY_GRAPH_SCHEMA_PROMPT}`,
+      },
+      { role: 'user', content: `会议标题：${title}\n参会人：${participants || '未提供'}\n带编号的会议原文：\n${evidencePrompt(citations)}` },
+    ], 'qwen-plus', 2400, 0.1);
+    try {
+      parsed = JSON.parse(stripJsonFence(raw));
+      if (!parsed || typeof parsed !== 'object') throw new Error('Invalid meeting payload');
+    } catch (_) {
+      parsed = fallbackMeetingAnalysis(title, transcript, citations, allowedIndexes);
+      usedDeterministicFallback = true;
+    }
+  } catch (error) {
+    console.warn('Meeting model unavailable; returning evidence-first fallback', {
+      code: error && (error.publicCode || error.code) ? (error.publicCode || error.code) : 'MEETING_MODEL_FAILED',
+    });
+    parsed = fallbackMeetingAnalysis(title, transcript, citations, allowedIndexes);
+    usedDeterministicFallback = true;
+  }
   let mindMap = normalizedMindMap(parsed.mindMap, title, allowedIndexes) || fallbackMindMap(title, transcript);
   mindMap.rootCitationIndexes = verifiedIndexes(mindMap.rootCitationIndexes, allowedIndexes, `${mindMap.root} ${mindMap.rootDesc}`, citations);
   mindMap.children = (mindMap.children || []).map((child) => ({
@@ -2069,6 +2668,8 @@ async function handleMeetingTool(body) {
       child.itemCitationIndexes && child.itemCitationIndexes[index], allowedIndexes, item, citations,
     )),
   }));
+  const meetingCoverage = ensureMindMapSourceCoverage(mindMap, transcript, citations, allowedIndexes);
+  mindMap = meetingCoverage.mindMap;
   const citedText = (item) => {
     const text = String(typeof item === 'string' ? item : (item && item.text) || '').trim().slice(0, 1200);
     return { text, citationIndexes: verifiedIndexes(item && item.citationIndexes, allowedIndexes, text, citations) };
@@ -2095,7 +2696,9 @@ async function handleMeetingTool(body) {
     ...decisions, ...risks, ...openQuestions,
     ...actionItems.map((item) => ({ text: `${item.task} ${item.owner} ${item.due}`, citationIndexes: item.citationIndexes })),
   ], citations);
-  const entityGraph = await ensureEvidenceEntityGraph(parsed.entityGraph, allowedIndexes, citations, 'meeting');
+  const entityGraph = usedDeterministicFallback
+    ? normalizedEntityGraph(parsed.entityGraph, allowedIndexes, citations)
+    : await ensureEvidenceEntityGraph(parsed.entityGraph, allowedIndexes, citations, 'meeting');
   return {
     status: 200,
     data: {
@@ -2112,7 +2715,9 @@ async function handleMeetingTool(body) {
       citations,
       documentChunks: citations,
       citationAudit: audit,
+      sourceCoverage: meetingCoverage.audit,
       sourceType: 'meeting',
+      degraded: usedDeterministicFallback,
     },
   };
 }
@@ -2203,6 +2808,10 @@ async function handleArticleTool(body) {
       }),
     };
   });
+  const articleCoverage = ensureMindMapSourceCoverage(
+    mindMap, content, citations, allowedIndexes, { appendFacts: !englishHeavyArticleText(content) },
+  );
+  mindMap = articleCoverage.mindMap;
   const keyPoints = normalizedCitedTexts(parsed.keyPoints, allowedIndexes).map((item) => ({
     ...item,
     citationIndexes: verifiedIndexes(item.citationIndexes, allowedIndexes, item.text, citations),
@@ -2240,6 +2849,7 @@ async function handleArticleTool(body) {
       citations,
       documentChunks: citations,
       citationAudit: audit,
+      sourceCoverage: articleCoverage.audit,
       extraction: {
         pageCount: Number(extraction.pageCount || 0),
         tablePages: Array.isArray(extraction.tablePages) ? extraction.tablePages.slice(0, 300) : [],
@@ -3275,6 +3885,7 @@ if (require.main === module) {
 module.exports = {
   buildDocumentChunks,
   buildMeetingCitations,
+  fallbackMeetingAnalysis,
   bestCitationIndexes,
   citationAudit,
   normalizedMindMap,
@@ -3305,4 +3916,12 @@ module.exports = {
   queryAnchors,
   anchorCoverage,
   retrieveEvidence,
+  sourceCriticalFacts,
+  ensureMindMapSourceCoverage,
+  sanitizeGroundedAnswer,
+  compactGroundedEvidence,
+  supabaseHeaders,
+  entityGraphQueryPlan,
+  rankEntityGraphSeeds,
+  relationStatusPenalty,
 };

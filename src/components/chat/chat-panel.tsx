@@ -86,6 +86,16 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
             ))}
           </div>
         )}
+        {!isUser && msg.retrievalTrace && (
+          <div className="mt-2 rounded-lg border border-violet-400/20 bg-violet-400/5 px-2.5 py-2 text-[10px] text-violet-200" data-testid="graphrag-trace">
+            <span className="mr-1.5 font-semibold">检索链路</span>
+            {msg.retrievalTrace.needsDisambiguation
+              ? "实体消歧 · 找到 " + String(msg.retrievalTrace.entitySeeds || 0) + " 个同名候选，已暂停自动回答"
+              : (msg.retrievalTrace.entitySeeds || 0) > 0
+                ? "Entity Graph · " + String(msg.retrievalTrace.entitySeeds || 0) + " 个实体入口 → " + String(msg.retrievalTrace.entityRelations || 0) + " 条受控关系 · " + String(msg.retrievalTrace.entityEvidence || 0) + " 条原文证据"
+                : "GraphRAG · " + String(msg.retrievalTrace.seedNodes || 0) + " 个概念入口 → " + String(msg.retrievalTrace.expandedNodes || 0) + " 个邻域节点 · " + String(msg.retrievalTrace.candidateChunks || 0) + " 个候选证据块"}
+          </div>
+        )}
         {!isUser && !msg.id.startsWith("welcome_") && <AnswerFeedback messageId={msg.id} />}
       </div>
     </div>
@@ -416,6 +426,7 @@ export function ChatPanel() {
         content: data.reply || "😅 出了点问题，请重试",
         timestamp: new Date().toISOString(),
         sources: Array.isArray(data.sources) ? data.sources : undefined,
+        retrievalTrace: data.retrievalTrace,
       };
       addMessage(aiMessage);
       if (data.type === "knowledge" && data.mindMap) {

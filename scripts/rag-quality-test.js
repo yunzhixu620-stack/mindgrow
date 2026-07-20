@@ -5,6 +5,7 @@ const acorn = require("acorn");
 const {
   buildDocumentChunks,
   buildMeetingCitations,
+  fallbackMeetingAnalysis,
   bestCitationIndexes,
   citationAudit,
   normalizeCitationIndexes,
@@ -31,6 +32,14 @@ const {
   queryAnchors,
   anchorCoverage,
   retrieveEvidence,
+  sourceCriticalFacts,
+  ensureMindMapSourceCoverage,
+  sanitizeGroundedAnswer,
+  compactGroundedEvidence,
+  supabaseHeaders,
+  entityGraphQueryPlan,
+  rankEntityGraphSeeds,
+  relationStatusPenalty,
 } = require("../fc-proxy/index.js");
 
 const root = path.join(__dirname, "..", "tests", "fixtures", "papers");
@@ -61,6 +70,13 @@ check("public source ids remain URL-safe on legacy Node runtimes", () => {
   const encoded = safeBase64Url("https://例子.example/path?a=1&b=2");
   assert(encoded.length > 0);
   assert(!/[+/=]/.test(encoded));
+});
+
+check("Supabase new API keys are not sent as invalid Bearer JWTs", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "fc-proxy", "index.js"), "utf8");
+  assert.match(source, /!key\.startsWith\('sb_'\)/);
+  assert(!Object.prototype.hasOwnProperty.call(supabaseHeaders(undefined, "sb_secret_example"), "Authorization"));
+  assert.strictEqual(supabaseHeaders(undefined, "legacy.jwt.value").Authorization, "Bearer legacy.jwt.value");
 });
 
 check("LLM Wiki entities and relations require direct source evidence", () => {
@@ -109,6 +125,142 @@ check("deterministic entity fallback extracts only explicit article and meeting 
   assert(graph.relations.some((item) => item.status === "negated"));
   assert(graph.relations.some((item) => item.type === "responsible_for"));
   graph.relations.forEach((item) => assert(item.citationIndexes.length > 0));
+});
+
+check("GraphRAG query planning constrains relation types and hop counts", () => {
+  const usage = entityGraphQueryPlan("RAG 使用什么检索器？");
+  assert.deepStrictEqual(usage.relationTypes, ["uses", "depends_on", "retrieves_from"]);
+  assert.strictEqual(usage.maxHops, 1);
+  const proposal = entityGraphQueryPlan("谁提出了 RAG？");
+  assert.deepStrictEqual(proposal.relationTypes, ["proposes"]);
+  assert(proposal.typeHints.includes("person"));
+  const path = entityGraphQueryPlan("RAG 与 DPR 的两跳链路是什么？");
+  assert.strictEqual(path.maxHops, 2);
+  assert(path.relationTypes.includes("related_to"));
+  const membership = entityGraphQueryPlan("WPA 属于 LayoutLMv3 的哪个组件？");
+  assert(membership.relationTypes.includes("part_of"));
+  assert(membership.relationTypes.includes("contains"));
+});
+
+check("entity aliases are exact graph entries and ambiguous names require clarification", () => {
+  const entities = [
+    { id: "rag", canonicalName: "RAG", entityType: "method", aliases: ["Retrieval-Augmented Generation"], description: "检索增强生成", confidence: 0.95, citations: [{ title: "RAG 论文" }] },
+    { id: "atlas-model", canonicalName: "Atlas", entityType: "model", aliases: ["ATLAS"], description: "语言模型", confidence: 0.9, citations: [{ title: "Atlas 模型论文" }] },
+    { id: "atlas-org", canonicalName: "Atlas", entityType: "organization", aliases: ["ATLAS"], description: "研究组织", confidence: 0.9, citations: [{ title: "Atlas 组织记录" }] },
+  ];
+  const aliasHit = rankEntityGraphSeeds("Retrieval-Augmented Generation 使用什么？", entities);
+  assert.strictEqual(aliasHit.seeds[0].entity.id, "rag");
+  const ambiguous = rankEntityGraphSeeds("Atlas 是什么？", entities);
+  assert.strictEqual(ambiguous.ambiguous, true);
+  assert.deepStrictEqual(ambiguous.ambiguityCandidates.map((item) => item.entity.id), ["atlas-model", "atlas-org"]);
+  const typed = rankEntityGraphSeeds("Atlas 模型是什么？", entities);
+  assert.strictEqual(typed.ambiguous, false);
+  assert.strictEqual(typed.seeds[0].entity.id, "atlas-model");
+});
+
+check("negated and historical edges are penalized unless the question requests them", () => {
+  assert(relationStatusPenalty("negated", "RAG 使用什么检索器？") > 0);
+  assert.strictEqual(relationStatusPenalty("negated", "BM25 为什么不是唯一检索器？"), 0);
+  assert(relationStatusPenalty("historical", "当前采用什么方案？") > 0);
+  assert.strictEqual(relationStatusPenalty("historical", "原计划采用什么方案？"), 0);
+});
+
+check("entity graph evidence is connected to the formal answer retrieval path", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "fc-proxy", "index.js"), "utf8");
+  assert.match(source, /retrieveEntityGraphEvidence\(question, mapId, workspaceId\)/);
+  assert.match(source, /\[\.\.\.entityEvidence, \.\.\.graphConditionedChunks, \.\.\.graphNodes\]/);
+  assert.match(source, /needsDisambiguation/);
+  assert.match(source, /entity_graph_evidence/);
+});
+
+check("long knowledge and meeting structures preserve critical facts without unsupported features", () => {
+  const source = [
+    "赵敏：每周完成 20 份用户访谈，覆盖 A 公司和 B 公司。",
+    "Recall@5 从 72.4% 提升到 81.9%，样本量从 420 增加到 760。",
+    "因为索引未刷新，系统召回了旧文档，导致答案错误；团队已经修复索引刷新任务。",
+    "尚未批准云同步功能，也没有按需订阅计划。",
+  ].join("\n");
+  const citations = buildMeetingCitations(source);
+  const result = ensureMindMapSourceCoverage({
+    root: "用户访谈与检索复盘",
+    rootDesc: "讨论访谈和检索效果",
+    children: [{
+      topic: "执行结果",
+      desc: "指标有所提升",
+      items: ["增加云同步和按需订阅"],
+      citationIndexes: [1],
+      itemCitationIndexes: [[1]],
+    }],
+  }, source, citations, new Set(citations.map((item) => item.index)));
+  const rendered = JSON.stringify(result.mindMap);
+  ["20", "A 公司", "B 公司", "72.4%", "81.9%", "420", "760", "索引未刷新", "旧文档", "尚未批准"].forEach((fact) => {
+    assert(rendered.includes(fact), "missing critical fact " + fact);
+  });
+  assert(!rendered.includes("增加云同步和按需订阅"));
+  assert(result.mindMap.children.length <= 6);
+  const appendedCitations = result.mindMap.children.flatMap((child) => child.itemCitationIndexes || []).filter((indexes) => indexes.length > 0);
+  assert(appendedCitations.length > 0);
+  assert(sourceCriticalFacts(source).length >= 4);
+});
+
+check("meeting timeout fallback stays usable, cited, compact and faithful", () => {
+  const transcript = [
+    "赵敏：每周完成 20 份用户访谈，覆盖 A 公司和 B 公司。",
+    "本轮 Recall@5 从 72.4% 提升到 81.9%，样本量从 420 增加到 760。",
+    "因为索引未刷新，系统召回了旧文档，导致答案错误；团队已经修复索引刷新任务。",
+    "李雷负责复测，截止 2026-07-27。",
+    "尚未批准云同步功能，也没有按需订阅计划。",
+  ].join("\n");
+  const citations = buildMeetingCitations(transcript);
+  const result = fallbackMeetingAnalysis(
+    "检索质量与用户访谈复盘", transcript, citations, new Set(citations.map((item) => item.index)),
+  );
+  const rendered = JSON.stringify(result);
+  ["20", "A 公司", "B 公司", "72.4%", "81.9%", "420", "760", "索引未刷新", "旧文档", "李雷", "2026-07-27", "尚未批准"].forEach((fact) => {
+    assert(rendered.includes(fact), "missing fallback fact " + fact);
+  });
+  assert(result.mindMap.children.length <= 5);
+  assert(result.mindMap.children.every((child) => child.items.length > 0));
+  assert(result.mindMap.children.flatMap((child) => child.itemCitationIndexes).every((indexes) => indexes.length > 0));
+  assert(result.actionItems.some((item) => item.owner === "李雷" && item.due === "2026-07-27"));
+  assert(result.openQuestions.some((item) => item.text.includes("尚未批准")));
+  assert(!result.decisions.some((item) => item.text.includes("尚未批准")));
+});
+
+check("grounded answer audit removes unsupported explanatory claims after citation selection", () => {
+  const quote = "RAG 使用 DPR 作为稠密检索器，并从 Wikipedia 索引检索证据。DPR 使用双编码器分别编码问题与段落。RAG 的生成器采用 BART。";
+  const audited = sanitizeGroundedAnswer([
+    "## 结论",
+    "RAG 使用 **DPR** 作为稠密检索器，并从 **Wikipedia 索引**检索证据。",
+    "## 关键依据",
+    "- DPR 使用双编码器分别编码问题与段落。",
+    "## 详细说明",
+    "RAG 将 BART 与 DPR 结合，因此提升了事实准确性。",
+    "## 局限与待核验",
+    "当前证据没有说明商业部署成本。",
+  ].join("\n"), [{ content: quote, citations: [{ quote }] }]);
+  assert(audited.answer.includes("RAG 使用 **DPR**"));
+  assert(audited.answer.includes("DPR 使用双编码器"));
+  assert(!audited.answer.includes("提升了事实准确性"));
+  assert(!audited.answer.includes("商业部署成本"));
+  assert(!audited.answer.includes("## 详细说明"));
+  assert(audited.removedLines >= 2);
+});
+
+check("grounded answer sources prioritize direct graph evidence and stay within the reading budget", () => {
+  const evidence = [
+    { id: "concept-1", sourceKind: "concept_node", content: "RAG", score: 0.99, citations: [{ documentId: "doc-1", quote: "RAG combines retrieval and generation." }] },
+    { id: "chunk-1", sourceKind: "document_chunk", content: "chunk", score: 0.7, citations: [{ documentId: "doc-1", quote: "DPR retrieves passages from Wikipedia." }] },
+    { id: "edge-1", sourceKind: "entity_graph_evidence", content: "RAG uses DPR", score: 0.8, citations: [{ documentId: "doc-1", quote: "RAG uses DPR as its dense retriever." }] },
+    { id: "edge-duplicate", sourceKind: "entity_graph_evidence", content: "RAG uses DPR", score: 0.75, citations: [{ documentId: "doc-1", quote: "RAG uses DPR as its dense retriever." }] },
+    { id: "other-1", sourceKind: "concept_node", content: "BART", score: 0.5, citations: [{ documentId: "doc-1", quote: "The generator is BART." }] },
+    { id: "other-2", sourceKind: "concept_node", content: "Atlas", score: 0.4, citations: [{ documentId: "doc-2", quote: "Atlas uses retrieval." }] },
+    { id: "other-3", sourceKind: "concept_node", content: "BM25", score: 0.3, citations: [{ documentId: "doc-3", quote: "BM25 is a baseline." }] },
+  ];
+  const selected = compactGroundedEvidence(evidence, 5);
+  assert.strictEqual(selected.length, 5);
+  assert.strictEqual(selected[0].id, "edge-1");
+  assert(!selected.some((item) => item.id === "edge-duplicate"));
 });
 
 check("entity graph migration is tenant-scoped and service-role only", () => {

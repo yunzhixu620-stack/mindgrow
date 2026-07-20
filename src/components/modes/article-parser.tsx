@@ -67,6 +67,11 @@ interface ArticleQaMessage {
     expandedNodes: number;
     graphDocuments: number;
     candidateChunks: number;
+    entityGraphStatus?: string;
+    entitySeeds?: number;
+    entityRelations?: number;
+    entityEvidence?: number;
+    needsDisambiguation?: boolean;
   };
 }
 
@@ -243,6 +248,29 @@ function ArticleTaskHeader({ task }: { task: NonNullable<ArticleQaMessage["task"
   return <div className={`sticky top-0 z-10 mb-2 flex items-center justify-between gap-2 rounded-lg border px-2.5 py-2 backdrop-blur ${meta.className}`} data-testid="article-intent-badge">
     <span className="flex items-center gap-2 font-semibold"><span className="inline-flex h-6 min-w-6 items-center justify-center rounded-md bg-black/15 px-1 text-[11px]">{meta.icon}</span>{meta.label}</span>
     <span className="text-[10px] opacity-75">{meta.hint}</span>
+  </div>;
+}
+
+function ArticleRetrievalTrace({ trace }: { trace: NonNullable<ArticleQaMessage["retrievalTrace"]> }) {
+  let text: string;
+  if (trace.mode === "article_translation") {
+    text = "论文翻译 · " + String(trace.graphDocuments || 0) + " 篇来源 · "
+      + String(trace.candidateChunks || 0) + " 个原文分块";
+  } else if (trace.needsDisambiguation) {
+    text = "实体消歧 · 找到 " + String(trace.entitySeeds || 0) + " 个同名候选，已暂停自动回答";
+  } else if ((trace.entitySeeds || 0) > 0) {
+    text = "Entity Graph · " + String(trace.entitySeeds || 0) + " 个实体入口 → "
+      + String(trace.entityRelations || 0) + " 条受控关系 · "
+      + String(trace.entityEvidence || 0) + " 条原文证据 · "
+      + String(trace.candidateChunks || 0) + " 个混合召回分块";
+  } else {
+    text = "GraphRAG · " + String(trace.seedNodes || 0) + " 个概念入口 → "
+      + String(trace.expandedNodes || 0) + " 个邻域节点 · 关联 "
+      + String(trace.graphDocuments || 0) + " 篇来源 · 重排 "
+      + String(trace.candidateChunks || 0) + " 个证据块";
+  }
+  return <div className="mt-2 rounded-lg border border-violet-400/20 bg-violet-400/5 px-2.5 py-2 text-[10px] text-violet-200" data-testid="graphrag-trace">
+    <span className="mr-1.5 font-semibold">检索链路</span>{text}
   </div>;
 }
 
@@ -481,7 +509,7 @@ export function ArticleParser() {
           {qaMessages.map((message) => <div key={message.id} className={message.role === "user" ? "ml-8 rounded-xl bg-[var(--primary)] px-3 py-2 text-sm text-black" : "mr-0 rounded-xl border border-white/5 bg-[var(--bg-elevated)] px-3 py-2 text-sm sm:mr-8"}>
             {message.role === "assistant" && message.task && <ArticleTaskHeader task={message.task} />}
             {message.role === "assistant" ? <StructuredAnswer content={message.content} task={message.task} /> : <div className="whitespace-pre-wrap leading-relaxed">{message.content}</div>}
-            {message.role === "assistant" && message.retrievalTrace && <div className="mt-2 rounded-lg border border-violet-400/20 bg-violet-400/5 px-2.5 py-2 text-[10px] text-violet-200" data-testid="graphrag-trace"><span className="mr-1.5 font-semibold">检索链路</span>{message.retrievalTrace.mode === "article_translation" ? `论文翻译 · ${message.retrievalTrace.graphDocuments} 篇来源 · ${message.retrievalTrace.candidateChunks} 个原文分块` : `GraphRAG · ${message.retrievalTrace.seedNodes} 个入口节点 → ${message.retrievalTrace.expandedNodes} 个邻域节点 · 关联 ${message.retrievalTrace.graphDocuments} 篇来源 · 重排 ${message.retrievalTrace.candidateChunks} 个证据块`}</div>}
+            {message.role === "assistant" && message.retrievalTrace && <ArticleRetrievalTrace trace={message.retrievalTrace} />}
             {message.role === "assistant" && message.sources && message.sources.length > 0 && <details className="mt-2 rounded-lg border border-[var(--border)] bg-[var(--card)] px-2.5 py-2 text-[11px]">
               <summary className="cursor-pointer font-semibold text-[var(--primary-hover)]">引用证据 · {message.sources.length} 条（点击展开）</summary>
               <div className="mt-2 space-y-1.5">

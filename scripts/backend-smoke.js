@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 
 const baseUrl = (process.env.MINDGROW_API_BASE_URL || "https://mindgrow-api-eyippxdkkh.cn-hangzhou.fcapp.run").replace(/\/$/, "");
+const expectedApiVersion = process.env.MINDGROW_EXPECTED_API_VERSION || "10.5.2";
 const accessToken = process.env.MINDGROW_ACCESS_TOKEN || "";
 let workspaceId = process.env.MINDGROW_WORKSPACE_ID || "";
 const results = [];
@@ -46,9 +47,13 @@ function expectStatus(result, status) {
   preflight.ok = preflight.status === 204 && preflight.cors === "https://yunzhixu620-stack.github.io";
 
   const health = await request("Dependency health and API version", "/health", { authenticated: false });
-  health.ok = health.status === 200 && health.body?.status === "ok" && health.body?.version === "10.2.9"
+  health.ok = health.status === 200 && health.body?.status === "ok" && health.body?.version === expectedApiVersion
     && health.body?.checks?.modelConfigured === true && health.body?.checks?.knowledgeStore === "ok"
-    && health.body?.checks?.hybridRetrieval === "ready";
+    && health.body?.checks?.hybridRetrieval === "ready" && health.body?.checks?.entityGraph === "ready";
+  if (!health.ok) {
+    health.expectation = "Expected healthy API " + expectedApiVersion + " with knowledge, hybrid retrieval, and entity graph ready";
+    console.error("FAIL Dependency health gate: received " + (health.body?.version || "unknown"));
+  }
 
   for (const [name, pathname, options] of [
     ["Anonymous knowledge is denied", "/api/knowledge?action=maps", { authenticated: false }],

@@ -122,6 +122,21 @@ export interface AnswerSource {
   sourceUrl?: string;
 }
 
+export interface RetrievalTrace {
+  mode: string;
+  task?: string;
+  seedNodes?: number;
+  expandedNodes?: number;
+  graphDocuments?: number;
+  primaryGraphDocuments?: number;
+  candidateChunks?: number;
+  entityGraphStatus?: string;
+  entitySeeds?: number;
+  entityRelations?: number;
+  entityEvidence?: number;
+  needsDisambiguation?: boolean;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";
@@ -129,6 +144,7 @@ export interface ChatMessage {
   timestamp: string;
   suggestions?: AISuggestion[];
   sources?: AnswerSource[];
+  retrievalTrace?: RetrievalTrace;
 }
 
 export interface AISuggestion {
