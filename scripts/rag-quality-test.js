@@ -25,6 +25,7 @@ const {
   isTableQuestion,
   hasReliableTableLayout,
   canonicalDocumentHash,
+  safeBase64Url,
   queryAnchors,
   anchorCoverage,
   retrieveEvidence,
@@ -52,6 +53,12 @@ check("public article fetching stays on supported IPv4 egress", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "fc-proxy", "index.js"), "utf8");
   assert(source.includes("family: 4"), "public URL fetches can fall onto unavailable IPv6 egress");
   assert(source.includes("MindGrowArticleBot/1.0"), "article fetches need an identifiable browser-compatible user agent");
+});
+
+check("public source ids remain URL-safe on legacy Node runtimes", () => {
+  const encoded = safeBase64Url("https://例子.example/path?a=1&b=2");
+  assert(encoded.length > 0);
+  assert(!/[+/=]/.test(encoded));
 });
 
 const all = fixtures.map((fixture) => {

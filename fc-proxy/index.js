@@ -17,7 +17,7 @@ const PORT = Number.parseInt(process.env.FC_SERVER_PORT || process.env.PORT || '
 // into a false 503. Transient 429/5xx responses are retried below.
 const UPSTREAM_TIMEOUT_MS = Number.parseInt(process.env.UPSTREAM_TIMEOUT_MS || '45000', 10);
 const AUTH_REQUIRED = process.env.AUTH_REQUIRED !== 'false';
-const API_VERSION = '10.3.1';
+const API_VERSION = '10.3.2';
 const DASHSCOPE_AUDIO_ENDPOINT = process.env.DASHSCOPE_AUDIO_ENDPOINT || 'https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer';
 const ALLOWED_ORIGINS = new Set(
   (process.env.ALLOWED_ORIGINS || 'https://yunzhixu620-stack.github.io')
@@ -1153,6 +1153,16 @@ function standaloneHttpUrl(value) {
   }
 }
 
+function safeBase64Url(value) {
+  // The Debian 9 custom runtime can use a Node version that predates the
+  // "base64url" Buffer encoding. Keep source IDs URL-safe without depending
+  // on that newer runtime feature.
+  return Buffer.from(String(value || ''), 'utf8').toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
 async function handleChat(body, context) {
   const input = body && typeof body.input === 'string' ? body.input.trim() : '';
   const mapId = body && body.mapId ? String(body.mapId) : context.defaultMapId;
@@ -1245,7 +1255,7 @@ async function handleChat(body, context) {
     '确认后可将这些节点保存到当前知识库。',
   ].join('\n');
   const sources = resolvedSourceUrl ? [{
-    id: `url_${Buffer.from(resolvedSourceUrl).toString('base64url').slice(0, 24)}`,
+    id: `url_${safeBase64Url(resolvedSourceUrl).slice(0, 24)}`,
     title: mindMap.root || resolvedSourceUrl,
     index: 1,
     quote: structureInput.slice(0, 320),
@@ -2879,6 +2889,7 @@ module.exports = {
   normalizeDocumentLayout,
   sourcePages,
   standaloneHttpUrl,
+  safeBase64Url,
   handleChat,
   assertPublicUrl,
   classifyInput,

@@ -308,7 +308,7 @@ export function ArticleParser() {
     const requestMapId = currentMapId;
     setBusy(true); setNotice(""); setResult(null); setAudio(null); setSelectedCitation(null); speech.stop();
     try {
-      const response = await apiFetch(`/api/tools/article?client=10.3.1&request=${Date.now()}`, {
+      const response = await apiFetch(`/api/tools/article?client=10.3.2&request=${Date.now()}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
