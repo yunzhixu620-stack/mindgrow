@@ -68,7 +68,7 @@ function buildDisplayHierarchy(
   const overviewNode: KnowledgeNode = {
     id: overviewId,
     content: overviewLabel,
-    desc: `已将 ${roots.length} 个一级主题收纳为二级主题；展开任一分支可继续查看原始内容。`,
+    desc: `统一收纳 ${roots.length} 个一级主题，仅调整画布展示层级；原节点层级与内容保持不变。`,
     type: "topic",
     status: "active",
     source: "template",
@@ -732,6 +732,10 @@ export function MindMapPanel() {
 
   const visibleStoredNodeCount = Math.max(0, graph.nodes.length - displayHierarchy.syntheticNodeCount);
   const hiddenNodeCount = Math.max(0, storeNodes.length - visibleStoredNodeCount);
+  const overviewNodeId = displayHierarchy.syntheticNodeCount
+    ? displayHierarchy.nodes.find((node) => isDisplayOverviewNode(node.id))?.id || null
+    : null;
+  const isOverviewCollapsed = Boolean(overviewNodeId && collapsedNodes.has(overviewNodeId));
   const relationCount = storeEdges.filter((edge) => edge.relation !== "contains").length;
   const citedNodeCount = storeNodes.filter((node) => (node.citations || []).length > 0).length;
 
@@ -1052,7 +1056,7 @@ export function MindMapPanel() {
                   viewMode === "outline" ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
                 }`}
                 title="只显示主题和主要分支"
-              >主干 {visibleStoredNodeCount}/{storeNodes.length}</button>
+              >{isOverviewCollapsed ? `概览 1 · 共 ${storeNodes.length}` : `主干 ${visibleStoredNodeCount}/${storeNodes.length}`}</button>
               <button
                 onClick={showAllNodes}
                 className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
@@ -1264,7 +1268,9 @@ export function MindMapPanel() {
 
       {hiddenNodeCount > 0 && (
         <div className="pointer-events-none absolute bottom-4 left-3 z-40 rounded-xl border border-[var(--border)] bg-[var(--card)]/95 px-3 py-2 text-[11px] text-[var(--muted-foreground)] shadow-lg backdrop-blur">
-          当前显示 {visibleStoredNodeCount}/{storeNodes.length} 个节点 · 点击节点上的 ＋N 展开
+          {isOverviewCollapsed
+            ? `概览模式 · ${storeNodes.length} 个原节点完整保留 · 点击 ＋${storeNodes.length} 展开`
+            : `当前显示 ${visibleStoredNodeCount}/${storeNodes.length} 个节点 · 点击节点上的 ＋N 展开`}
         </div>
       )}
 

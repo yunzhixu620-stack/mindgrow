@@ -42,6 +42,22 @@ const clickByText = async (page, selector, text) => {
   if (!clicked) throw new Error(`Cannot find ${selector} containing ${text}`);
 };
 
+const revealAllStoredNodes = async (page) => {
+  await page.waitForFunction(() => Array.from(document.querySelectorAll("button")).some((button) => /^全部 \d+$/.test(button.textContent.trim())));
+  const total = await page.$$eval("button", (buttons) => {
+    const allButton = buttons.find((button) => /^全部 \d+$/.test(button.textContent.trim()));
+    return Number(allButton?.textContent.match(/\d+/)?.[0] || 0);
+  });
+  if (!total) throw new Error("Stored node total is missing");
+  await clickByText(page, "button", "全部");
+  await page.waitForFunction((expected) => {
+    const storedNodes = Array.from(document.querySelectorAll(".react-flow__node"))
+      .filter((node) => !node.querySelector('[data-display-overview="true"]'));
+    return storedNodes.length === expected;
+  }, {}, total);
+  return total;
+};
+
 (async () => {
   const browser = await puppeteer.launch({ headless: "new", pipe: true, executablePath, args: ["--no-sandbox"] });
   const page = await browser.newPage();
@@ -61,9 +77,8 @@ const clickByText = async (page, selector, text) => {
   await page.goto(BASE_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
 
   await check("seed knowledge map renders", async () => {
-    await page.waitForFunction(() => document.querySelectorAll(".react-flow__node").length >= 10);
-    const count = await page.$$eval(".react-flow__node", (nodes) => nodes.length);
-    if (count !== 13) throw new Error(`Expected 13 seed nodes, got ${count}`);
+    const count = await revealAllStoredNodes(page);
+    if (count !== 13) throw new Error(`Expected 13 stored seed nodes, got ${count}`);
   });
 
   await check("usage guide button opens the guide from the application", async () => {
@@ -78,7 +93,7 @@ const clickByText = async (page, selector, text) => {
     await page.$eval('[data-guide-scroll]', (element) => { element.scrollTop = Math.floor((element.scrollHeight - element.clientHeight) * 0.55); element.dispatchEvent(new Event("scroll")); });
     await page.waitForFunction(() => parseFloat(document.querySelector('[data-testid="guide-progress"]')?.style.width || "0") > 25);
     await page.goBack({ waitUntil: "networkidle0" });
-    await page.waitForFunction(() => document.querySelectorAll(".react-flow__node").length >= 10);
+    await revealAllStoredNodes(page);
   });
 
   await check("workspace search finds maps by node content", async () => {
@@ -178,12 +193,7 @@ const clickByText = async (page, selector, text) => {
     await expand.click();
     await page.waitForFunction((previous) => document.querySelectorAll(".react-flow__node").length > previous, {}, before);
 
-    await clickByText(page, "button", "全部");
-    await page.waitForFunction(() => {
-      const allButton = Array.from(document.querySelectorAll("button")).find((button) => /^全部 \d+$/.test(button.textContent.trim()));
-      const total = Number(allButton?.textContent.match(/\d+/)?.[0] || 0);
-      return total > 0 && document.querySelectorAll(".react-flow__node").length === total;
-    });
+    await revealAllStoredNodes(page);
   });
 
   await check("node title and detailed explanation are editable", async () => {
