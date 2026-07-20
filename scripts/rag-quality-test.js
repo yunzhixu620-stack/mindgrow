@@ -48,6 +48,12 @@ check("Aliyun custom runtime syntax stays ECMAScript 2018 compatible", () => {
   acorn.parse(source, { ecmaVersion: 2018, sourceType: "script", allowHashBang: true });
 });
 
+check("public article fetching stays on supported IPv4 egress", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "fc-proxy", "index.js"), "utf8");
+  assert(source.includes("family: 4"), "public URL fetches can fall onto unavailable IPv6 egress");
+  assert(source.includes("MindGrowArticleBot/1.0"), "article fetches need an identifiable browser-compatible user agent");
+});
+
 const all = fixtures.map((fixture) => {
   const content = fs.readFileSync(path.join(root, fixture.file), "utf8");
   return { ...fixture, content, chunks: buildDocumentChunks(content, "pdf", fixture.file.replace(".txt", ".pdf")) };

@@ -17,7 +17,7 @@ const PORT = Number.parseInt(process.env.FC_SERVER_PORT || process.env.PORT || '
 // into a false 503. Transient 429/5xx responses are retried below.
 const UPSTREAM_TIMEOUT_MS = Number.parseInt(process.env.UPSTREAM_TIMEOUT_MS || '45000', 10);
 const AUTH_REQUIRED = process.env.AUTH_REQUIRED !== 'false';
-const API_VERSION = '10.3.0';
+const API_VERSION = '10.3.1';
 const DASHSCOPE_AUDIO_ENDPOINT = process.env.DASHSCOPE_AUDIO_ENDPOINT || 'https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer';
 const ALLOWED_ORIGINS = new Set(
   (process.env.ALLOWED_ORIGINS || 'https://yunzhixu620-stack.github.io')
@@ -1307,10 +1307,16 @@ async function fetchArticleText(targetUrl, redirects) {
       port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
       path: `${parsed.pathname}${parsed.search}`,
       method: 'GET',
+      // Alibaba Cloud Functions may resolve a dual-stack host to IPv6 even
+      // when the runtime has no IPv6 egress. Pin the already-vetted request to
+      // IPv4 so public sites such as GitHub Pages and arXiv do not fail after
+      // DNS validation merely because their AAAA record was selected first.
+      family: 4,
       headers: {
         Accept: 'text/html,text/plain,application/xhtml+xml',
         'Accept-Encoding': 'identity',
-        'User-Agent': 'MindGrow-Article-Parser/1.0',
+        'User-Agent': 'Mozilla/5.0 (compatible; MindGrowArticleBot/1.0; +https://yunzhixu620-stack.github.io/mindgrow/)',
+        Connection: 'close',
       },
     }, (response) => {
       const status = response.statusCode || 502;
