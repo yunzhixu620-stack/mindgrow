@@ -17,7 +17,7 @@ const PORT = Number.parseInt(process.env.FC_SERVER_PORT || process.env.PORT || '
 // into a false 503. Transient 429/5xx responses are retried below.
 const UPSTREAM_TIMEOUT_MS = Number.parseInt(process.env.UPSTREAM_TIMEOUT_MS || '45000', 10);
 const AUTH_REQUIRED = process.env.AUTH_REQUIRED !== 'false';
-const API_VERSION = '10.4.0';
+const API_VERSION = '10.4.3';
 const DASHSCOPE_AUDIO_ENDPOINT = process.env.DASHSCOPE_AUDIO_ENDPOINT || 'https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer';
 const ALLOWED_ORIGINS = new Set(
   (process.env.ALLOWED_ORIGINS || 'https://yunzhixu620-stack.github.io')
@@ -1694,6 +1694,10 @@ function recoveredChineseArticleResponse(body, context) {
   const citations = Array.isArray(context && context.citations) && context.citations.length
     ? context.citations
     : buildDocumentChunks(content, sourceType, fileName);
+  const allowedIndexes = new Set(citations.map((item) => item.index));
+  const entityGraph = normalizedEntityGraph(
+    deterministicEvidenceEntityGraph(citations, allowedIndexes), allowedIndexes, citations,
+  );
   const indexes = citations.slice(0, 3).map((item) => item.index);
   const citationAt = (position) => indexes.length ? [indexes[Math.min(position, indexes.length - 1)]] : [];
   let title = '论文解析结果';
@@ -1734,6 +1738,7 @@ function recoveredChineseArticleResponse(body, context) {
       arguments: [],
       questions: ['论文的核心贡献是什么？', '论文有哪些适用边界与局限？'],
       mindMap,
+      entityGraph,
       citations,
       documentChunks: citations,
       citationAudit: audit,
@@ -1902,6 +1907,142 @@ function normalizedCitedTexts(value, allowedIndexes) {
 
 const ENTITY_GRAPH_SCHEMA_PROMPT = '同时返回 entityGraph：{"entities":[{"tempId":"E1","name":"规范名称","type":"person|organization|model|method|dataset|metric|task|event|decision|time|concept|claim|other","aliases":[],"description":"","citationIndexes":[1],"confidence":0.9}],"relations":[{"source":"E1","target":"E2","type":"uses|proposes|evaluated_on|achieves|depends_on|contradicts|responsible_for|due_on|related_to","label":"中文关系标签","status":"asserted|historical|negated|proposed","citationIndexes":[1],"confidence":0.9}]}。实体最多 24 个、关系最多 36 条；每个实体和每条关系都必须有直接支持它的 C 编号。关系必须有明确方向，不能仅因语义相似生成；没有逐字证据的关系不要输出。实体名称保留论文/会议中的规范原名，中英文别名放 aliases。';
 
+function deterministicEvidenceEntityGraph(citations, allowedIndexes) {
+  const entities = [];
+  const relations = [];
+  const entityByKey = new Map();
+  const cleanName = (value) => String(value || '')
+    .replace(/^[\s"'“”‘’（）()【】\[\]，,。；;：:]+|[\s"'“”‘’（）()【】\[\]，,。；;：:]+$/g, '')
+    .replace(/\s+/g, ' ').trim().slice(0, 120);
+  const entityType = (name, hint) => {
+    if (hint) return hint;
+    if (/^(?:Recall|Precision|Accuracy|F1|BLEU|ROUGE|mAP)(?:@?\d+)?$/i.test(name)) return 'metric';
+    if (/^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3}$/.test(name)) return 'person';
+    if (/^[A-Z][A-Z0-9@.+-]{1,24}$/.test(name)) return 'method';
+    if (/\d{4}[-年/]\d{1,2}/.test(name)) return 'time';
+    return 'concept';
+  };
+  const addEntity = (rawName, citation, hint) => {
+    let name = cleanName(rawName);
+    name = name.replace(/(?:分别|并且|并|来|以).{0,40}$/g, '').trim();
+    if (!name || name.length < 2 || !citation || !allowedIndexes.has(citation.index)) return null;
+    const quote = String(citation.quote || citation.content || '');
+    if (!quote.toLowerCase().includes(name.toLowerCase())) return null;
+    const key = name.toLowerCase().replace(/[\s_-]+/g, '');
+    if (entityByKey.has(key)) {
+      const existing = entityByKey.get(key);
+      if (!existing.citationIndexes.includes(citation.index)) existing.citationIndexes.push(citation.index);
+      return existing;
+    }
+    const entity = {
+      tempId: `E${entities.length + 1}`,
+      name,
+      type: entityType(name, hint),
+      aliases: [],
+      description: '',
+      citationIndexes: [citation.index],
+      confidence: 0.72,
+    };
+    entities.push(entity);
+    entityByKey.set(key, entity);
+    return entity;
+  };
+  const addRelation = (rawSource, rawTarget, type, label, status, citation, sourceHint, targetHint) => {
+    const source = addEntity(rawSource, citation, sourceHint);
+    const target = addEntity(rawTarget, citation, targetHint);
+    if (!source || !target || source.tempId === target.tempId) return;
+    const key = `${source.tempId}|${target.tempId}|${type}|${status || 'asserted'}`;
+    if (relations.some((item) => item._key === key)) return;
+    relations.push({
+      _key: key,
+      source: source.tempId,
+      target: target.tempId,
+      type,
+      label,
+      status: status || 'asserted',
+      citationIndexes: [citation.index],
+      confidence: 0.72,
+    });
+  };
+  const run = (regex, text, callback) => {
+    regex.lastIndex = 0;
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+      callback(match);
+      if (match[0] === '') regex.lastIndex += 1;
+    }
+  };
+
+  (Array.isArray(citations) ? citations : []).slice(0, 36).forEach((citation) => {
+    const text = String(citation.quote || citation.content || '');
+    run(/\b([A-Za-z][A-Za-z0-9@.+-]{1,30})\b\s*(?:的[^，。！？!?\n]{0,16})?(使用|采用|依赖)\s*([A-Za-z][A-Za-z0-9@.+-]{1,30}|[\u4e00-\u9fff]{2,16})/g, text, (match) => {
+      const type = match[2] === '依赖' ? 'depends_on' : 'uses';
+      addRelation(match[1], match[3], type, match[2], 'asserted', citation);
+    });
+    run(/\b([A-Za-z][A-Za-z0-9@.+-]{1,30})\b[^。！？!?\n]{0,50}?从\s*([A-Za-z][A-Za-z0-9.+-]{1,30})\s*(?:索引)?(?:中)?检索/g, text, (match) => {
+      addRelation(match[1], match[2], 'retrieves_from', '检索自', 'asserted', citation);
+    });
+    run(/\b([A-Za-z][A-Za-z0-9@.+-]{1,30})\b[^，。！？!?\n]{0,96}?由\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\s*(?:等人)?[^，。！？!?\n]{0,20}?提出/g, text, (match) => {
+      addRelation(match[2], match[1], 'proposes', '提出', 'historical', citation, 'person');
+    });
+    run(/([A-Z][A-Za-z0-9.+-]+(?:\s+[A-Z][A-Za-z0-9.+-]+){0,3})\s*数据集上评估\s*([A-Za-z][A-Za-z0-9@.+-]{1,30})/g, text, (match) => {
+      addRelation(match[1], match[2], 'has_metric', '评测指标', 'asserted', citation, 'dataset', 'metric');
+    });
+    run(/\b([A-Za-z][A-Za-z0-9@.+-]{1,30})\b\s*不是\s*([^，。！？!?\n]{2,24})/g, text, (match) => {
+      addRelation(match[1], match[2], 'is', '不是', 'negated', citation);
+    });
+    run(/\b([A-Z][A-Za-z0-9@.+-]{1,30})\b\s+(uses|adopts|depends on|relies on)\s+([A-Z][A-Za-z0-9@.+-]{1,30})\b/gi, text, (match) => {
+      const depends = /depends|relies/i.test(match[2]);
+      addRelation(match[1], match[3], depends ? 'depends_on' : 'uses', depends ? '依赖' : '使用', 'asserted', citation);
+    });
+    run(/(?:^|[，。；;\n])([\u4e00-\u9fff]{2,4})\s*(?:将负责|负责)\s*([^，。；;\n]{2,32})/gm, text, (match) => {
+      addRelation(match[1], match[2], 'responsible_for', '负责', 'asserted', citation, 'person', 'task');
+    });
+  });
+
+  return {
+    entities: entities.slice(0, 24),
+    relations: relations.slice(0, 36).map((item) => {
+      const output = { ...item };
+      delete output._key;
+      return output;
+    }),
+  };
+}
+
+async function ensureEvidenceEntityGraph(value, allowedIndexes, citations, sourceKind) {
+  const primary = normalizedEntityGraph(value, allowedIndexes, citations);
+  if (primary.entities.length >= 2 && primary.relations.length > 0) return primary;
+  const boundedEvidence = (Array.isArray(citations) ? citations : []).slice(0, 36);
+  if (boundedEvidence.length === 0) return primary;
+  try {
+    const raw = await dashscopeChat([
+      {
+        role: 'system',
+        content: `你是只做证据约束实体关系抽取的 GraphRAG 索引器。只返回严格 JSON：{"entityGraph":{"entities":[],"relations":[]}}。${ENTITY_GRAPH_SCHEMA_PROMPT}不要输出摘要、导图或解释；同一名称保持同一 tempId；否定、历史和拟议关系必须使用正确 status。`,
+      },
+      {
+        role: 'user',
+        content: `来源类型：${String(sourceKind || 'document')}\n仅从以下证据抽取：\n${evidencePrompt(boundedEvidence)}`,
+      },
+    ], 'qwen-turbo', 2000, 0.05);
+    const parsed = JSON.parse(stripJsonFence(raw));
+    const retried = normalizedEntityGraph(parsed && (parsed.entityGraph || parsed), allowedIndexes, citations);
+    if (retried.relations.length > primary.relations.length
+      || (primary.entities.length === 0 && retried.entities.length > 0)) return retried;
+  } catch (error) {
+    console.warn('Targeted entity graph extraction unavailable; returning verified primary graph', {
+      code: error && (error.publicCode || error.code) ? (error.publicCode || error.code) : 'ENTITY_GRAPH_RETRY_FAILED',
+    });
+  }
+  const deterministic = normalizedEntityGraph(
+    deterministicEvidenceEntityGraph(citations, allowedIndexes), allowedIndexes, citations,
+  );
+  if (deterministic.relations.length > primary.relations.length
+    || (primary.entities.length === 0 && deterministic.entities.length > 0)) return deterministic;
+  return primary;
+}
+
 async function handleMeetingTool(body) {
   const transcript = String(body.transcript || '').trim();
   if (transcript.length < 10) return { status: 400, data: { error: '请至少输入 10 个字的会议内容', code: 'INVALID_INPUT' } };
@@ -1954,7 +2095,7 @@ async function handleMeetingTool(body) {
     ...decisions, ...risks, ...openQuestions,
     ...actionItems.map((item) => ({ text: `${item.task} ${item.owner} ${item.due}`, citationIndexes: item.citationIndexes })),
   ], citations);
-  const entityGraph = normalizedEntityGraph(parsed.entityGraph, allowedIndexes, citations);
+  const entityGraph = await ensureEvidenceEntityGraph(parsed.entityGraph, allowedIndexes, citations, 'meeting');
   return {
     status: 200,
     data: {
@@ -2084,7 +2225,7 @@ async function handleArticleTool(body) {
     ...mindMap.children.map((item) => ({ text: `${item.topic} ${item.desc || ''}`, citationIndexes: item.citationIndexes })),
   ], citations);
   const extraction = body.extraction && typeof body.extraction === 'object' ? body.extraction : {};
-  const entityGraph = normalizedEntityGraph(parsed.entityGraph, allowedIndexes, citations);
+  const entityGraph = await ensureEvidenceEntityGraph(parsed.entityGraph, allowedIndexes, citations, sourceType);
   return {
     status: 200,
     data: {
@@ -3138,6 +3279,7 @@ module.exports = {
   citationAudit,
   normalizedMindMap,
   normalizedEntityGraph,
+  deterministicEvidenceEntityGraph,
   normalizeCitationIndexes,
   normalizeDocumentLayout,
   sourcePages,

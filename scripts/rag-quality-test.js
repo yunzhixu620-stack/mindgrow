@@ -9,6 +9,7 @@ const {
   citationAudit,
   normalizeCitationIndexes,
   normalizedEntityGraph,
+  deterministicEvidenceEntityGraph,
   sourcePages,
   classifyInput,
   classifyArticleRequest,
@@ -83,6 +84,31 @@ check("LLM Wiki entities and relations require direct source evidence", () => {
   assert.strictEqual(graph.relations.length, 1);
   assert.strictEqual(graph.relations[0].type, "uses");
   assert.deepStrictEqual(graph.relations[0].citationIndexes, [2]);
+});
+
+check("article and meeting tools retry evidence-only entity extraction when the primary model omits relations", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "fc-proxy", "index.js"), "utf8");
+  assert.match(source, /async function ensureEvidenceEntityGraph/);
+  assert.match(source, /只做证据约束实体关系抽取的 GraphRAG 索引器/);
+  assert.match(source, /await ensureEvidenceEntityGraph\(parsed\.entityGraph, allowedIndexes, citations, 'meeting'\)/);
+  assert.match(source, /await ensureEvidenceEntityGraph\(parsed\.entityGraph, allowedIndexes, citations, sourceType\)/);
+});
+
+check("deterministic entity fallback extracts only explicit article and meeting relations", () => {
+  const articleQuote = "RAG（Retrieval-Augmented Generation）由 Patrick Lewis 等人在 2020 年提出。RAG 使用 DPR 作为稠密检索器，并从 Wikipedia 索引检索证据。DPR 使用双编码器分别编码问题与段落。实验在 Natural Questions 数据集上评估 Recall@5，结果为 85%。RAG 的生成器采用 BART。BM25 不是该实验的稠密检索器。";
+  const meetingQuote = "张三负责完成检索评测";
+  const graph = deterministicEvidenceEntityGraph([
+    { index: 1, quote: articleQuote, content: articleQuote },
+    { index: 2, quote: meetingQuote, content: meetingQuote },
+  ], new Set([1, 2]));
+  const names = new Set(graph.entities.map((item) => item.name));
+  ["RAG", "DPR", "Wikipedia", "BART", "BM25", "张三", "完成检索评测"].forEach((name) => assert(names.has(name), `missing ${name}`));
+  assert(graph.relations.some((item) => item.type === "uses"));
+  assert(graph.relations.some((item) => item.type === "retrieves_from"));
+  assert(graph.relations.some((item) => item.type === "proposes"));
+  assert(graph.relations.some((item) => item.status === "negated"));
+  assert(graph.relations.some((item) => item.type === "responsible_for"));
+  graph.relations.forEach((item) => assert(item.citationIndexes.length > 0));
 });
 
 check("entity graph migration is tenant-scoped and service-role only", () => {
@@ -340,7 +366,7 @@ check("deterministic Chinese fallback keeps parsing available when localization 
 });
 
 check("handler-boundary article recovery returns a usable Chinese graph with verbatim citations", () => {
-  const content = "[PAGE 1]\nRetrieval-Augmented Generation for Knowledge-Intensive NLP Tasks\nAbstract\nLarge language models have limited access to explicit knowledge. Retrieval-augmented generation combines parametric and non-parametric memory.\n1 Introduction\nThe retriever accesses Wikipedia passages.";
+  const content = "[PAGE 1]\nRetrieval-Augmented Generation for Knowledge-Intensive NLP Tasks\nAbstract\nLarge language models have limited access to explicit knowledge. Retrieval-augmented generation combines parametric and non-parametric memory. RAG uses DPR. DPR uses Wikipedia.\n1 Introduction\nThe retriever accesses Wikipedia passages.";
   const response = recoveredChineseArticleResponse({ content, sourceType: "pdf", fileName: "rag.pdf" }, { content, sourceType: "pdf", fileName: "rag.pdf" });
   assert.strictEqual(response.status, 200);
   assert.strictEqual(response.data.degraded, true);
@@ -349,6 +375,9 @@ check("handler-boundary article recovery returns a usable Chinese graph with ver
   assert(response.data.citations.length > 0);
   assert(content.replace(/\s+/g, " ").includes(response.data.citations[0].quote.replace(/\s+/g, " ")));
   assert(response.data.mindMap.children.every((child) => child.citationIndexes.length > 0));
+  assert(response.data.entityGraph.entities.length >= 3);
+  assert(response.data.entityGraph.relations.length >= 2);
+  assert(response.data.entityGraph.relations.every((relation) => relation.citationIndexes.length > 0));
 });
 
 check("conversation context is used only for real follow-up references", () => {
