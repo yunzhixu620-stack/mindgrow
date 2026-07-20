@@ -23,6 +23,7 @@ import { useMindGrowStore } from "@/store/mindgrow-store";
 import { KnowledgeNode, KnowledgeEdge } from "@/types";
 import { apiFetch } from "@/lib/client-api";
 import { MODE_LIBRARY_CONFIG } from "@/lib/mode-libraries";
+import { entityGraphToKnowledgeGraph, isEntityViewNode } from "@/lib/entity-graph";
 
 // ============================================================
 // Branch color palette
@@ -479,7 +480,7 @@ function buildGraph(
       // One continuous cubic curve is easier to follow than multi-turn elbows.
       type: "default",
       animated: isRelation,
-      label: isRelation ? (isContradiction ? "观点冲突" : "概念关联") : undefined,
+      label: isRelation ? (dbEdge.relationLabel || (isContradiction ? "观点冲突" : "概念关联")) : undefined,
       labelStyle: isRelation ? { fill: isContradiction ? "#fca5a5" : "#f9a8d4", fontSize: 10, fontWeight: 600 } : undefined,
       labelBgStyle: isRelation ? { fill: "#111113", fillOpacity: 0.92 } : undefined,
       labelBgPadding: isRelation ? [5, 3] as [number, number] : undefined,
@@ -578,6 +579,7 @@ export function MindMapPanel() {
   const {
     nodes: storeNodes,
     edges: storeEdges,
+    entityGraph,
     highlightedNodeId,
     removeNode,
     setNodes: setStoreNodes,
@@ -602,7 +604,9 @@ export function MindMapPanel() {
   const [showToolbar, setShowToolbar] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [viewMode, setViewMode] = useState<"outline" | "all" | "custom">("all");
+  const [graphLayer, setGraphLayer] = useState<"concept" | "entity">("concept");
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
+  const [selectedRelationId, setSelectedRelationId] = useState<string | null>(null);
   const [showNodeDetails, setShowNodeDetails] = useState(true);
   const reactFlowInstance = useRef<ReactFlowInstance | null>(null);
   const editInputRef = useRef<HTMLInputElement>(null);
@@ -631,6 +635,17 @@ export function MindMapPanel() {
     }
   }, [editingNode]);
 
+  const entityDisplayGraph = useMemo(() => entityGraphToKnowledgeGraph(entityGraph), [entityGraph]);
+  const showingEntityGraph = graphLayer === "entity" && entityDisplayGraph.nodes.length > 0;
+  const activeNodes = showingEntityGraph ? entityDisplayGraph.nodes : storeNodes;
+  const activeEdges = showingEntityGraph ? entityDisplayGraph.edges : storeEdges;
+
+  useEffect(() => {
+    if (graphLayer === "entity" && entityDisplayGraph.nodes.length === 0) setGraphLayer("concept");
+    if (graphLayer === "concept" && storeNodes.length === 0 && entityDisplayGraph.nodes.length > 0) setGraphLayer("entity");
+    setSelectedRelationId(null);
+  }, [currentMapId, entityDisplayGraph.nodes.length, graphLayer, storeNodes.length]);
+
   // Search handler
   const handleSearch = useCallback((query: string) => {
     setLocalSearch(query);
@@ -639,8 +654,8 @@ export function MindMapPanel() {
       return;
     }
     const q = query.toLowerCase();
-    setSearchResults(storeNodes.filter((n) => n.content.toLowerCase().includes(q)).map((n) => n.id));
-  }, [storeNodes, setSearchResults]);
+    setSearchResults(activeNodes.filter((n) => n.content.toLowerCase().includes(q)).map((n) => n.id));
+  }, [activeNodes, setSearchResults]);
 
   // Close context menu on click outside
   useEffect(() => {
@@ -656,8 +671,10 @@ export function MindMapPanel() {
       ? "会议主题总览"
       : "知识主题总览";
   const displayHierarchy = useMemo(
-    () => buildDisplayHierarchy(storeNodes, storeEdges, currentMapId, overviewLabel),
-    [storeNodes, storeEdges, currentMapId, overviewLabel],
+    () => showingEntityGraph
+      ? { nodes: activeNodes, edges: activeEdges, syntheticNodeCount: 0 }
+      : buildDisplayHierarchy(activeNodes, activeEdges, currentMapId, overviewLabel),
+    [activeNodes, activeEdges, currentMapId, overviewLabel, showingEntityGraph],
   );
 
   const refitGraph = useCallback(() => {
@@ -701,8 +718,8 @@ export function MindMapPanel() {
   // Large maps open as a readable outline instead of shrinking every node into one viewport.
   useEffect(() => {
     const outlineThreshold = isMobile ? 8 : 14;
-    if (!currentMapId || storeNodes.length < outlineThreshold) {
-      const smallMapKey = currentMapId ? `${currentMapId}:small:${isMobile ? "mobile" : "desktop"}:${storeNodes[0]?.id || "empty"}` : null;
+    if (!currentMapId || activeNodes.length < outlineThreshold || showingEntityGraph) {
+      const smallMapKey = currentMapId ? `${currentMapId}:${graphLayer}:small:${isMobile ? "mobile" : "desktop"}:${activeNodes[0]?.id || "empty"}` : null;
       if (currentMapId && initializedLargeMapRef.current !== smallMapKey) {
         initializedLargeMapRef.current = smallMapKey;
         setViewMode("all");
@@ -710,8 +727,8 @@ export function MindMapPanel() {
       }
       return;
     }
-    const childIds = new Set(storeEdges.filter((edge) => edge.relation === "contains").map((edge) => edge.targetId));
-    const rootSignature = storeNodes.filter((node) => !childIds.has(node.id)).map((node) => node.id).sort().join(",");
+    const childIds = new Set(activeEdges.filter((edge) => edge.relation === "contains").map((edge) => edge.targetId));
+    const rootSignature = activeNodes.filter((node) => !childIds.has(node.id)).map((node) => node.id).sort().join(",");
     const largeMapKey = `${currentMapId}:large:${isMobile ? "mobile" : "desktop"}:${rootSignature}`;
     if (initializedLargeMapRef.current === largeMapKey) return;
     initializedLargeMapRef.current = largeMapKey;
@@ -720,7 +737,7 @@ export function MindMapPanel() {
     setCollapsedNodes(getOutlineCollapsedNodes(displayHierarchy.nodes, displayHierarchy.edges));
     setViewMode("outline");
     refitGraph();
-  }, [currentMapId, storeNodes, storeEdges, displayHierarchy, isMobile, setCollapsedNodes, refitGraph]);
+  }, [currentMapId, activeNodes, activeEdges, displayHierarchy, isMobile, showingEntityGraph, graphLayer, setCollapsedNodes, refitGraph]);
 
   const graph = useMemo(
     () => buildGraph(
@@ -731,13 +748,14 @@ export function MindMapPanel() {
   );
 
   const visibleStoredNodeCount = Math.max(0, graph.nodes.length - displayHierarchy.syntheticNodeCount);
-  const hiddenNodeCount = Math.max(0, storeNodes.length - visibleStoredNodeCount);
+  const hiddenNodeCount = Math.max(0, activeNodes.length - visibleStoredNodeCount);
   const overviewNodeId = displayHierarchy.syntheticNodeCount
     ? displayHierarchy.nodes.find((node) => isDisplayOverviewNode(node.id))?.id || null
     : null;
   const isOverviewCollapsed = Boolean(overviewNodeId && collapsedNodes.has(overviewNodeId));
-  const relationCount = storeEdges.filter((edge) => edge.relation !== "contains").length;
-  const citedNodeCount = storeNodes.filter((node) => (node.citations || []).length > 0).length;
+  const relationCount = activeEdges.filter((edge) => edge.relation !== "contains").length;
+  const citedNodeCount = activeNodes.filter((node) => (node.citations || []).length > 0).length;
+  const selectedRelation = selectedRelationId ? activeEdges.find((edge) => edge.id === selectedRelationId) || null : null;
 
   const [flowNodes, setFlowNodes, onNodesChange] = useNodesState(graph.nodes);
   const [flowEdges, setFlowEdges, onEdgesChange] = useEdgesState(graph.edges);
@@ -760,6 +778,7 @@ export function MindMapPanel() {
   const onNodesChangeHandler = useCallback(
     async (changes: NodeChange[]) => {
       onNodesChange(changes);
+      if (showingEntityGraph) return;
       for (const change of changes) {
         if ("id" in change && isDisplayOverviewNode(change.id)) continue;
         if (change.type === "remove") {
@@ -774,7 +793,7 @@ export function MindMapPanel() {
         }
       }
     },
-    [onNodesChange]
+    [onNodesChange, showingEntityGraph]
   );
 
   // Keyboard shortcuts
@@ -783,7 +802,7 @@ export function MindMapPanel() {
       if (e.key === "Delete" || e.key === "Backspace") {
         const active = document.activeElement;
         if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA")) return;
-        const selected = flowNodes.filter((n) => n.selected && !isDisplayOverviewNode(n.id));
+        const selected = flowNodes.filter((n) => n.selected && !isDisplayOverviewNode(n.id) && !isEntityViewNode(n.id));
         if (selected.length === 0) return;
         e.preventDefault();
         pushHistory();
@@ -847,6 +866,7 @@ export function MindMapPanel() {
       if (target.closest('.react-flow__handle')) return;
       const nodeId = nodeEl.getAttribute('data-id');
       if (!nodeId) return;
+      if (isEntityViewNode(nodeId)) return;
       const node = storeNodes.find((n) => n.id === nodeId);
       if (node) setEditingNode({ id: nodeId, content: node.content, desc: node.desc || "" });
     };
@@ -881,7 +901,7 @@ export function MindMapPanel() {
       if (!nodeEl) return;
       const nodeId = nodeEl.getAttribute('data-id');
       if (!nodeId) return;
-      if (isDisplayOverviewNode(nodeId)) return;
+      if (isDisplayOverviewNode(nodeId) || isEntityViewNode(nodeId)) return;
       e.preventDefault();
       setContextMenu({ nodeId, x: e.clientX, y: e.clientY });
     };
@@ -958,14 +978,14 @@ export function MindMapPanel() {
 
   // Export Markdown
   const handleExportMarkdown = useCallback(() => {
-    const md = exportToMarkdown(storeNodes, storeEdges);
+    const md = exportToMarkdown(activeNodes, activeEdges);
     const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = `mindgrow-${new Date().toISOString().slice(0, 10)}.md`;
     a.click();
     URL.revokeObjectURL(a.href);
-  }, [storeNodes, storeEdges]);
+  }, [activeNodes, activeEdges]);
 
   // Export PDF
   const handleExportPdf = useCallback(() => {
@@ -1002,7 +1022,7 @@ export function MindMapPanel() {
   }, []);
 
   // Empty state
-  if (storeNodes.length === 0) {
+  if (activeNodes.length === 0) {
     return (
       <div className="flex-1 min-w-0 flex items-center justify-center bg-[var(--background)]" data-testid="knowledge-graph-workspace" data-graph-mode={currentMode}>
         <div className="text-center space-y-6 max-w-[360px] px-4">
@@ -1025,7 +1045,7 @@ export function MindMapPanel() {
   }
 
   const isVertical = direction === "vertical";
-  const focusedNode = focusedNodeId ? storeNodes.find((node) => node.id === focusedNodeId) : null;
+  const focusedNode = focusedNodeId ? activeNodes.find((node) => node.id === focusedNodeId) : null;
 
   return (
     <div className="flex-1 min-w-0 bg-[var(--background)] relative" data-testid="knowledge-graph-workspace" data-graph-mode={currentMode}>
@@ -1045,26 +1065,40 @@ export function MindMapPanel() {
 
         {(!isMobile || showToolbar) && (
           <>
-            <div className="rounded-xl border border-[var(--primary-border)] bg-[var(--primary-subtle)] px-3 py-2 text-xs font-semibold text-[var(--primary-hover)]">{MODE_LIBRARY_CONFIG[currentMode].emoji} {MODE_LIBRARY_CONFIG[currentMode].shortLabel}知识图谱</div>
-            <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/5 px-3 py-2 text-[10px] font-medium text-emerald-200" title="新增内容会成为节点；层级、关联与冲突关系会持续连接旧知识">
-              🌱 生长中 · {storeNodes.length} 节点 · {storeEdges.length} 条连接{relationCount > 0 ? ` · ${relationCount} 条语义关系` : ""}{citedNodeCount > 0 ? ` · ${citedNodeCount} 个可追溯节点` : ""}
+            <div className="rounded-xl border border-[var(--primary-border)] bg-[var(--primary-subtle)] px-3 py-2 text-xs font-semibold text-[var(--primary-hover)]">{MODE_LIBRARY_CONFIG[currentMode].emoji} {showingEntityGraph ? "实体知识图谱" : `${MODE_LIBRARY_CONFIG[currentMode].shortLabel}知识图谱`}</div>
+            <div className="flex gap-0 rounded-xl border border-[var(--border)] bg-[var(--card)] p-1" data-testid="graph-layer-switch">
+              <button
+                type="button"
+                onClick={() => { setGraphLayer("concept"); setSelectedRelationId(null); setCollapsedNodes(new Set<string>()); setViewMode("all"); refitGraph(); }}
+                className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-all ${graphLayer === "concept" ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"}`}
+              >概念图 {storeNodes.length}</button>
+              <button
+                type="button"
+                disabled={entityGraph.entities.length === 0}
+                onClick={() => { setGraphLayer("entity"); setSelectedRelationId(null); setCollapsedNodes(new Set<string>()); setViewMode("all"); refitGraph(); }}
+                className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-all disabled:cursor-not-allowed disabled:opacity-35 ${graphLayer === "entity" ? "bg-violet-400 text-black" : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"}`}
+                title={entityGraph.entities.length ? "按实体与有向关系查看，可点击关系核对原文" : "当前知识库还没有可溯源实体；重新解析并保存文章或会议后生成"}
+              >实体图 {entityGraph.entities.length}</button>
             </div>
-            <div className="flex gap-0 bg-[var(--card)] border border-[var(--border)] rounded-xl p-1">
+            <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/5 px-3 py-2 text-[10px] font-medium text-emerald-200" title="新增内容会成为节点；层级、关联与冲突关系会持续连接旧知识">
+              🌱 生长中 · {activeNodes.length} 节点 · {activeEdges.length} 条连接{relationCount > 0 ? ` · ${relationCount} 条${showingEntityGraph ? "有向" : "语义"}关系` : ""}{citedNodeCount > 0 ? ` · ${citedNodeCount} 个可追溯节点` : ""}
+            </div>
+            {!showingEntityGraph && <div className="flex gap-0 bg-[var(--card)] border border-[var(--border)] rounded-xl p-1">
               <button
                 onClick={showOutline}
                 className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
                   viewMode === "outline" ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
                 }`}
                 title="只显示主题和主要分支"
-              >{isOverviewCollapsed ? `概览 1 · 共 ${storeNodes.length}` : `主干 ${visibleStoredNodeCount}/${storeNodes.length}`}</button>
+              >{isOverviewCollapsed ? `概览 1 · 共 ${activeNodes.length}` : `主干 ${visibleStoredNodeCount}/${activeNodes.length}`}</button>
               <button
                 onClick={showAllNodes}
                 className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
                   viewMode === "all" ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
                 }`}
                 title="展开全部节点，可拖动画布浏览"
-              >全部 {storeNodes.length}</button>
-            </div>
+              >全部 {activeNodes.length}</button>
+            </div>}
 
             {focusedNode && (
               <button
@@ -1269,9 +1303,29 @@ export function MindMapPanel() {
       {hiddenNodeCount > 0 && (
         <div className="pointer-events-none absolute bottom-4 left-3 z-40 rounded-xl border border-[var(--border)] bg-[var(--card)]/95 px-3 py-2 text-[11px] text-[var(--muted-foreground)] shadow-lg backdrop-blur">
           {isOverviewCollapsed
-            ? `概览模式 · ${storeNodes.length} 个原节点完整保留 · 点击 ＋${storeNodes.length} 展开`
-            : `当前显示 ${visibleStoredNodeCount}/${storeNodes.length} 个节点 · 点击节点上的 ＋N 展开`}
+            ? `概览模式 · ${activeNodes.length} 个原节点完整保留 · 点击 ＋${activeNodes.length} 展开`
+            : `当前显示 ${visibleStoredNodeCount}/${activeNodes.length} 个节点 · 点击节点上的 ＋N 展开`}
         </div>
+      )}
+
+      {selectedRelation && (selectedRelation.citations || []).length > 0 && (
+        <aside className="absolute bottom-4 left-3 z-[70] w-[min(440px,calc(100%-24px))] rounded-2xl border border-violet-400/30 bg-[var(--card)]/95 p-4 shadow-2xl backdrop-blur" data-testid="relation-evidence-panel">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-violet-300">关系原文证据</div>
+              <h3 className="mt-1 text-sm font-semibold text-[var(--foreground)]">{selectedRelation.relationLabel || "实体关系"}</h3>
+            </div>
+            <button type="button" onClick={() => setSelectedRelationId(null)} className="rounded-lg border border-[var(--border)] px-2 py-1 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)]" aria-label="关闭关系证据">×</button>
+          </div>
+          <div className="mt-3 max-h-52 space-y-2 overflow-y-auto">
+            {(selectedRelation.citations || []).map((citation) => (
+              <div key={`${citation.documentId || "source"}-${citation.index}`} className="rounded-xl border border-white/10 bg-black/20 p-3 text-[11px] leading-5 text-[var(--text-secondary)]">
+                <div className="mb-1 font-semibold text-violet-200">[{citation.index}] {citation.title || "来源文档"} · {citation.locator || "原文"}</div>
+                <p>“{citation.quote}”</p>
+              </div>
+            ))}
+          </div>
+        </aside>
       )}
 
       <ReactFlow
@@ -1280,6 +1334,9 @@ export function MindMapPanel() {
         onNodesChange={onNodesChangeHandler}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
+        onEdgeClick={(_, edge) => {
+          if (showingEntityGraph) setSelectedRelationId(edge.id);
+        }}
         nodeTypes={nodeTypes}
         onInit={(instance) => { reactFlowInstance.current = instance; }}
         fitView

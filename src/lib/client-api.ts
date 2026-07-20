@@ -1,6 +1,7 @@
 import { API_BASE_URL } from "@/lib/config";
 import { supabase } from "@/lib/supabase-browser";
-import type { AIMindMap, Category, Citation, KnowledgeEdge, KnowledgeNode, MindMap } from "@/types";
+import { aiEntityGraphToEntityGraph } from "@/lib/entity-graph";
+import type { AIEntityGraph, AIMindMap, Category, Citation, EntityGraph, KnowledgeEdge, KnowledgeNode, MindMap } from "@/types";
 
 const STORAGE_KEY = "mindgrow.local.v2";
 let activeWorkspaceId: string | null = null;
@@ -15,6 +16,7 @@ type LocalState = {
   categories: Category[];
   nodes: Record<string, KnowledgeNode[]>;
   edges: Record<string, KnowledgeEdge[]>;
+  entityGraphs: Record<string, EntityGraph>;
   layouts: Record<string, { x: number; y: number }>;
 };
 
@@ -68,6 +70,7 @@ function seedState(): LocalState {
     categories: [],
     nodes: { map_default: nodes },
     edges: { map_default: edges },
+    entityGraphs: { map_default: { entities: [], relations: [] } },
     layouts: {},
   };
 }
@@ -91,6 +94,7 @@ function loadState(): LocalState {
     }
     const parsed = JSON.parse(raw) as LocalState;
     if (parsed.version !== 2 || !Array.isArray(parsed.maps)) throw new Error("Unsupported local data");
+    parsed.entityGraphs ||= {};
     return parsed;
   } catch {
     const seeded = seedState();
@@ -253,7 +257,7 @@ function handleKnowledge(path: string, init?: RequestInit): Response {
       return json({ query, results, total: results.length });
     }
     const mapId = url.searchParams.get("mapId") || "map_default";
-    return json({ nodes: state.nodes[mapId] || [], edges: state.edges[mapId] || [] });
+    return json({ nodes: state.nodes[mapId] || [], edges: state.edges[mapId] || [], entityGraph: state.entityGraphs[mapId] || { entities: [], relations: [] } });
   }
 
   if (method === "DELETE") {
@@ -298,7 +302,7 @@ function handleKnowledge(path: string, init?: RequestInit): Response {
       color: body.color || "#22d3a7", isDefault: false, categoryId: body.categoryId || null,
       nodeCount: 0, createdAt: timestamp, updatedAt: timestamp,
     };
-    state.maps.unshift(map); state.nodes[map.id] = []; state.edges[map.id] = [];
+    state.maps.unshift(map); state.nodes[map.id] = []; state.edges[map.id] = []; state.entityGraphs[map.id] = { entities: [], relations: [] };
     saveState(state);
     return json({ map });
   }
@@ -310,7 +314,7 @@ function handleKnowledge(path: string, init?: RequestInit): Response {
       color: body.color || "#22d3a7", isDefault: false, categoryId: body.categoryId || null,
       nodeCount: 0, createdAt: timestamp, updatedAt: timestamp,
     };
-    state.maps.unshift(map); state.nodes[map.id] = []; state.edges[map.id] = [];
+    state.maps.unshift(map); state.nodes[map.id] = []; state.edges[map.id] = []; state.entityGraphs[map.id] = { entities: [], relations: [] };
     addMindMap(state, map.id, body.template, "ai_generated");
     saveState(state);
     return json({ map });
@@ -319,12 +323,12 @@ function handleKnowledge(path: string, init?: RequestInit): Response {
     const map = state.maps.find((item) => item.id === body.mapId);
     if (!map || map.isDefault) return json({ error: "Cannot delete default map" }, 400);
     state.maps = state.maps.filter((item) => item.id !== body.mapId);
-    delete state.nodes[body.mapId]; delete state.edges[body.mapId];
+    delete state.nodes[body.mapId]; delete state.edges[body.mapId]; delete state.entityGraphs[body.mapId];
     saveState(state);
     return json({ success: true });
   }
   if (action === "clearMap") {
-    state.nodes[body.mapId] = []; state.edges[body.mapId] = []; updateMapCount(state, body.mapId);
+    state.nodes[body.mapId] = []; state.edges[body.mapId] = []; state.entityGraphs[body.mapId] = { entities: [], relations: [] }; updateMapCount(state, body.mapId);
     saveState(state);
     return json({ success: true });
   }
@@ -365,6 +369,9 @@ function handleKnowledge(path: string, init?: RequestInit): Response {
   if (body.mindMap?.root) {
     const targetTopic = body.placement?.confidence >= 0.45 ? String(body.placement.targetTopic || "") : "";
     const result = addMindMap(state, mapId, body.mindMap, body.source || "ai_generated", body.citations || [], targetTopic);
+    if (body.entityGraph) {
+      state.entityGraphs[mapId] = aiEntityGraphToEntityGraph(body.entityGraph as AIEntityGraph, body.citations || [], `local:${mapId}:${Date.now()}`);
+    }
     saveState(state);
     return json({
       node: result.root,
@@ -373,6 +380,8 @@ function handleKnowledge(path: string, init?: RequestInit): Response {
       totalNodes: result.createdNodes.length,
       totalEdges: result.createdEdges.length,
       reusedNodes: result.reusedNodes.length,
+      entityCount: state.entityGraphs[mapId]?.entities.length || 0,
+      relationCount: state.entityGraphs[mapId]?.relations.length || 0,
     });
   }
   if (!body.content) return json({ error: "Content is required" }, 400);
@@ -516,6 +525,41 @@ function handleChat(init?: RequestInit): Response {
   });
 }
 
+function buildLocalEntityGraph(mindMap: AIMindMap): AIEntityGraph {
+  const entities: AIEntityGraph["entities"] = [{
+    tempId: "E1",
+    name: mindMap.root,
+    type: "concept",
+    aliases: [],
+    description: mindMap.rootDesc || "",
+    citationIndexes: mindMap.rootCitationIndexes || [],
+    confidence: 0.9,
+  }];
+  const relations: AIEntityGraph["relations"] = [];
+  (mindMap.children || []).slice(0, 16).forEach((child, index) => {
+    const tempId = `E${index + 2}`;
+    entities.push({
+      tempId,
+      name: child.topic,
+      type: "concept",
+      aliases: [],
+      description: child.desc || "",
+      citationIndexes: child.citationIndexes || [],
+      confidence: 0.8,
+    });
+    relations.push({
+      source: "E1",
+      target: tempId,
+      type: "contains_concept",
+      label: "包含概念",
+      status: "asserted",
+      citationIndexes: child.citationIndexes || [],
+      confidence: 0.75,
+    });
+  });
+  return { entities, relations };
+}
+
 function handleLocalTool(path: string, init?: RequestInit): Response {
   const body = bodyOf(init);
   const toolPath = new URL(path, "http://mindgrow.local").pathname;
@@ -538,6 +582,7 @@ function handleLocalTool(path: string, init?: RequestInit): Response {
       risks: [],
       openQuestions: [{ text: "本地演示模式未调用云端模型，请登录云端版获得完整提取结果", citationIndexes: [] }],
       mindMap,
+      entityGraph: buildLocalEntityGraph(mindMap),
       citations,
       documentChunks: citations,
       citationAudit: { claimCount: 1, citedClaimCount: citations.length ? 1 : 0, coverage: citations.length ? 1 : 0, verifiedQuoteCount: citations.length, warnings: [] },
@@ -560,6 +605,7 @@ function handleLocalTool(path: string, init?: RequestInit): Response {
       arguments: [],
       questions: ["文章有哪些适用边界？"],
       mindMap,
+      entityGraph: buildLocalEntityGraph(mindMap),
       citations,
       documentChunks: citations,
       citationAudit: { claimCount: 1 + mindMap.children.length, citedClaimCount: citations.length ? 1 + mindMap.children.length : 0, coverage: citations.length ? 1 : 0, verifiedQuoteCount: citations.length, warnings: [] },

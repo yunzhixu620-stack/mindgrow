@@ -311,6 +311,24 @@ const revealAllStoredNodes = async (page) => {
     await page.screenshot({ path: path.join(artifactDir, "desktop-article-structured-answer.png"), fullPage: true });
   });
 
+  await check("LLM Wiki entity graph exposes typed relations with verbatim evidence", async () => {
+    const storedGraph = await page.evaluate((mapId) => JSON.parse(localStorage.getItem("mindgrow.local.v2")).entityGraphs?.[mapId], articleLibraryId);
+    if (!storedGraph?.entities?.length || !storedGraph?.relations?.length) throw new Error("Saved article has no entity graph");
+    await clickByText(page, '[data-testid="graph-layer-switch"] button', "实体图");
+    await page.waitForFunction(() => document.body.innerText.includes("实体知识图谱"));
+    await page.waitForFunction(() => document.querySelectorAll(".react-flow__node").length >= 2 && document.querySelectorAll(".react-flow__edge").length >= 1);
+    const relationClicked = await page.$eval(".react-flow__edge", (edge) => {
+      edge.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      return true;
+    });
+    if (!relationClicked) throw new Error("Entity relation cannot be selected");
+    await page.waitForSelector('[data-testid="relation-evidence-panel"]');
+    const evidence = await page.$eval('[data-testid="relation-evidence-panel"]', (panel) => panel.textContent);
+    if (!evidence.includes("关系原文证据") || !evidence.includes("原文片段")) throw new Error("Relation evidence is not traceable to the original text");
+    await clickByText(page, '[data-testid="graph-layer-switch"] button', "概念图");
+    await page.waitForFunction(() => !document.body.innerText.includes("实体知识图谱"));
+  });
+
   await check("article project cards keep the latest navigation target", async () => {
     await page.click('button[title="新建知识库"]');
     await page.waitForSelector('input[placeholder="知识库名称..."]');

@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { KnowledgeNode, KnowledgeEdge, ChatMessage, AISuggestion, AIMindMap, Category, MindMap } from "@/types";
+import { KnowledgeNode, KnowledgeEdge, ChatMessage, AISuggestion, AIMindMap, Category, MindMap, EntityGraph } from "@/types";
 
 export type AppMode = "knowledge" | "meeting" | "article";
 export type LayoutDirection = "vertical" | "horizontal";
@@ -39,6 +39,8 @@ interface MindGrowState {
   removeNode: (id: string) => void;
   setEdges: (edges: KnowledgeEdge[]) => void;
   addEdge: (edge: KnowledgeEdge) => void;
+  entityGraph: EntityGraph;
+  setEntityGraph: (graph: EntityGraph) => void;
 
   // Undo/Redo
   history: HistoryEntry[];
@@ -121,6 +123,7 @@ export const useMindGrowStore = create<MindGrowState>((set, get) => ({
     // the previous library from flashing while the next request is in flight.
     nodes: [],
     edges: [],
+    entityGraph: { entities: [], relations: [] },
     searchResults: [],
     highlightedNodeId: null,
     collapsedNodes: new Set<string>(),
@@ -151,6 +154,8 @@ export const useMindGrowStore = create<MindGrowState>((set, get) => ({
   })),
   setEdges: (edges) => set({ edges }),
   addEdge: (edge) => set((state) => ({ edges: [...state.edges, edge] })),
+  entityGraph: { entities: [], relations: [] },
+  setEntityGraph: (entityGraph) => set({ entityGraph }),
 
   // Undo/Redo
   history: [],
@@ -277,6 +282,7 @@ export const useMindGrowStore = create<MindGrowState>((set, get) => ({
       // and reloads the board-owned library after this atomic reset.
       nodes: [],
       edges: [],
+      entityGraph: { entities: [], relations: [] },
       messages: [],
       messageMapId: null,
       chatHistory,

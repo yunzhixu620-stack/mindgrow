@@ -8,6 +8,7 @@ const {
   bestCitationIndexes,
   citationAudit,
   normalizeCitationIndexes,
+  normalizedEntityGraph,
   sourcePages,
   classifyInput,
   classifyArticleRequest,
@@ -59,6 +60,38 @@ check("public source ids remain URL-safe on legacy Node runtimes", () => {
   const encoded = safeBase64Url("https://例子.example/path?a=1&b=2");
   assert(encoded.length > 0);
   assert(!/[+/=]/.test(encoded));
+});
+
+check("LLM Wiki entities and relations require direct source evidence", () => {
+  const citations = [
+    { index: 1, quote: "RAG combines parametric memory with a non-parametric Wikipedia index." },
+    { index: 2, quote: "DPR is used as the dense retriever for RAG." },
+  ];
+  const graph = normalizedEntityGraph({
+    entities: [
+      { tempId: "E1", name: "RAG", type: "model", citationIndexes: [1], confidence: 0.95 },
+      { tempId: "E2", name: "DPR", type: "method", citationIndexes: [2], confidence: 0.9 },
+      { tempId: "E3", name: "Unsupported Entity", type: "model", citationIndexes: [99], confidence: 0.9 },
+    ],
+    relations: [
+      { source: "E1", target: "E2", type: "uses", label: "使用", citationIndexes: [2], confidence: 0.9 },
+      { source: "E2", target: "E3", type: "related_to", citationIndexes: [2], confidence: 0.9 },
+      { source: "E2", target: "E1", type: "related_to", citationIndexes: [], confidence: 0.9 },
+    ],
+  }, new Set([1, 2]), citations);
+  assert.deepStrictEqual(graph.entities.map((item) => item.tempId), ["E1", "E2"]);
+  assert.strictEqual(graph.relations.length, 1);
+  assert.strictEqual(graph.relations[0].type, "uses");
+  assert.deepStrictEqual(graph.relations[0].citationIndexes, [2]);
+});
+
+check("entity graph migration is tenant-scoped and service-role only", () => {
+  const migration = fs.readFileSync(path.join(__dirname, "..", "supabase-v10-entity-graph-migration.sql"), "utf8");
+  ["graph_entities", "graph_relations", "graph_evidence"].forEach((table) => {
+    assert(migration.includes(`CREATE TABLE IF NOT EXISTS ${table}`));
+    assert(migration.includes(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`));
+  });
+  assert(migration.includes("REVOKE ALL ON TABLE graph_entities, graph_relations, graph_evidence FROM PUBLIC, anon, authenticated"));
 });
 
 const all = fixtures.map((fixture) => {

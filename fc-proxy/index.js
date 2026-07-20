@@ -17,7 +17,7 @@ const PORT = Number.parseInt(process.env.FC_SERVER_PORT || process.env.PORT || '
 // into a false 503. Transient 429/5xx responses are retried below.
 const UPSTREAM_TIMEOUT_MS = Number.parseInt(process.env.UPSTREAM_TIMEOUT_MS || '45000', 10);
 const AUTH_REQUIRED = process.env.AUTH_REQUIRED !== 'false';
-const API_VERSION = '10.3.2';
+const API_VERSION = '10.4.0';
 const DASHSCOPE_AUDIO_ENDPOINT = process.env.DASHSCOPE_AUDIO_ENDPOINT || 'https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer';
 const ALLOWED_ORIGINS = new Set(
   (process.env.ALLOWED_ORIGINS || 'https://yunzhixu620-stack.github.io')
@@ -1418,6 +1418,53 @@ function normalizedMindMap(value, fallbackTitle, allowedIndexes) {
   };
 }
 
+const ENTITY_TYPES = new Set([
+  'person', 'organization', 'model', 'method', 'dataset', 'metric', 'task',
+  'event', 'decision', 'time', 'concept', 'claim', 'other',
+]);
+const RELATION_STATUSES = new Set(['asserted', 'historical', 'negated', 'proposed']);
+
+function normalizedEntityGraph(value, allowedIndexes, citations) {
+  const input = value && typeof value === 'object' ? value : {};
+  const evidence = Array.isArray(citations) ? citations : [];
+  const entities = (Array.isArray(input.entities) ? input.entities : []).slice(0, 40).map((item, index) => {
+    const name = String((item && (item.name || item.canonicalName)) || '').trim().slice(0, 300);
+    const description = String((item && item.description) || '').trim().slice(0, 1200);
+    const typeValue = String((item && (item.type || item.entityType)) || 'other').trim().toLowerCase();
+    const type = ENTITY_TYPES.has(typeValue) ? typeValue : 'other';
+    const citationIndexes = verifiedIndexes(
+      item && item.citationIndexes, allowedIndexes, `${name} ${description}`, evidence,
+    );
+    const aliases = [...new Set((Array.isArray(item && item.aliases) ? item.aliases : [])
+      .map((alias) => String(alias || '').trim().slice(0, 200)).filter((alias) => alias && alias !== name))].slice(0, 12);
+    const confidence = Math.min(1, Math.max(0, Number(item && item.confidence) || 0.75));
+    return {
+      tempId: String((item && (item.tempId || item.id)) || `E${index + 1}`).trim().slice(0, 80),
+      name,
+      type,
+      aliases,
+      description,
+      citationIndexes,
+      confidence,
+    };
+  }).filter((item) => item.tempId && item.name && item.citationIndexes.length > 0 && item.confidence >= 0.45);
+  const entityIds = new Set(entities.map((item) => item.tempId));
+  const relations = (Array.isArray(input.relations) ? input.relations : []).slice(0, 80).map((item) => {
+    const source = String((item && (item.source || item.sourceId)) || '').trim().slice(0, 80);
+    const target = String((item && (item.target || item.targetId)) || '').trim().slice(0, 80);
+    const rawType = String((item && (item.type || item.relationType)) || 'related_to').trim().toLowerCase();
+    const type = rawType.replace(/[^a-z0-9_:-]/g, '_').replace(/_+/g, '_').slice(0, 80) || 'related_to';
+    const label = String((item && item.label) || type).trim().slice(0, 120);
+    const rawStatus = String((item && item.status) || 'asserted').trim().toLowerCase();
+    const status = RELATION_STATUSES.has(rawStatus) ? rawStatus : 'asserted';
+    const citationIndexes = normalizeCitationIndexes(item && item.citationIndexes, allowedIndexes);
+    const confidence = Math.min(1, Math.max(0, Number(item && item.confidence) || 0.7));
+    return { source, target, type, label, status, citationIndexes, confidence };
+  }).filter((item) => entityIds.has(item.source) && entityIds.has(item.target) && item.source !== item.target
+    && item.citationIndexes.length > 0 && item.confidence >= 0.5);
+  return { entities, relations };
+}
+
 function englishHeavyArticleText(value) {
   const text = String(value || '').trim();
   if (!text) return false;
@@ -1853,6 +1900,8 @@ function normalizedCitedTexts(value, allowedIndexes) {
   })).filter((item) => item.text);
 }
 
+const ENTITY_GRAPH_SCHEMA_PROMPT = '同时返回 entityGraph：{"entities":[{"tempId":"E1","name":"规范名称","type":"person|organization|model|method|dataset|metric|task|event|decision|time|concept|claim|other","aliases":[],"description":"","citationIndexes":[1],"confidence":0.9}],"relations":[{"source":"E1","target":"E2","type":"uses|proposes|evaluated_on|achieves|depends_on|contradicts|responsible_for|due_on|related_to","label":"中文关系标签","status":"asserted|historical|negated|proposed","citationIndexes":[1],"confidence":0.9}]}。实体最多 24 个、关系最多 36 条；每个实体和每条关系都必须有直接支持它的 C 编号。关系必须有明确方向，不能仅因语义相似生成；没有逐字证据的关系不要输出。实体名称保留论文/会议中的规范原名，中英文别名放 aliases。';
+
 async function handleMeetingTool(body) {
   const transcript = String(body.transcript || '').trim();
   if (transcript.length < 10) return { status: 400, data: { error: '请至少输入 10 个字的会议内容', code: 'INVALID_INPUT' } };
@@ -1864,7 +1913,7 @@ async function handleMeetingTool(body) {
   const raw = await dashscopeChat([
     {
       role: 'system',
-      content: '你是严谨且可追溯的会议助手。只返回 JSON：{"title":"","summary":"","summaryCitationIndexes":[1],"topics":[{"title":"","citationIndexes":[1],"details":[{"text":"","citationIndexes":[1]}]}],"decisions":[{"text":"","citationIndexes":[1]}],"actionItems":[{"task":"","owner":"","due":"","status":"待办","citationIndexes":[1]}],"risks":[{"text":"","citationIndexes":[1]}],"openQuestions":[{"text":"","citationIndexes":[1]}],"mindMap":{"root":"","rootDesc":"","rootCitationIndexes":[1],"children":[{"topic":"","desc":"","citationIndexes":[1],"items":[""],"itemCitationIndexes":[[1]]}]}}。mindMap.children 必须聚合为 3-6 个会议主干，行动项、证据与细节放到 items，不能把每句话都平铺为一级节点，也不得删减重要信息。只能引用提供的 C 编号；每项结论必须有直接证据；更正后的信息覆盖旧信息；未决定、未批准和开放问题不得写成决议；不得编造人名、日期或结论。',
+      content: `你是严谨且可追溯的会议助手。只返回 JSON：{"title":"","summary":"","summaryCitationIndexes":[1],"topics":[{"title":"","citationIndexes":[1],"details":[{"text":"","citationIndexes":[1]}]}],"decisions":[{"text":"","citationIndexes":[1]}],"actionItems":[{"task":"","owner":"","due":"","status":"待办","citationIndexes":[1]}],"risks":[{"text":"","citationIndexes":[1]}],"openQuestions":[{"text":"","citationIndexes":[1]}],"mindMap":{"root":"","rootDesc":"","rootCitationIndexes":[1],"children":[{"topic":"","desc":"","citationIndexes":[1],"items":[""],"itemCitationIndexes":[[1]]}]},"entityGraph":{"entities":[],"relations":[]}}。mindMap.children 必须聚合为 3-6 个会议主干，行动项、证据与细节放到 items，不能把每句话都平铺为一级节点，也不得删减重要信息。只能引用提供的 C 编号；每项结论必须有直接证据；更正后的信息覆盖旧信息；未决定、未批准和开放问题不得写成决议；不得编造人名、日期或结论。${ENTITY_GRAPH_SCHEMA_PROMPT}`,
     },
     { role: 'user', content: `会议标题：${title}\n参会人：${participants || '未提供'}\n带编号的会议原文：\n${evidencePrompt(citations)}` },
   ], 'qwen-plus', 2400, 0.1);
@@ -1905,6 +1954,7 @@ async function handleMeetingTool(body) {
     ...decisions, ...risks, ...openQuestions,
     ...actionItems.map((item) => ({ text: `${item.task} ${item.owner} ${item.due}`, citationIndexes: item.citationIndexes })),
   ], citations);
+  const entityGraph = normalizedEntityGraph(parsed.entityGraph, allowedIndexes, citations);
   return {
     status: 200,
     data: {
@@ -1917,6 +1967,7 @@ async function handleMeetingTool(body) {
       risks,
       openQuestions,
       mindMap,
+      entityGraph,
       citations,
       documentChunks: citations,
       citationAudit: audit,
@@ -1961,7 +2012,7 @@ async function handleArticleTool(body) {
   const raw = await dashscopeChat([
     {
       role: 'system',
-      content: '你是忠于原文的论文与文章解析助手。只返回严格 JSON：{"title":"","summary":"","summaryCitationIndexes":[1],"keyPoints":[{"text":"","citationIndexes":[1]}],"arguments":[{"claim":"","evidence":"","citationIndexes":[1]}],"questions":[""],"mindMap":{"root":"","rootDesc":"","rootCitationIndexes":[1],"children":[{"topic":"","desc":"","citationIndexes":[1],"items":[""],"itemCitationIndexes":[[1]]}]}}。论文的 mindMap.children 优先使用“研究问题、方法/架构、数据与实验、结果、局限与启示”等 3-6 个语义主干；具体模型、指标、对比和证据放入 items，不得把大量细节平铺为一级节点，也不得因聚合而删减原文信息。所有标题、摘要、要点、论证、问题和导图节点必须使用简体中文；英文原文要准确翻译成中文，专业术语或缩写可在中文后用括号保留英文。输入由带页码/段落定位的 C 编号证据块组成。每个结论、数字、表格结论和导图分支必须引用直接支持它的 C 编号；只能引用给定编号；不得自行填写 quote 或页码；引用原文保持原始语言，不得伪造中文原文；证据不足就省略结论，不得补充原文没有的事实。',
+      content: `你是忠于原文的论文与文章解析助手。只返回严格 JSON：{"title":"","summary":"","summaryCitationIndexes":[1],"keyPoints":[{"text":"","citationIndexes":[1]}],"arguments":[{"claim":"","evidence":"","citationIndexes":[1]}],"questions":[""],"mindMap":{"root":"","rootDesc":"","rootCitationIndexes":[1],"children":[{"topic":"","desc":"","citationIndexes":[1],"items":[""],"itemCitationIndexes":[[1]]}]},"entityGraph":{"entities":[],"relations":[]}}。论文的 mindMap.children 优先使用“研究问题、方法/架构、数据与实验、结果、局限与启示”等 3-6 个语义主干；具体模型、指标、对比和证据放入 items，不得把大量细节平铺为一级节点，也不得因聚合而删减原文信息。所有标题、摘要、要点、论证、问题和导图节点必须使用简体中文；英文原文要准确翻译成中文，专业术语或缩写可在中文后用括号保留英文。输入由带页码/段落定位的 C 编号证据块组成。每个结论、数字、表格结论和导图分支必须引用直接支持它的 C 编号；只能引用给定编号；不得自行填写 quote 或页码；引用原文保持原始语言，不得伪造中文原文；证据不足就省略结论，不得补充原文没有的事实。${ENTITY_GRAPH_SCHEMA_PROMPT}`,
     },
     { role: 'user', content: `文章来源：${sourceUrl || fileName || '用户粘贴'}\n可核验证据块：\n${evidencePrompt(citations)}` },
   ], 'qwen-plus', 3600, 0.1);
@@ -2033,6 +2084,7 @@ async function handleArticleTool(body) {
     ...mindMap.children.map((item) => ({ text: `${item.topic} ${item.desc || ''}`, citationIndexes: item.citationIndexes })),
   ], citations);
   const extraction = body.extraction && typeof body.extraction === 'object' ? body.extraction : {};
+  const entityGraph = normalizedEntityGraph(parsed.entityGraph, allowedIndexes, citations);
   return {
     status: 200,
     data: {
@@ -2043,6 +2095,7 @@ async function handleArticleTool(body) {
       arguments: argumentsList,
       questions: Array.isArray(parsed.questions) ? parsed.questions.map(String).slice(0, 30) : [],
       mindMap,
+      entityGraph,
       citations,
       documentChunks: citations,
       citationAudit: audit,
@@ -2315,7 +2368,176 @@ async function createDocumentChunkRows(workspaceId, mapId, documentId, chunks) {
   return { count: normalized.length, embedded, status: embedded === normalized.length ? 'ready' : (embedded ? 'partial' : 'keyword_only') };
 }
 
-async function createGraph(workspaceId, mapId, mindMap, source, document, sourceCitations, placement, documentChunks, extraction) {
+function normalizedEntityName(value) {
+  return normalizeSpaces(value).toLocaleLowerCase().replace(/[\s·•—–_:/\\|()[\]{}'"“”‘’，,。.；;!?！？]+/g, ' ').trim().slice(0, 300);
+}
+
+function stableGraphId(prefix, value) {
+  return `${prefix}_${crypto.createHash('sha1').update(String(value || '')).digest('hex').slice(0, 24)}`;
+}
+
+function graphEvidenceCitation(row, documentsById) {
+  const document = documentsById.get(row.document_id) || {};
+  return {
+    index: Number(row.citation_index || 0),
+    quote: String(row.quote || ''),
+    locator: String(row.locator || ''),
+    documentId: String(row.document_id || ''),
+    title: String(document.title || ''),
+    sourceUrl: String(document.source_url || ''),
+    fileName: String(document.file_name || ''),
+    sourceType: String(document.source_type || ''),
+  };
+}
+
+async function loadEntityGraph(workspaceId, mapId) {
+  const workspace = encodeURIComponent(workspaceId);
+  const map = encodeURIComponent(mapId);
+  try {
+    const [entities, relations, evidence, documents] = await Promise.all([
+      supabaseRequest('GET', `graph_entities?workspace_id=eq.${workspace}&map_id=eq.${map}&select=*&order=confidence.desc,canonical_name.asc&limit=2000`),
+      supabaseRequest('GET', `graph_relations?workspace_id=eq.${workspace}&map_id=eq.${map}&select=*&order=confidence.desc&limit=4000`),
+      supabaseRequest('GET', `graph_evidence?workspace_id=eq.${workspace}&map_id=eq.${map}&select=*&order=citation_index.asc&limit=8000`),
+      supabaseRequest('GET', `source_documents?workspace_id=eq.${workspace}&map_id=eq.${map}&select=id,title,source_url,file_name,source_type&limit=1000`),
+    ]);
+    if (![entities, relations, evidence, documents].every(Array.isArray)) throw dependencyError('entity_graph');
+    const documentsById = new Map(documents.map((item) => [item.id, item]));
+    const evidenceBySubject = new Map();
+    evidence.forEach((row) => {
+      const key = `${row.subject_kind}:${row.subject_id}`;
+      const rows = evidenceBySubject.get(key) || [];
+      rows.push(graphEvidenceCitation(row, documentsById));
+      evidenceBySubject.set(key, rows);
+    });
+    return {
+      status: 'ready',
+      entities: entities.map((item) => ({
+        id: item.id,
+        canonicalName: item.canonical_name,
+        entityType: item.entity_type,
+        aliases: Array.isArray(item.aliases) ? item.aliases : [],
+        description: item.description || '',
+        confidence: Number(item.confidence || 0),
+        citations: evidenceBySubject.get(`entity:${item.id}`) || [],
+      })),
+      relations: relations.map((item) => ({
+        id: item.id,
+        sourceId: item.source_entity_id,
+        targetId: item.target_entity_id,
+        relationType: item.relation_type,
+        label: item.label || item.relation_type,
+        status: item.status || 'asserted',
+        confidence: Number(item.confidence || 0),
+        citations: evidenceBySubject.get(`relation:${item.id}`) || [],
+      })),
+    };
+  } catch (error) {
+    console.warn('Entity graph unavailable; concept graph remains usable', { code: error.publicCode || error.code || 'ENTITY_GRAPH_UNAVAILABLE' });
+    return { status: 'migration_required', entities: [], relations: [] };
+  }
+}
+
+async function createEntityGraphRows(workspaceId, mapId, documentId, entityGraph, sourceCitations) {
+  const graph = entityGraph && typeof entityGraph === 'object' ? entityGraph : {};
+  const inputEntities = Array.isArray(graph.entities) ? graph.entities : [];
+  const inputRelations = Array.isArray(graph.relations) ? graph.relations : [];
+  if (!documentId || inputEntities.length === 0) return { entities: 0, relations: 0, evidence: 0, status: 'empty' };
+  const workspace = encodeURIComponent(workspaceId);
+  const map = encodeURIComponent(mapId);
+  const now = new Date().toISOString();
+  const existing = await supabaseRequest('GET', `graph_entities?workspace_id=eq.${workspace}&map_id=eq.${map}&select=*&limit=2000`);
+  const existingByKey = new Map((Array.isArray(existing) ? existing : []).map((item) => [
+    `${item.entity_type}:${item.normalized_name}`, item,
+  ]));
+  const tempToEntityId = new Map();
+  const entityRows = inputEntities.map((item) => {
+    const normalized = normalizedEntityName(item.name);
+    const key = `${item.type}:${normalized}`;
+    const previous = existingByKey.get(key);
+    const id = previous && previous.id ? previous.id : stableGraphId('entity', `${workspaceId}|${mapId}|${key}`);
+    tempToEntityId.set(item.tempId, id);
+    const aliases = [...new Set([
+      ...(Array.isArray(previous && previous.aliases) ? previous.aliases : []),
+      ...(Array.isArray(item.aliases) ? item.aliases : []),
+    ].map((alias) => String(alias || '').trim()).filter(Boolean))].slice(0, 24);
+    return {
+      id,
+      workspace_id: workspaceId,
+      map_id: mapId,
+      canonical_name: String(item.name || '').slice(0, 300),
+      normalized_name: normalized,
+      entity_type: item.type,
+      aliases,
+      description: previous && String(previous.description || '').length >= String(item.description || '').length
+        ? String(previous.description || '') : String(item.description || ''),
+      confidence: Math.max(Number((previous && previous.confidence) || 0), Number(item.confidence || 0.5)),
+      created_at: (previous && previous.created_at) || now,
+      updated_at: now,
+    };
+  }).filter((item) => item.normalized_name);
+  if (entityRows.length) {
+    await supabaseRequest('POST', 'graph_entities?on_conflict=workspace_id,map_id,normalized_name,entity_type', entityRows, 'resolution=merge-duplicates,return=minimal');
+  }
+  const relationRows = inputRelations.map((item) => {
+    const sourceId = tempToEntityId.get(item.source);
+    const targetId = tempToEntityId.get(item.target);
+    if (!sourceId || !targetId || sourceId === targetId) return null;
+    const id = stableGraphId('relation', `${workspaceId}|${mapId}|${sourceId}|${targetId}|${item.type}|${item.status}`);
+    return {
+      id,
+      workspace_id: workspaceId,
+      map_id: mapId,
+      source_entity_id: sourceId,
+      target_entity_id: targetId,
+      relation_type: item.type,
+      label: String(item.label || item.type).slice(0, 120),
+      status: item.status,
+      confidence: Number(item.confidence || 0.5),
+      created_at: now,
+      updated_at: now,
+      citationIndexes: item.citationIndexes,
+    };
+  }).filter(Boolean);
+  if (relationRows.length) {
+    await supabaseRequest('POST', 'graph_relations?on_conflict=workspace_id,map_id,source_entity_id,target_entity_id,relation_type,status', relationRows.map((item) => {
+      const row = { ...item };
+      delete row.citationIndexes;
+      return row;
+    }), 'resolution=merge-duplicates,return=minimal');
+  }
+  const citationByIndex = new Map((Array.isArray(sourceCitations) ? sourceCitations : []).map((item) => [Number(item.index), item]));
+  const evidenceRows = [];
+  const addEvidence = (subjectKind, subjectId, indexes) => {
+    normalizeCitationIndexes(indexes).forEach((citationIndex) => {
+      const citation = citationByIndex.get(citationIndex);
+      if (!citation || !String(citation.quote || '').trim()) return;
+      evidenceRows.push({
+        id: stableGraphId('ge', `${subjectKind}|${subjectId}|${documentId}|${citationIndex}`),
+        workspace_id: workspaceId,
+        map_id: mapId,
+        subject_kind: subjectKind,
+        subject_id: subjectId,
+        document_id: documentId,
+        chunk_id: stableGraphId('chunk', `${documentId}:${Math.max(0, citationIndex - 1)}`),
+        citation_index: citationIndex,
+        quote: String(citation.quote).trim().slice(0, 1400),
+        locator: String(citation.locator || '').slice(0, 200),
+        created_at: now,
+      });
+    });
+  };
+  inputEntities.forEach((item) => {
+    const id = tempToEntityId.get(item.tempId);
+    if (id) addEvidence('entity', id, item.citationIndexes);
+  });
+  relationRows.forEach((item) => addEvidence('relation', item.id, item.citationIndexes));
+  if (evidenceRows.length) {
+    await supabaseRequest('POST', 'graph_evidence?on_conflict=subject_kind,subject_id,document_id,citation_index', evidenceRows, 'resolution=ignore-duplicates,return=minimal');
+  }
+  return { entities: entityRows.length, relations: relationRows.length, evidence: evidenceRows.length, status: 'ready' };
+}
+
+async function createGraph(workspaceId, mapId, mindMap, source, document, sourceCitations, placement, documentChunks, extraction, entityGraph) {
   await assertOwnedMap(workspaceId, mapId);
   const now = new Date().toISOString();
   const seed = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -2425,6 +2647,7 @@ async function createGraph(workspaceId, mapId, mindMap, source, document, source
   let citationRows = [];
   let sourceDocument = null;
   let chunkIndex = { count: 0, embedded: 0, status: 'not_requested' };
+  let entityIndex = { entities: 0, relations: 0, evidence: 0, status: 'not_requested' };
   if (document && Array.isArray(sourceCitations) && sourceCitations.length > 0) {
     const allowedTypes = new Set(['url', 'pdf', 'text', 'meeting']);
     const contentHash = canonicalDocumentHash(
@@ -2496,7 +2719,17 @@ async function createGraph(workspaceId, mapId, mindMap, source, document, source
       throw error;
     }
   }
-  return { root, nodes, edges, reusedNodes: [...reusedNodes], citations: citationRows, document: sourceDocument, chunkIndex };
+  if (sourceDocument && entityGraph && Array.isArray(entityGraph.entities) && entityGraph.entities.length > 0) {
+    try {
+      entityIndex = await createEntityGraphRows(
+        workspaceId, mapId, sourceDocument.id, entityGraph, sourceCitations,
+      );
+    } catch (error) {
+      entityIndex = { entities: 0, relations: 0, evidence: 0, status: 'migration_required' };
+      console.warn('Entity graph indexing unavailable; concept graph and citations remain saved', { code: error.publicCode || error.code || 'ENTITY_GRAPH_INDEX_UNAVAILABLE' });
+    }
+  }
+  return { root, nodes, edges, reusedNodes: [...reusedNodes], citations: citationRows, document: sourceDocument, chunkIndex, entityIndex };
 }
 
 async function updateMapNodeCount(workspaceId, mapId) {
@@ -2561,13 +2794,15 @@ async function handleKnowledge(req, context) {
       return { status: 200, data: { query: searchQuery, results, total: results.length } };
     }
     const mapId = encodeURIComponent(String(query.mapId || context.defaultMapId));
-    const [nodeRows, edgeRows] = await Promise.all([
+    const requestedMapId = String(query.mapId || context.defaultMapId);
+    const [nodeRows, edgeRows, entityGraph] = await Promise.all([
       supabaseRequest('GET', `nodes?workspace_id=eq.${workspace}&map_id=eq.${mapId}&status=eq.active&select=*&limit=2000`),
       supabaseRequest('GET', `edges?workspace_id=eq.${workspace}&map_id=eq.${mapId}&select=*&limit=4000`),
+      loadEntityGraph(workspaceId, requestedMapId),
     ]);
     if (!Array.isArray(nodeRows) || !Array.isArray(edgeRows)) throw dependencyError('knowledge_store');
-    const citationsByNode = await loadNodeCitations(workspaceId, String(query.mapId || context.defaultMapId), nodeRows.map((node) => node.id));
-    return { status: 200, data: { nodes: nodeRows.map((node) => convertNode(node, citationsByNode.get(node.id))), edges: edgeRows.map(convertEdge) } };
+    const citationsByNode = await loadNodeCitations(workspaceId, requestedMapId, nodeRows.map((node) => node.id));
+    return { status: 200, data: { nodes: nodeRows.map((node) => convertNode(node, citationsByNode.get(node.id))), edges: edgeRows.map(convertEdge), entityGraph } };
   }
 
   if (req.method === 'DELETE') {
@@ -2681,6 +2916,10 @@ async function handleKnowledge(req, context) {
     await supabaseRequest('DELETE', `node_layouts?workspace_id=eq.${workspace}&map_id=eq.${id}`);
     await supabaseRequest('DELETE', `edges?workspace_id=eq.${workspace}&map_id=eq.${id}`);
     await supabaseRequest('DELETE', `nodes?workspace_id=eq.${workspace}&map_id=eq.${id}`);
+    try {
+      await supabaseRequest('DELETE', `graph_relations?workspace_id=eq.${workspace}&map_id=eq.${id}`);
+      await supabaseRequest('DELETE', `graph_entities?workspace_id=eq.${workspace}&map_id=eq.${id}`);
+    } catch (_) { /* pre-10.4 schemas have no entity graph tables */ }
     await supabaseRequest('DELETE', `source_documents?workspace_id=eq.${workspace}&map_id=eq.${id}`);
     await supabaseRequest('PATCH', `maps?workspace_id=eq.${workspace}&id=eq.${id}`, { node_count: 0, updated_at: new Date().toISOString() }, 'return=minimal');
     return { status: 200, data: { success: true } };
@@ -2736,6 +2975,7 @@ async function handleKnowledge(req, context) {
       body.placement || null,
       body.documentChunks || [],
       body.extraction || null,
+      body.entityGraph || null,
     );
     await updateMapNodeCount(workspaceId, mapId);
     return {
@@ -2751,6 +2991,10 @@ async function handleKnowledge(req, context) {
         indexedChunks: graph.chunkIndex ? graph.chunkIndex.count : 0,
         embeddedChunks: graph.chunkIndex ? graph.chunkIndex.embedded : 0,
         indexStatus: graph.chunkIndex ? graph.chunkIndex.status : 'not_requested',
+        entityCount: graph.entityIndex ? graph.entityIndex.entities : 0,
+        relationCount: graph.entityIndex ? graph.entityIndex.relations : 0,
+        relationEvidenceCount: graph.entityIndex ? graph.entityIndex.evidence : 0,
+        entityIndexStatus: graph.entityIndex ? graph.entityIndex.status : 'not_requested',
         mapId,
       },
     };
@@ -2816,6 +3060,7 @@ const server = http.createServer(async (req, res) => {
         knowledgeStoreConfigured: Boolean(SUPABASE_URL && SUPABASE_KEY),
         knowledgeStore: 'unknown',
         hybridRetrieval: 'unknown',
+        entityGraph: 'unknown',
       };
       if (checks.knowledgeStoreConfigured) {
         try {
@@ -2823,15 +3068,22 @@ const server = http.createServer(async (req, res) => {
           checks.knowledgeStore = 'ok';
           await supabaseRequest('GET', 'document_chunks?select=id&limit=1');
           checks.hybridRetrieval = 'ready';
+          await supabaseRequest('GET', 'graph_entities?select=id&limit=1');
+          await supabaseRequest('GET', 'graph_relations?select=id&limit=1');
+          await supabaseRequest('GET', 'graph_evidence?select=id&limit=1');
+          checks.entityGraph = 'ready';
         } catch (_) {
           if (checks.knowledgeStore !== 'ok') checks.knowledgeStore = 'unreachable';
-          checks.hybridRetrieval = 'unavailable';
+          if (checks.hybridRetrieval !== 'ready') checks.hybridRetrieval = 'unavailable';
+          checks.entityGraph = 'unavailable';
         }
       } else {
         checks.knowledgeStore = 'not_configured';
         checks.hybridRetrieval = 'not_configured';
+        checks.entityGraph = 'not_configured';
       }
-      const healthy = checks.modelConfigured && checks.knowledgeStore === 'ok' && checks.hybridRetrieval === 'ready';
+      const healthy = checks.modelConfigured && checks.knowledgeStore === 'ok'
+        && checks.hybridRetrieval === 'ready' && checks.entityGraph === 'ready';
       res.writeHead(healthy ? 200 : 503, { 'Content-Type': 'application/json; charset=utf-8' });
       return res.end(JSON.stringify({ status: healthy ? 'ok' : 'degraded', version: API_VERSION, checks, timestamp: new Date().toISOString() }));
     }
@@ -2885,6 +3137,7 @@ module.exports = {
   bestCitationIndexes,
   citationAudit,
   normalizedMindMap,
+  normalizedEntityGraph,
   normalizeCitationIndexes,
   normalizeDocumentLayout,
   sourcePages,

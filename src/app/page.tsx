@@ -25,6 +25,7 @@ export default function Home() {
     setMaps,
     setNodes,
     setEdges,
+    setEntityGraph,
     saveChatHistory,
     loadChatHistory,
     maps,
@@ -123,8 +124,9 @@ export default function Home() {
     setMapCatalogReady(false);
     setNodes([]);
     setEdges([]);
+    setEntityGraph({ entities: [], relations: [] });
     setCurrentMapId(currentWorkspaceDefaultMapId);
-  }, [currentWorkspaceId, currentWorkspaceDefaultMapId, setMaps, setCategories, setNodes, setEdges, setCurrentMapId]);
+  }, [currentWorkspaceId, currentWorkspaceDefaultMapId, setMaps, setCategories, setNodes, setEdges, setEntityGraph, setCurrentMapId]);
 
   const reloadAll = useCallback(async (): Promise<MindMap[]> => {
     let allMaps: MindMap[] = [];
@@ -270,12 +272,13 @@ export default function Home() {
           ++mapLoadRequestRef.current;
           setNodes([]);
           setEdges([]);
+          setEntityGraph({ entities: [], relations: [] });
         }
       }
     } catch (e) { console.error(e); }
     setActionSheet("none");
     setContextMenu(null);
-  }, [currentMapId, currentMode, handleSwitchMap, reloadAll, setNodes, setEdges]);
+  }, [currentMapId, currentMode, handleSwitchMap, reloadAll, setNodes, setEdges, setEntityGraph]);
 
   const handleCreateCategory = useCallback(async () => {
     if (!newCategoryName.trim()) { setIsCreatingCategory(false); return; }
@@ -325,6 +328,7 @@ export default function Home() {
         if (latest.currentMapId !== currentMapId || latest.currentMode !== requestedMode) return;
         setNodes(data.nodes || []);
         setEdges(data.edges || []);
+        setEntityGraph(data.entityGraph || { entities: [], relations: [] });
         setModeLibraryError("");
       })
       .catch((error) => {
@@ -334,7 +338,7 @@ export default function Home() {
         if (requestId === mapLoadRequestRef.current) setModeLibraryBusy(false);
       });
     loadChatHistory(currentMapId);
-  }, [currentMapId, currentMode, maps, mapCatalogReady, setNodes, setEdges, loadChatHistory]);
+  }, [currentMapId, currentMode, maps, mapCatalogReady, setNodes, setEdges, setEntityGraph, loadChatHistory]);
 
   // Each product board owns a separate set of knowledge libraries.
   const visibleMaps = maps.filter((map) => isMapForMode(map, currentMode));
@@ -761,9 +765,10 @@ export default function Home() {
                   setCurrentMapId(map.id);
                   const dataRes = await apiFetch(`/api/knowledge?mapId=${map.id}`);
                   if (dataRes.ok) {
-                    const { nodes, edges } = await dataRes.json();
+                    const { nodes, edges, entityGraph } = await dataRes.json();
                     setNodes(nodes || []);
                     setEdges(edges || []);
+                    setEntityGraph(entityGraph || { entities: [], relations: [] });
                   }
                   loadChatHistory(map.id);
                   await reloadAll();

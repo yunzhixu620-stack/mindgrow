@@ -5,7 +5,8 @@ import { apiFetch } from "@/lib/client-api";
 import { useMindGrowStore } from "@/store/mindgrow-store";
 import { useSpeechInput } from "@/hooks/use-speech-input";
 import { mindMapToPreviewGraph } from "@/lib/mindmap-preview";
-import type { AIMindMap, Citation } from "@/types";
+import { aiEntityGraphToEntityGraph } from "@/lib/entity-graph";
+import type { AIEntityGraph, AIMindMap, Citation } from "@/types";
 
 interface CitedText { text: string; citationIndexes: number[] }
 
@@ -19,6 +20,7 @@ interface MeetingResult {
   risks: CitedText[];
   openQuestions: CitedText[];
   mindMap: AIMindMap;
+  entityGraph?: AIEntityGraph;
   citations: Citation[];
   documentChunks?: Citation[];
   citationAudit?: { claimCount: number; citedClaimCount: number; coverage: number; verifiedQuoteCount: number; warnings: string[] };
@@ -31,6 +33,7 @@ export function MeetingAssistant() {
   const nodeCount = useMindGrowStore((state) => state.nodes.length);
   const setNodes = useMindGrowStore((state) => state.setNodes);
   const setEdges = useMindGrowStore((state) => state.setEdges);
+  const setEntityGraph = useMindGrowStore((state) => state.setEntityGraph);
   const [title, setTitle] = useState("");
   const [participants, setParticipants] = useState("");
   const [transcript, setTranscript] = useState("");
@@ -57,7 +60,7 @@ export function MeetingAssistant() {
   async function generate() {
     if (transcript.trim().length < 10) { setNotice("请先输入或录入会议内容"); return; }
     const requestMapId = currentMapId;
-    setBusy(true); setNotice(""); setResult(null); setSelectedCitation(null);
+    setBusy(true); setNotice(""); setResult(null); setSelectedCitation(null); setEntityGraph({ entities: [], relations: [] });
     try {
       const response = await apiFetch("/api/tools/meeting", {
         method: "POST",
@@ -73,6 +76,7 @@ export function MeetingAssistant() {
         setNodes(preview.nodes);
         setEdges(preview.edges);
       }
+      setEntityGraph(aiEntityGraphToEntityGraph(data.entityGraph, data.citations || [], `meeting:${requestMapId}:${Date.now()}`));
     } catch (error) { if (isActiveMeetingMap(requestMapId)) setNotice(error instanceof Error ? error.message : "生成失败"); }
     finally { if (mountedRef.current) setBusy(false); }
   }
@@ -91,6 +95,7 @@ export function MeetingAssistant() {
           documentChunks: result.documentChunks || result.citations,
           document: { title: result.title, sourceType: "meeting", fileName: "" },
           extraction: { pageCount: 0, tablePages: [], imagePages: [], scannedPages: [], truncated: false },
+          entityGraph: result.entityGraph,
         }),
       });
       const data = await response.json();
@@ -101,8 +106,8 @@ export function MeetingAssistant() {
       const reload = await apiFetch(`/api/knowledge?mapId=${encodeURIComponent(savedMapId)}`);
       const graph = await reload.json();
       if (!isActiveMeetingMap(savedMapId)) return;
-      if (reload.ok) { setNodes(graph.nodes || []); setEdges(graph.edges || []); }
-      setNotice(`已保存 ${data.totalNodes || 0} 个会议知识节点、${data.totalCitations || 0} 条引用和 ${data.indexedChunks || 0} 个可检索分块`);
+      if (reload.ok) { setNodes(graph.nodes || []); setEdges(graph.edges || []); setEntityGraph(graph.entityGraph || { entities: [], relations: [] }); }
+      setNotice(`已保存 ${data.totalNodes || 0} 个会议知识节点、${data.totalCitations || 0} 条引用、${data.entityCount || 0} 个实体、${data.relationCount || 0} 条可溯源关系和 ${data.indexedChunks || 0} 个可检索分块`);
     } catch (error) { if (isActiveMeetingMap(requestMapId)) setNotice(error instanceof Error ? error.message : "保存失败"); }
     finally { if (mountedRef.current) setSaving(false); }
   }

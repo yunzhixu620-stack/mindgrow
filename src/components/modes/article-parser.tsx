@@ -6,7 +6,8 @@ import { extractPdfText } from "@/lib/pdf-text";
 import { useScriptSpeech, type SpeechSegment } from "@/hooks/use-script-speech";
 import { useMindGrowStore } from "@/store/mindgrow-store";
 import { mindMapToPreviewGraph } from "@/lib/mindmap-preview";
-import type { AIMindMap, Citation } from "@/types";
+import { aiEntityGraphToEntityGraph } from "@/lib/entity-graph";
+import type { AIEntityGraph, AIMindMap, Citation } from "@/types";
 
 interface CitedText { text: string; citationIndexes: number[] }
 interface ArticleResult {
@@ -17,6 +18,7 @@ interface ArticleResult {
   arguments: { claim: string; evidence?: string; citationIndexes: number[] }[];
   questions: string[];
   mindMap: AIMindMap;
+  entityGraph?: AIEntityGraph;
   citations: Citation[];
   documentChunks?: Citation[];
   citationAudit?: { claimCount: number; citedClaimCount: number; coverage: number; verifiedQuoteCount: number; warnings: string[] };
@@ -260,6 +262,7 @@ export function ArticleParser() {
   const nodeCount = useMindGrowStore((state) => state.nodes.length);
   const setNodes = useMindGrowStore((state) => state.setNodes);
   const setEdges = useMindGrowStore((state) => state.setEdges);
+  const setEntityGraph = useMindGrowStore((state) => state.setEntityGraph);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [url, setUrl] = useState("");
   const [content, setContent] = useState("");
@@ -306,7 +309,7 @@ export function ArticleParser() {
   async function parse() {
     if (!url.trim() && content.trim().length < 50) { setNotice("请输入文章网址、选择 PDF，或粘贴至少 50 个字的正文"); return; }
     const requestMapId = currentMapId;
-    setBusy(true); setNotice(""); setResult(null); setAudio(null); setSelectedCitation(null); speech.stop();
+    setBusy(true); setNotice(""); setResult(null); setAudio(null); setSelectedCitation(null); setEntityGraph({ entities: [], relations: [] }); speech.stop();
     try {
       const response = await apiFetch(`/api/tools/article?client=10.3.2&request=${Date.now()}`, {
         method: "POST",
@@ -327,6 +330,7 @@ export function ArticleParser() {
         setNodes(preview.nodes);
         setEdges(preview.edges);
       }
+      setEntityGraph(aiEntityGraphToEntityGraph(data.entityGraph, data.citations || [], `article:${requestMapId}:${Date.now()}`));
     } catch (error) { if (isActiveArticleMap(requestMapId)) setNotice(error instanceof Error ? error.message : "解析失败"); }
     finally { if (mountedRef.current) setBusy(false); }
   }
@@ -363,6 +367,7 @@ export function ArticleParser() {
           mapId: requestMapId, mindMap: result.mindMap, source: "article", citations: result.citations,
           documentChunks: result.documentChunks || result.citations,
           extraction: result.extraction,
+          entityGraph: result.entityGraph,
           document: {
             title: result.title, sourceType: result.sourceType, sourceUrl: result.sourceUrl,
             fileName: result.fileName, mimeType: result.mimeType,
@@ -377,8 +382,8 @@ export function ArticleParser() {
       const reload = await apiFetch(`/api/knowledge?mapId=${encodeURIComponent(savedMapId)}`);
       const graph = await reload.json();
       if (!isActiveArticleMap(savedMapId)) return;
-      if (reload.ok) { setNodes(graph.nodes || []); setEdges(graph.edges || []); }
-      setNotice(`已保存 ${data.totalNodes || 0} 个文章知识节点、${data.totalCitations || 0} 条节点引用和 ${data.indexedChunks || 0} 个检索分块${data.indexStatus === "ready" ? "（向量索引就绪）" : data.indexStatus ? `（${data.indexStatus}）` : ""}`);
+      if (reload.ok) { setNodes(graph.nodes || []); setEdges(graph.edges || []); setEntityGraph(graph.entityGraph || { entities: [], relations: [] }); }
+      setNotice(`已保存 ${data.totalNodes || 0} 个文章知识节点、${data.totalCitations || 0} 条节点引用、${data.entityCount || 0} 个实体、${data.relationCount || 0} 条可溯源关系和 ${data.indexedChunks || 0} 个检索分块${data.indexStatus === "ready" ? "（向量索引就绪）" : data.indexStatus ? `（${data.indexStatus}）` : ""}`);
     } catch (error) { if (isActiveArticleMap(requestMapId)) setNotice(error instanceof Error ? error.message : "保存失败"); }
     finally { if (mountedRef.current) setSaving(false); }
   }

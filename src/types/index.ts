@@ -16,8 +16,61 @@ export interface KnowledgeEdge {
   sourceId: string;
   targetId: string;
   relation: "contains" | "relates_to" | "contradicts";
+  relationLabel?: string;
+  citations?: Citation[];
   weight: number;
   createdAt: string;
+}
+
+export interface GraphEntity {
+  id: string;
+  canonicalName: string;
+  entityType: string;
+  aliases: string[];
+  description: string;
+  confidence: number;
+  citations: Citation[];
+}
+
+export interface GraphRelation {
+  id: string;
+  sourceId: string;
+  targetId: string;
+  relationType: string;
+  label: string;
+  status: "asserted" | "historical" | "negated" | "proposed";
+  confidence: number;
+  citations: Citation[];
+}
+
+export interface EntityGraph {
+  entities: GraphEntity[];
+  relations: GraphRelation[];
+}
+
+export interface AIEntityGraphEntity {
+  tempId: string;
+  name: string;
+  type: string;
+  aliases?: string[];
+  description?: string;
+  citationIndexes?: number[];
+  confidence?: number;
+}
+
+export interface AIEntityGraphRelation {
+  source: string;
+  target: string;
+  type: string;
+  label?: string;
+  status?: "asserted" | "historical" | "negated" | "proposed";
+  citationIndexes?: number[];
+  confidence?: number;
+}
+
+export interface AIEntityGraph {
+  entities: AIEntityGraphEntity[];
+  relations: AIEntityGraphRelation[];
 }
 
 export interface NodeLayout {
