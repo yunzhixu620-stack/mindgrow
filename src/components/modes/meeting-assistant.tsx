@@ -26,6 +26,13 @@ interface MeetingResult {
   citationAudit?: { claimCount: number; citedClaimCount: number; coverage: number; verifiedQuoteCount: number; warnings: string[] };
 }
 
+function meetingDueLabel(item: MeetingResult["actionItems"][number]) {
+  const explicitDue = String(item.due || "").trim();
+  if (explicitDue) return explicitDue;
+  const match = String(item.task || "").match(/(?:截止|期限(?:为|至)?|due(?:\s+on)?)[：:\s]*([0-9]{4}[-/.年][0-9]{1,2}(?:[-/.月][0-9]{1,2}日?)?)/i);
+  return match?.[1] || "待确认";
+}
+
 export function MeetingAssistant() {
   const currentMapId = useMindGrowStore((state) => state.currentMapId);
   const currentMap = useMindGrowStore((state) => state.maps.find((map) => map.id === state.currentMapId));
@@ -142,7 +149,7 @@ export function MeetingAssistant() {
         {result.citationAudit && <ResultBlock title="引用完整性"><div>结论引用覆盖率：{Math.round(result.citationAudit.coverage * 100)}% · {result.citationAudit.verifiedQuoteCount} 个原文证据块</div>{result.citationAudit.warnings.length > 0 && <div className="mt-1 text-amber-300">{result.citationAudit.warnings.join("；")}</div>}</ResultBlock>}
         <ResultBlock title="会议摘要"><p>{result.summary || "未提取到摘要"}{showCitations(result.summaryCitationIndexes)}</p></ResultBlock>
         <ResultBlock title="会议决议"><ResultList items={result.decisions} empty="未形成明确决议" showCitations={showCitations} /></ResultBlock>
-        <ResultBlock title="行动项">{result.actionItems.length ? result.actionItems.map((item, index) => <div key={index} className="mb-2 last:mb-0"><div className="font-medium">□ {item.task}{showCitations(item.citationIndexes)}</div><div className="text-[10px] text-[var(--text-tertiary)] mt-0.5">负责人：{item.owner || "待确认"} · 截止：{item.due || "待确认"}</div></div>) : <span className="text-[var(--text-tertiary)]">未提取到行动项</span>}</ResultBlock>
+        <ResultBlock title="行动项">{result.actionItems.length ? result.actionItems.map((item, index) => <div key={index} className="mb-2 last:mb-0"><div className="font-medium">□ {item.task}{showCitations(item.citationIndexes)}</div><div className="text-[10px] text-[var(--text-tertiary)] mt-0.5">负责人：{item.owner || "待确认"} · 截止：{meetingDueLabel(item)}</div></div>) : <span className="text-[var(--text-tertiary)]">未提取到行动项</span>}</ResultBlock>
         <ResultBlock title="风险与待确认"><ResultList items={[...result.risks, ...result.openQuestions]} empty="暂无" showCitations={showCitations} /></ResultBlock>
         {selectedCitation && <ResultBlock title={`会议引用 [${selectedCitation.index}] · ${selectedCitation.locator || "原文"}`}><blockquote className="border-l-2 border-[var(--primary)] pl-2 text-[var(--text-secondary)]">“{selectedCitation.quote}”</blockquote></ResultBlock>}
         <button onClick={() => void save()} disabled={saving} className="w-full rounded-xl border border-[var(--primary-border)] bg-[var(--primary-subtle)] py-2.5 text-sm font-medium text-[var(--primary-hover)] disabled:opacity-40">{saving ? "正在保存…" : "保存到会议知识库"}</button>

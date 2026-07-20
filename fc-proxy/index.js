@@ -18,6 +18,7 @@ const PORT = Number.parseInt(process.env.FC_SERVER_PORT || process.env.PORT || '
 const UPSTREAM_TIMEOUT_MS = Number.parseInt(process.env.UPSTREAM_TIMEOUT_MS || '45000', 10);
 const AUTH_REQUIRED = process.env.AUTH_REQUIRED !== 'false';
 const API_VERSION = '10.5.2';
+const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
 const DASHSCOPE_AUDIO_ENDPOINT = process.env.DASHSCOPE_AUDIO_ENDPOINT || 'https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer';
 const ALLOWED_ORIGINS = new Set(
   (process.env.ALLOWED_ORIGINS || 'https://yunzhixu620-stack.github.io')
@@ -1203,10 +1204,11 @@ function articleTaskSystemPrompt(request) {
 }
 
 function sanitizeGroundedAnswer(answer, evidence) {
-  const sourceText = (Array.isArray(evidence) ? evidence : []).flatMap((item) => [
+  const sourceText = (Array.isArray(evidence) ? evidence : []).reduce((all, item) => all.concat([
     String((item && item.content) || ''),
-    ...(Array.isArray(item && item.citations) ? item.citations.map((citation) => String((citation && citation.quote) || '')) : []),
-  ]).join(' ').toLowerCase();
+  ], Array.isArray(item && item.citations)
+    ? item.citations.map((citation) => String((citation && citation.quote) || ''))
+    : []), []).join(' ').toLowerCase();
   const lines = String(answer || '').replace(/\r\n?/g, '\n').split('\n');
   let removedLines = 0;
   const provisional = lines.map((line) => {
@@ -1850,6 +1852,12 @@ function structureItemGrounded(item, sourceText) {
       /(不|未|不得|没有|尚未|取消|否决|not|never|without|reject|cancel)/i.test(sentence)
     ))) return false;
   }
+  const causalPattern = /(因为|由于|导致|因此|所以|从而|以支持|用于|因[^，。；]{1,24}而(?:提升|改善|优化|增加)|通过.{0,24}(?:提升|改善|优化|增加)|在[^，。；]{1,24}下[^，。；]{0,12}(?:提升|改善|优化|增加|改进)|because|caused|therefore|resulted in)/i;
+  if (causalPattern.test(value)) {
+    const directCausalEvidence = String(sourceText || '').split(/\n+|(?<=[。！？!?；;])\s*/)
+      .some((sentence) => causalPattern.test(sentence) && anchorCoverage(anchors, sentence) >= 0.55);
+    if (!directCausalEvidence) return false;
+  }
   return true;
 }
 
@@ -1870,7 +1878,9 @@ function ensureMindMapSourceCoverage(mindMap, sourceText, citations, allowedInde
     return {
       ...child,
       topic: normalizeSpaces((child && child.topic) || '要点').slice(0, 200),
-      desc: normalizeSpaces((child && child.desc) || '').slice(0, 1000),
+      desc: structureItemGrounded((child && child.desc) || '', sourceText)
+        ? normalizeSpaces((child && child.desc) || '').slice(0, 1000)
+        : '',
       items,
       itemCitationIndexes,
     };
@@ -1878,7 +1888,7 @@ function ensureMindMapSourceCoverage(mindMap, sourceText, citations, allowedInde
   const rendered = [
     input.root,
     input.rootDesc,
-    ...children.flatMap((child) => [child.topic, child.desc, ...child.items]),
+    ...children.reduce((all, child) => all.concat([child.topic, child.desc], child.items), []),
   ].join(' ');
   const criticalFacts = sourceCriticalFacts(sourceText, 24);
   const missingFacts = criticalFacts.filter((fact) => !structureFactCovered(fact, rendered));
@@ -1908,6 +1918,9 @@ function ensureMindMapSourceCoverage(mindMap, sourceText, citations, allowedInde
   }
   const output = {
     ...input,
+    rootDesc: structureItemGrounded(input.rootDesc || '', sourceText)
+      ? normalizeSpaces(input.rootDesc || '').slice(0, 1000)
+      : '',
     children,
   };
   return {
@@ -1986,7 +1999,9 @@ function articleOutputTextFields(value) {
     value.title,
     value.summary,
     ...(Array.isArray(value.keyPoints) ? value.keyPoints.map((item) => item && item.text) : []),
-    ...(Array.isArray(value.arguments) ? value.arguments.flatMap((item) => [item && item.claim, item && item.evidence]) : []),
+    ...(Array.isArray(value.arguments)
+      ? value.arguments.reduce((all, item) => all.concat([item && item.claim, item && item.evidence]), [])
+      : []),
     ...(Array.isArray(value.questions) ? value.questions : []),
   ];
   const mindMap = value.mindMap && typeof value.mindMap === 'object' ? value.mindMap : {};
@@ -2635,9 +2650,11 @@ async function handleMeetingTool(body) {
   const participants = String(body.participants || '').trim().slice(0, 2000);
   const citations = buildMeetingCitations(transcript);
   const allowedIndexes = new Set(citations.map((item) => item.index));
-  let parsed;
-  let usedDeterministicFallback = false;
-  try {
+  let parsed = fallbackMeetingAnalysis(title, transcript, citations, allowedIndexes);
+  let usedDeterministicFallback = true;
+  if (MEETING_AI_ENHANCEMENT) {
+    usedDeterministicFallback = false;
+    try {
     const raw = await dashscopeChat([
       {
         role: 'system',
@@ -2652,12 +2669,13 @@ async function handleMeetingTool(body) {
       parsed = fallbackMeetingAnalysis(title, transcript, citations, allowedIndexes);
       usedDeterministicFallback = true;
     }
-  } catch (error) {
-    console.warn('Meeting model unavailable; returning evidence-first fallback', {
-      code: error && (error.publicCode || error.code) ? (error.publicCode || error.code) : 'MEETING_MODEL_FAILED',
-    });
-    parsed = fallbackMeetingAnalysis(title, transcript, citations, allowedIndexes);
-    usedDeterministicFallback = true;
+    } catch (error) {
+      console.warn('Meeting model unavailable; returning evidence-first fallback', {
+        code: error && (error.publicCode || error.code) ? (error.publicCode || error.code) : 'MEETING_MODEL_FAILED',
+      });
+      parsed = fallbackMeetingAnalysis(title, transcript, citations, allowedIndexes);
+      usedDeterministicFallback = true;
+    }
   }
   let mindMap = normalizedMindMap(parsed.mindMap, title, allowedIndexes) || fallbackMindMap(title, transcript);
   mindMap.rootCitationIndexes = verifiedIndexes(mindMap.rootCitationIndexes, allowedIndexes, `${mindMap.root} ${mindMap.rootDesc}`, citations);
@@ -2682,13 +2700,21 @@ async function handleMeetingTool(body) {
     citationIndexes: verifiedIndexes(item && item.citationIndexes, allowedIndexes, item && item.title, citations),
     details: (Array.isArray(item && item.details) ? item.details : []).slice(0, 20).map(citedText).filter((detail) => detail.text),
   })).filter((item) => item.title);
-  const actionItems = (Array.isArray(parsed.actionItems) ? parsed.actionItems : []).slice(0, 50).map((item) => ({
-    task: String((item && item.task) || '').trim().slice(0, 1000),
-    owner: String((item && item.owner) || '').trim().slice(0, 200),
-    due: String((item && item.due) || '').trim().slice(0, 200),
-    status: String((item && item.status) || '待办').trim().slice(0, 100),
-    citationIndexes: verifiedIndexes(item && item.citationIndexes, allowedIndexes, `${(item && item.task) || ''} ${(item && item.owner) || ''} ${(item && item.due) || ''}`, citations),
-  })).filter((item) => item.task);
+  const actionItems = (Array.isArray(parsed.actionItems) ? parsed.actionItems : []).slice(0, 50).map((item) => {
+    const task = String((item && item.task) || '').trim().slice(0, 1000);
+    const owner = String((item && item.owner) || '').trim().slice(0, 200);
+    const explicitDue = String((item && item.due) || '').trim().slice(0, 200);
+    const citationIndexes = verifiedIndexes(item && item.citationIndexes, allowedIndexes, `${task} ${owner} ${explicitDue}`, citations);
+    const citedEvidence = citationIndexes.map((index) => String((citations[index - 1] && citations[index - 1].quote) || '')).join(' ');
+    const dueMatch = citedEvidence.match(/(?:截止|期限(?:为|至)?|due(?:\s+on)?)[：:\s]*([0-9]{4}[-/.年][0-9]{1,2}(?:[-/.月][0-9]{1,2}日?)?)/i);
+    return {
+      task,
+      owner,
+      due: explicitDue || (dueMatch ? dueMatch[1] : ''),
+      status: String((item && item.status) || '待办').trim().slice(0, 100),
+      citationIndexes,
+    };
+  }).filter((item) => item.task);
   const summary = String(parsed.summary || mindMap.rootDesc || '').slice(0, 3000);
   const summaryCitationIndexes = verifiedIndexes(parsed.summaryCitationIndexes, allowedIndexes, summary, citations);
   const audit = citationAudit([

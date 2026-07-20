@@ -58,6 +58,7 @@ function check(name, fn) {
 check("Aliyun custom runtime syntax stays ECMAScript 2018 compatible", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "fc-proxy", "index.js"), "utf8");
   acorn.parse(source, { ecmaVersion: 2018, sourceType: "script", allowHashBang: true });
+  assert(!source.includes(".flatMap("), "Aliyun's legacy Node runtime does not implement Array.prototype.flatMap");
 });
 
 check("public article fetching stays on supported IPv4 egress", () => {
@@ -201,6 +202,28 @@ check("long knowledge and meeting structures preserve critical facts without uns
   const appendedCitations = result.mindMap.children.flatMap((child) => child.itemCitationIndexes || []).filter((indexes) => indexes.length > 0);
   assert(appendedCitations.length > 0);
   assert(sourceCriticalFacts(source).length >= 4);
+});
+
+check("knowledge structures reject causal claims that are only semantic co-occurrences", () => {
+  const source = [
+    "本轮 Recall@5 从 72.4% 提升到 81.9%，样本量从 420 增加到 760。",
+    "因为索引未刷新，系统召回了旧文档，导致答案错误。",
+  ].join("\n");
+  const result = ensureMindMapSourceCoverage({
+    root: "检索复盘",
+    rootDesc: "通过增加样本量优化了 Recall@5",
+    children: [
+      { topic: "指标", desc: "Recall@5 因样本量增加而提升", items: [] },
+      { topic: "根因", desc: "因为索引未刷新，所以召回旧文档并导致答案错误", items: [] },
+      { topic: "访谈", desc: "每周进行用户访谈以支持产品优化", items: [] },
+      { topic: "共现", desc: "召回率指标在样本量增加下的改进", items: [] },
+    ],
+  }, source, [], null);
+  assert.strictEqual(result.mindMap.rootDesc, "");
+  assert.strictEqual(result.mindMap.children[0].desc, "");
+  assert(result.mindMap.children[1].desc.includes("索引未刷新"));
+  assert.strictEqual(result.mindMap.children[2].desc, "");
+  assert.strictEqual(result.mindMap.children[3].desc, "");
 });
 
 check("meeting timeout fallback stays usable, cited, compact and faithful", () => {
