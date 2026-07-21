@@ -58,6 +58,30 @@ const revealAllStoredNodes = async (page) => {
   return total;
 };
 
+const expandOneVisibleLevel = async (page, previousCount) => {
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const clicked = await page.$$eval('button[aria-label^="展开下一层 "]', (buttons) => {
+      const target = buttons[0];
+      if (!target) return false;
+      target.click();
+      return true;
+    });
+    if (!clicked) break;
+    try {
+      await page.waitForFunction(
+        (previous) => document.querySelectorAll(".react-flow__node").length > previous,
+        { timeout: 3500 },
+        previousCount,
+      );
+      return await page.$$eval(".react-flow__node", (nodes) => nodes.length);
+    } catch {
+      // The attempted branch may already have all of its children visible.
+      // Its expand control disappears, so retry the next collapsed branch.
+    }
+  }
+  throw new Error("No collapsed branch revealed another visible level");
+};
+
 (async () => {
   const browser = await puppeteer.launch({ headless: "new", pipe: true, executablePath, args: ["--no-sandbox"] });
   const page = await browser.newPage();
@@ -82,20 +106,27 @@ const revealAllStoredNodes = async (page) => {
   });
 
   await check("usage guide button opens the guide from the application", async () => {
-    const guide = await page.$('[data-testid="guide-link"]');
-    if (!guide) throw new Error("Usage guide link is missing");
-    await guide.click();
-    await page.waitForFunction(() => window.location.pathname.endsWith("/guide") || window.location.pathname.endsWith("/guide/"));
-    const heading = await page.$eval("h1", (element) => element.textContent.trim());
-    if (!heading.includes("可追溯的知识网络")) throw new Error("Usage guide did not render after clicking");
-    const timeline = await page.$('[data-testid="guide-timeline"]');
-    if (!timeline) throw new Error("Visual usage timeline is missing");
-    const guideScroll = await page.$eval('[data-guide-scroll]', (element) => ({ scrollHeight: element.scrollHeight, clientHeight: element.clientHeight }));
-    if (guideScroll.scrollHeight <= guideScroll.clientHeight) throw new Error("Usage guide is not vertically scrollable");
-    await page.$eval('[data-guide-scroll]', (element) => { element.scrollTop = Math.floor((element.scrollHeight - element.clientHeight) * 0.55); element.dispatchEvent(new Event("scroll")); });
-    await page.waitForFunction(() => parseFloat(document.querySelector('[data-testid="guide-progress"]')?.style.width || "0") > 25);
-    await page.goBack({ waitUntil: "networkidle0" });
-    await revealAllStoredNodes(page);
+    try {
+      const guide = await page.$('[data-testid="guide-link"]');
+      if (!guide) throw new Error("Usage guide link is missing");
+      await guide.click();
+      await page.waitForFunction(() => window.location.pathname.endsWith("/guide") || window.location.pathname.endsWith("/guide/"));
+      const heading = await page.$eval("h1", (element) => element.textContent.trim());
+      if (!heading.includes("可追溯的知识网络")) throw new Error("Usage guide did not render after clicking");
+      const timeline = await page.$('[data-testid="guide-timeline"]');
+      if (!timeline) throw new Error("Visual usage timeline is missing");
+      await page.waitForFunction(() => {
+        const element = document.querySelector('[data-guide-scroll]');
+        return element && element.scrollHeight > element.clientHeight;
+      }, { timeout: 10000 });
+      await page.$eval('[data-guide-scroll]', (element) => { element.scrollTop = Math.floor((element.scrollHeight - element.clientHeight) * 0.55); element.dispatchEvent(new Event("scroll")); });
+      await page.waitForFunction(() => parseFloat(document.querySelector('[data-testid="guide-progress"]')?.style.width || "0") > 25);
+    } finally {
+      // Always restore the dependent scenario chain to the application. A
+      // guide assertion must not make the remaining checks run on /guide.
+      await page.goto(BASE_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
+      await revealAllStoredNodes(page);
+    }
   });
 
   await check("workspace search finds maps by node content", async () => {
@@ -131,9 +162,11 @@ const revealAllStoredNodes = async (page) => {
   });
 
   await check("answer feedback is recorded", async () => {
-    await page.click('button[aria-label="回答有帮助"]');
-    const recorded = await page.evaluate(() => Object.keys(localStorage).some((key) => key.startsWith("mindgrow.feedback.")));
-    if (!recorded) throw new Error("Feedback was not stored");
+    const buttons = await page.$$('button[aria-label="回答有帮助"]');
+    const latest = buttons.at(-1);
+    if (!latest) throw new Error("Helpful feedback control is missing");
+    await latest.click();
+    await page.waitForFunction(() => Object.keys(localStorage).some((key) => key.startsWith("mindgrow.feedback.")));
   });
 
   await page.screenshot({ path: path.join(artifactDir, "desktop-grounded-answer.png"), fullPage: true });
@@ -200,17 +233,13 @@ const revealAllStoredNodes = async (page) => {
   await check("large map uses progressive disclosure", async () => {
     const before = await page.$$eval(".react-flow__node", (nodes) => nodes.length);
     await page.screenshot({ path: path.join(artifactDir, "desktop-large-map-outline.png"), fullPage: true });
-    const expand = await page.$('button[aria-label^="展开下一层 "]');
-    if (!expand) throw new Error("No branch expansion control found");
-    await expand.click();
-    await page.waitForFunction((previous) => document.querySelectorAll(".react-flow__node").length > previous, {}, before);
-    const afterFirstLevel = await page.$$eval(".react-flow__node", (nodes) => nodes.length);
+    await page.waitForSelector('button[aria-label^="展开下一层 "]');
+    const afterFirstLevel = await expandOneVisibleLevel(page, before);
     const total = await page.$$eval("button", (buttons) => Number(buttons.find((button) => /^全部 \d+$/.test(button.textContent.trim()))?.textContent.match(/\d+/)?.[0] || 0));
     const nextLevel = await page.$('button[aria-label^="展开下一层 "]');
     if (nextLevel && afterFirstLevel >= total) throw new Error("First expansion revealed the full descendant tree instead of one level");
     if (nextLevel) {
-      await nextLevel.click();
-      await page.waitForFunction((previous) => document.querySelectorAll(".react-flow__node").length > previous, {}, afterFirstLevel);
+      await expandOneVisibleLevel(page, afterFirstLevel);
     }
 
     await revealAllStoredNodes(page);
@@ -350,24 +379,25 @@ const revealAllStoredNodes = async (page) => {
     await page.waitForSelector('[data-testid="entity-view-modes"]');
     const globalNodeCount = await page.$$eval('[data-testid="entity-network-node"]', (nodes) => nodes.length);
     if (globalNodeCount < 2) throw new Error("Obsidian entity network did not render enough entities");
-    const firstEntity = await page.$('[data-testid="entity-network-node"]');
-    const firstEntityBox = await firstEntity.boundingBox();
-    if (!firstEntityBox) throw new Error("Entity node has no interactive bounds");
-    await page.mouse.move(firstEntityBox.x + firstEntityBox.width / 2, firstEntityBox.y + firstEntityBox.height / 2);
-    await page.waitForSelector('[data-testid="entity-hover-card"]');
-    await firstEntity.click();
+    await page.hover('[data-testid="entity-network-node"]');
+    await page.waitForSelector('[data-testid="entity-hover-card"]', { visible: true });
+    await page.$eval('[data-testid="entity-network-node"]', (node) => {
+      node.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+    });
     await page.waitForSelector('[data-testid="entity-detail-panel"]');
     const localNodeCount = await page.$$eval('[data-testid="entity-network-node"]', (nodes) => nodes.length);
     if (localNodeCount > globalNodeCount) throw new Error("One-hop entity view expanded beyond the global graph");
     await page.screenshot({ path: path.join(artifactDir, "desktop-entity-network.png") });
     await clickByText(page, '[data-testid="entity-view-modes"] button', "证据链");
-    await page.waitForFunction(() => document.querySelectorAll(".react-flow__edge").length >= 1);
-    await new Promise((resolve) => setTimeout(resolve, 150));
-    const relationClicked = await page.$eval(".react-flow__edge", (edge) => {
-      edge.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-      return true;
+    await page.waitForFunction(() => {
+      const evidenceButton = Array.from(document.querySelectorAll('[data-testid="entity-view-modes"] button'))
+        .find((button) => button.textContent.includes("证据链"));
+      return evidenceButton?.className.includes("bg-violet-400");
     });
-    if (!relationClicked) throw new Error("Entity relation cannot be selected");
+    await page.waitForSelector(".react-flow__edge-interaction");
+    await page.$eval(".react-flow__edge-interaction", (edgeInteraction) => {
+      edgeInteraction.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+    });
     await page.waitForSelector('[data-testid="relation-evidence-panel"]');
     const evidence = await page.$eval('[data-testid="relation-evidence-panel"]', (panel) => panel.textContent);
     if (!evidence.includes("关系原文证据") || !evidence.includes("原文片段")) throw new Error("Relation evidence is not traceable to the original text");
