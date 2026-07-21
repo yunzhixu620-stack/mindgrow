@@ -1652,101 +1652,244 @@ async function handleChat(body, context) {
   };
 }
 
-function isPrivateAddress(address) {
-  if (!address) return true;
-  if (net.isIPv4(address)) {
-    const parts = address.split('.').map(Number);
-    return parts[0] === 10
-      || parts[0] === 127
-      || parts[0] === 0
-      || (parts[0] === 169 && parts[1] === 254)
-      || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31)
-      || (parts[0] === 192 && parts[1] === 168)
-      || (parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127)
-      || parts[0] >= 224;
-  }
-  if (net.isIPv6(address)) {
-    const normalized = address.toLowerCase();
-    return normalized === '::1'
-      || normalized === '::'
-      || normalized.startsWith('fc')
-      || normalized.startsWith('fd')
-      || normalized.startsWith('fe8')
-      || normalized.startsWith('fe9')
-      || normalized.startsWith('fea')
-      || normalized.startsWith('feb');
-  }
-  return true;
+const BLOCKED_IPV4_RANGES = [
+  ['0.0.0.0', 8],
+  ['10.0.0.0', 8],
+  ['100.64.0.0', 10],
+  ['127.0.0.0', 8],
+  ['169.254.0.0', 16],
+  ['172.16.0.0', 12],
+  ['192.0.0.0', 24],
+  ['192.0.2.0', 24],
+  ['192.88.99.0', 24],
+  ['192.168.0.0', 16],
+  ['198.18.0.0', 15],
+  ['198.51.100.0', 24],
+  ['203.0.113.0', 24],
+  ['224.0.0.0', 4],
+  ['240.0.0.0', 4],
+];
+const ARTICLE_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+const ARTICLE_CONTENT_TYPES = new Set(['text/html', 'text/plain', 'application/xhtml+xml']);
+const ARTICLE_MAX_BYTES = 1024 * 1024;
+const ARTICLE_CONNECT_TIMEOUT_MS = 5000;
+const ARTICLE_FIRST_BYTE_TIMEOUT_MS = 10000;
+const ARTICLE_TOTAL_TIMEOUT_MS = 30000;
+const ARTICLE_MAX_REDIRECTS = 3;
+
+function ipv4Number(address) {
+  if (!net.isIPv4(address)) return null;
+  return address.split('.').reduce((value, part) => (value * 256) + Number(part), 0);
 }
 
-async function assertPublicUrl(targetUrl) {
+function isPublicIPv4(address) {
+  const value = ipv4Number(address);
+  if (value === null) return false;
+  return !BLOCKED_IPV4_RANGES.some(([base, prefix]) => {
+    const blockSize = Math.pow(2, 32 - prefix);
+    return Math.floor(value / blockSize) === Math.floor(ipv4Number(base) / blockSize);
+  });
+}
+
+async function assertPublicUrl(targetUrl, options) {
+  const settings = options || {};
   let parsed;
   try { parsed = new URL(targetUrl); } catch (_) { throw requestError(400, 'INVALID_URL', '请输入有效的文章网址'); }
   if (!['http:', 'https:'].includes(parsed.protocol)) throw requestError(400, 'INVALID_URL', '仅支持 http 或 https 网址');
   if (parsed.username || parsed.password) throw requestError(400, 'INVALID_URL', '网址不能包含账号信息');
-  const hostname = parsed.hostname.toLowerCase();
-  if (hostname === 'localhost' || hostname.endsWith('.local')) throw requestError(400, 'URL_NOT_ALLOWED', '不允许访问内网地址');
-  let records;
-  try { records = await dns.lookup(hostname, { all: true }); }
-  catch (_) { throw requestError(422, 'URL_RESOLUTION_FAILED', '无法解析该文章网址'); }
-  if (!records.length || records.some((record) => isPrivateAddress(record.address))) {
+  parsed.hash = '';
+
+  let hostname = parsed.hostname.toLowerCase();
+  if (hostname.startsWith('[') || net.isIPv6(hostname)) {
+    throw requestError(400, 'URL_NOT_ALLOWED', '暂不支持 IPv6 文章网址');
+  }
+  if (hostname.endsWith('.')) hostname = hostname.slice(0, -1);
+  if (hostname.endsWith('.')) throw requestError(400, 'INVALID_URL', '文章网址主机名格式无效');
+  if (!hostname || hostname === 'localhost' || hostname.endsWith('.local')) {
     throw requestError(400, 'URL_NOT_ALLOWED', '不允许访问内网地址');
   }
-  return parsed;
+  parsed.hostname = hostname;
+
+  let records;
+  if (net.isIPv4(hostname)) {
+    records = [hostname];
+  } else {
+    // Deliberately resolve every A record and never hand the hostname back to
+    // the transport. IPv6 literals/IPv6-only hosts are unsupported rather
+    // than falling through to an unvalidated system lookup.
+    const resolve4 = settings.resolve4 || ((name) => dns.resolve4(name));
+    try { records = await resolve4(hostname); }
+    catch (_) { throw requestError(422, 'URL_RESOLUTION_FAILED', '无法解析该文章网址'); }
+  }
+
+  const addresses = (Array.isArray(records) ? records : [])
+    .map((record) => (typeof record === 'string' ? record : record && record.address))
+    .filter(Boolean);
+  if (!addresses.length) throw requestError(422, 'URL_RESOLUTION_FAILED', '无法解析该文章网址');
+  if (addresses.some((address) => !isPublicIPv4(address))) {
+    throw requestError(400, 'URL_NOT_ALLOWED', '不允许访问非公网 IPv4 地址');
+  }
+
+  return {
+    url: parsed,
+    hostname,
+    address: addresses[0],
+    addresses,
+  };
 }
 
-async function fetchArticleText(targetUrl, redirects) {
-  const parsed = await assertPublicUrl(targetUrl);
-  const transport = parsed.protocol === 'https:' ? https : http;
+function discardArticleResponse(response) {
+  if (response && response.destroyed) return;
+  if (response && typeof response.destroy === 'function') response.destroy();
+  else if (response && typeof response.resume === 'function') response.resume();
+}
+
+function withArticleDeadline(promise, deadline) {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) return Promise.reject(requestError(504, 'ARTICLE_FETCH_TIMEOUT', '抓取文章超过总时间限制'));
   return new Promise((resolve, reject) => {
-    const request = transport.request({
-      hostname: parsed.hostname,
-      port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
-      path: `${parsed.pathname}${parsed.search}`,
-      method: 'GET',
-      // Alibaba Cloud Functions may resolve a dual-stack host to IPv6 even
-      // when the runtime has no IPv6 egress. Pin the already-vetted request to
-      // IPv4 so public sites such as GitHub Pages and arXiv do not fail after
-      // DNS validation merely because their AAAA record was selected first.
-      family: 4,
-      headers: {
-        Accept: 'text/html,text/plain,application/xhtml+xml',
-        'Accept-Encoding': 'identity',
-        'User-Agent': 'Mozilla/5.0 (compatible; MindGrowArticleBot/1.0; +https://yunzhixu620-stack.github.io/mindgrow/)',
-        Connection: 'close',
-      },
-    }, (response) => {
-      const status = response.statusCode || 502;
-      if (status >= 300 && status < 400 && response.headers.location) {
-        response.resume();
-        if ((redirects || 0) >= 3) return reject(requestError(400, 'TOO_MANY_REDIRECTS', '文章网址重定向次数过多'));
-        const next = new URL(response.headers.location, parsed).toString();
-        return fetchArticleText(next, (redirects || 0) + 1).then(resolve, reject);
-      }
-      if (status < 200 || status >= 300) {
-        response.resume();
-        return reject(requestError(422, 'ARTICLE_FETCH_FAILED', `文章页面返回 ${status}`));
-      }
-      const contentType = String(response.headers['content-type'] || '').toLowerCase();
-      if (!contentType.includes('text/html') && !contentType.includes('text/plain') && !contentType.includes('application/xhtml+xml')) {
-        response.resume();
-        return reject(requestError(415, 'UNSUPPORTED_ARTICLE_TYPE', '该网址不是可解析的网页文章'));
-      }
-      const chunks = [];
-      let size = 0;
-      response.on('data', (chunk) => {
-        size += chunk.length;
-        if (size > 1024 * 1024) {
-          response.destroy(requestError(413, 'ARTICLE_TOO_LARGE', '文章页面超过 1MB 限制'));
-          return;
+    const timer = setTimeout(() => reject(requestError(504, 'ARTICLE_FETCH_TIMEOUT', '抓取文章超过总时间限制')), remainingMs);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
+
+async function fetchArticleText(targetUrl, redirects, options) {
+  const redirectCount = redirects || 0;
+  const settings = options || {};
+  const totalTimeoutMs = settings.totalTimeoutMs || ARTICLE_TOTAL_TIMEOUT_MS;
+  const state = settings.state || { visited: new Set(), deadline: Date.now() + totalTimeoutMs };
+  const resolved = await withArticleDeadline(assertPublicUrl(targetUrl, settings), state.deadline);
+  const parsed = resolved.url;
+  const canonicalUrl = parsed.toString();
+  if (state.visited.has(canonicalUrl)) throw requestError(400, 'REDIRECT_LOOP', '文章网址出现循环重定向');
+  state.visited.add(canonicalUrl);
+
+  const remainingMs = state.deadline - Date.now();
+  if (remainingMs <= 0) throw requestError(504, 'ARTICLE_FETCH_TIMEOUT', '抓取文章超过总时间限制');
+
+  const transports = settings.transports || {};
+  const transport = transports[parsed.protocol] || (parsed.protocol === 'https:' ? https : http);
+  const port = parsed.port || (parsed.protocol === 'https:' ? 443 : 80);
+  const hostHeader = parsed.port ? `${resolved.hostname}:${parsed.port}` : resolved.hostname;
+  const requestOptions = {
+    hostname: resolved.address,
+    port,
+    path: `${parsed.pathname}${parsed.search}`,
+    method: 'GET',
+    family: 4,
+    agent: false,
+    ...(parsed.protocol === 'https:' ? { servername: resolved.hostname } : {}),
+    headers: {
+      Host: hostHeader,
+      Accept: 'text/html,text/plain,application/xhtml+xml',
+      'Accept-Encoding': 'identity',
+      'User-Agent': 'Mozilla/5.0 (compatible; MindGrowArticleBot/1.0; +https://yunzhixu620-stack.github.io/mindgrow/)',
+      Connection: 'close',
+    },
+  };
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let request;
+    let responseStream;
+    let connectTimer;
+    let firstByteTimer;
+    let overallTimer;
+
+    const clearTimers = () => {
+      clearTimeout(connectTimer);
+      clearTimeout(firstByteTimer);
+      clearTimeout(overallTimer);
+    };
+    const rejectOnce = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimers();
+      discardArticleResponse(responseStream);
+      reject(error);
+    };
+    const resolveOnce = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimers();
+      resolve(value);
+    };
+    const abort = (error) => {
+      if (request && typeof request.destroy === 'function') request.destroy(error);
+      rejectOnce(error);
+    };
+
+    try {
+      request = transport.request(requestOptions, (response) => {
+        responseStream = response;
+        clearTimeout(connectTimer);
+        clearTimeout(firstByteTimer);
+        const status = response.statusCode || 502;
+
+        if (ARTICLE_REDIRECT_STATUSES.has(status)) {
+          const location = Array.isArray(response.headers.location) ? response.headers.location[0] : response.headers.location;
+          discardArticleResponse(response);
+          if (!location) return rejectOnce(requestError(400, 'REDIRECT_LOCATION_MISSING', '文章网址重定向缺少 Location'));
+          if (redirectCount >= (settings.maxRedirects || ARTICLE_MAX_REDIRECTS)) {
+            return rejectOnce(requestError(400, 'TOO_MANY_REDIRECTS', '文章网址重定向次数过多'));
+          }
+          let nextUrl;
+          try { nextUrl = new URL(location, parsed); }
+          catch (_) { return rejectOnce(requestError(400, 'INVALID_REDIRECT_URL', '文章网址返回了无效重定向')); }
+          if (parsed.protocol === 'https:' && nextUrl.protocol !== 'https:') {
+            return rejectOnce(requestError(400, 'REDIRECT_DOWNGRADE_NOT_ALLOWED', '不允许从 HTTPS 降级重定向到 HTTP'));
+          }
+          clearTimers();
+          return fetchArticleText(nextUrl.toString(), redirectCount + 1, { ...settings, state }).then(resolveOnce, rejectOnce);
         }
-        chunks.push(chunk);
+
+        if (status < 200 || status >= 300) {
+          discardArticleResponse(response);
+          return rejectOnce(requestError(422, 'ARTICLE_FETCH_FAILED', `文章页面返回 ${status}`));
+        }
+
+        const mediaType = String(response.headers['content-type'] || '').toLowerCase().split(';')[0].trim();
+        if (!ARTICLE_CONTENT_TYPES.has(mediaType)) {
+          discardArticleResponse(response);
+          return rejectOnce(requestError(415, 'UNSUPPORTED_ARTICLE_TYPE', '该网址不是可解析的网页文章'));
+        }
+
+        const maxBytes = settings.maxBytes || ARTICLE_MAX_BYTES;
+        const declaredSize = Number.parseInt(response.headers['content-length'] || '', 10);
+        if (Number.isFinite(declaredSize) && declaredSize > maxBytes) {
+          discardArticleResponse(response);
+          return rejectOnce(requestError(413, 'ARTICLE_TOO_LARGE', '文章页面超过 1MB 限制'));
+        }
+
+        const chunks = [];
+        let size = 0;
+        response.on('data', (chunk) => {
+          if (settled) return;
+          const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          size += buffer.length;
+          if (size > maxBytes) return rejectOnce(requestError(413, 'ARTICLE_TOO_LARGE', '文章页面超过 1MB 限制'));
+          chunks.push(buffer);
+        });
+        response.on('end', () => resolveOnce({ html: Buffer.concat(chunks).toString('utf8'), finalUrl: canonicalUrl }));
+        response.on('error', rejectOnce);
       });
-      response.on('end', () => resolve({ html: Buffer.concat(chunks).toString('utf8'), finalUrl: parsed.toString() }));
-      response.on('error', reject);
+    } catch (error) {
+      return rejectOnce(error);
+    }
+
+    const connectTimeoutMs = Math.min(settings.connectTimeoutMs || ARTICLE_CONNECT_TIMEOUT_MS, remainingMs);
+    const firstByteTimeoutMs = Math.min(settings.firstByteTimeoutMs || ARTICLE_FIRST_BYTE_TIMEOUT_MS, remainingMs);
+    connectTimer = setTimeout(() => abort(requestError(504, 'ARTICLE_CONNECT_TIMEOUT', '连接文章网址超时')), connectTimeoutMs);
+    firstByteTimer = setTimeout(() => abort(requestError(504, 'ARTICLE_FIRST_BYTE_TIMEOUT', '等待文章响应超时')), firstByteTimeoutMs);
+    overallTimer = setTimeout(() => abort(requestError(504, 'ARTICLE_FETCH_TIMEOUT', '抓取文章超过总时间限制')), remainingMs);
+    request.on('socket', (socket) => {
+      if (!socket.connecting) clearTimeout(connectTimer);
+      else socket.once(parsed.protocol === 'https:' ? 'secureConnect' : 'connect', () => clearTimeout(connectTimer));
     });
-    request.setTimeout(UPSTREAM_TIMEOUT_MS, () => request.destroy(requestError(504, 'ARTICLE_FETCH_TIMEOUT', '读取文章超时')));
-    request.on('error', reject);
+    request.on('error', rejectOnce);
     request.end();
   });
 }
@@ -3992,6 +4135,8 @@ module.exports = {
   safeBase64Url,
   handleChat,
   assertPublicUrl,
+  fetchArticleText,
+  isPublicIPv4,
   classifyInput,
   classifyArticleRequest,
   selectArticleDocument,
