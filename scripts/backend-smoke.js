@@ -48,10 +48,12 @@ function expectStatus(result, status) {
 
   const health = await request("Dependency health and API version", "/health", { authenticated: false });
   health.ok = health.status === 200 && health.body?.status === "ok" && health.body?.version === expectedApiVersion
+    && health.body?.authRequired === true && health.body?.allowAnonLocal === false
+    && typeof health.body?.nodeEnv === "string" && health.body?.checks?.authConfiguration === "ok"
     && health.body?.checks?.modelConfigured === true && health.body?.checks?.knowledgeStore === "ok"
     && health.body?.checks?.hybridRetrieval === "ready" && health.body?.checks?.entityGraph === "ready";
   if (!health.ok) {
-    health.expectation = "Expected healthy API " + expectedApiVersion + " with knowledge, hybrid retrieval, and entity graph ready";
+    health.expectation = "Expected healthy authenticated API " + expectedApiVersion + " with knowledge, hybrid retrieval, and entity graph ready";
     console.error("FAIL Dependency health gate: received " + (health.body?.version || "unknown"));
   }
 

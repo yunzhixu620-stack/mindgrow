@@ -12,7 +12,7 @@
 
 ## 2. 事故分级与响应
 
-- **SEV0**：密钥/个人数据泄漏、跨租户越权。立即停用凭证或入口，15 分钟内响应；保留审计证据，不在群里粘贴敏感数据。
+- **SEV0**：密钥/个人数据泄漏、跨租户越权，或生产 `/health.authRequired !== true`。立即停用凭证或入口，15 分钟内响应；保留审计证据，不在群里粘贴敏感数据。
 - **SEV1**：登录、核心知识读写或全部问答不可用，影响 >10% 用户。30 分钟内响应，2 小时内给状态更新。
 - **SEV2**：PDF/文章/Audio 等单一能力失败或性能明显退化。4 小时内响应。
 - **SEV3**：低影响 UI、文案、单用户问题。下一工作日处理。
@@ -21,7 +21,7 @@
 
 ## 3. 合成监控与发布门禁
 
-- 每 5 分钟：`GET /health`，要求 HTTP 200、`version` 与 `docs/api-version.txt` 一致，model/store/hybridRetrieval 均为 ready 或 ok。版本文件是运行时 `API_VERSION` 的 CI 校验镜像，不是第二个真源。
+- 每 5 分钟：`GET /health`，要求 HTTP 200、`version` 与 `docs/api-version.txt` 一致、`authRequired === true`，model/store/hybridRetrieval 均为 ready 或 ok。生产 `authRequired !== true` 立即按 SEV0 处理。版本文件是运行时 `API_VERSION` 的 CI 校验镜像，不是第二个真源。
 - 每 15 分钟：匿名访问 knowledge/workspaces/audio 均应为 401；任何 2xx 视为 SEV0。
 - 每 60 分钟：专用测试账号列出 workspaces/maps，不执行付费模型。
 - 每天：专用测试知识库解析一篇固定短文，验证 citation quote 与来源一致；生成一次 Audio 脚本。
@@ -29,6 +29,8 @@
 - 每周：恢复演练一次（数据库只读、模型超时、TTS 失败、GitHub 静态资源缓存）。
 
 API 发版时先修改 `fc-proxy/index.js` 的 `API_VERSION`，再在同一个 PR 同步 `docs/api-version.txt`，最后运行 `npm run check:api-version`。禁止只改镜像文件或把镜像称为运行时版本真源。
+
+匿名模式只允许本机开发或测试环境同时设置 `AUTH_REQUIRED=false` 和 `ALLOW_ANON_LOCAL=true`；production 即使误设这两个值也必须拒绝请求并让 health 降级。生产环境不得配置 `ALLOW_ANON_LOCAL=true`。
 
 ## 4. Runbook：Supabase 不可达
 
