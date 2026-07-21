@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { MindMapPanel } from "@/components/mindmap/mind-map-panel";
 import { ChatPanel } from "@/components/chat/chat-panel";
 import { Sidebar } from "@/components/layout/sidebar";
 import { useMindGrowStore, type AppMode } from "@/store/mindgrow-store";
-import type { EntityGraph, KnowledgeEdge, KnowledgeNode, MindMap } from "@/types";
+import type { MindMap } from "@/types";
 import { apiFetch } from "@/lib/client-api";
 import { TemplateBrowser } from "@/components/template/template-browser";
 import { useAuth } from "@/components/auth/auth-provider";
@@ -14,21 +14,21 @@ import { MeetingAssistant } from "@/components/modes/meeting-assistant";
 import { ArticleParser } from "@/components/modes/article-parser";
 import { IS_LOCAL_MODE } from "@/lib/client-api";
 import { MODE_LIBRARY_CONFIG, isMapForMode, modeLibraryDescription } from "@/lib/mode-libraries";
+import { tenantCache, tenantMapKey, tenantScopeKey, type TenantScope } from "@/lib/tenant-cache";
+import { commitPageGraphResponse, graphSnapshotFromResponse, type PageGraphRequest } from "@/app/page-loader";
 
-interface CachedMapGraph {
-  nodes: KnowledgeNode[];
-  edges: KnowledgeEdge[];
-  entityGraph: EntityGraph;
-  storedAt: number;
-}
-
-const mapGraphCache = new Map<string, CachedMapGraph>();
-const mapGraphCacheKey = (workspaceId: string | undefined, mapId: string) => `${workspaceId || "local"}:${mapId}`;
+const LOCAL_TENANT_SCOPE: TenantScope = { userId: "local-user", workspaceId: "local-workspace" };
 
 export default function Home() {
-  const { currentWorkspace } = useAuth();
+  const { currentWorkspace, user } = useAuth();
   const currentWorkspaceId = currentWorkspace?.id;
   const currentWorkspaceDefaultMapId = currentWorkspace?.defaultMapId;
+  const tenantScope = useMemo<TenantScope | null>(() => {
+    if (IS_LOCAL_MODE) return LOCAL_TENANT_SCOPE;
+    if (!user?.id || !currentWorkspaceId) return null;
+    return { userId: user.id, workspaceId: currentWorkspaceId };
+  }, [currentWorkspaceId, user?.id]);
+  const activeTenantScopeKey = tenantScope ? tenantScopeKey(tenantScope) : null;
   const {
     currentMapId,
     setCurrentMapId,
@@ -43,10 +43,8 @@ export default function Home() {
     setCategories,
     currentMode,
     setCurrentMode,
-    nodes,
-    edges,
-    entityGraph,
   } = useMindGrowStore();
+  const mapsSignature = useMemo(() => maps.map((map) => `${map.id}:${map.updatedAt}`).join("|"), [maps]);
   const [mobileTab, setMobileTab] = useState<"chat" | "map">("chat");
   const [isMobile, setIsMobile] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -74,6 +72,8 @@ export default function Home() {
   const mapLoadAbortRef = useRef<AbortController | null>(null);
   const prefetchAbortRef = useRef<AbortController | null>(null);
   const prefetchedMapKeysRef = useRef(new Set<string>());
+  const activeTenantScopeKeyRef = useRef<string | null>(activeTenantScopeKey);
+  activeTenantScopeKeyRef.current = activeTenantScopeKey;
 
   // Detect mobile
   useEffect(() => {
@@ -120,37 +120,61 @@ export default function Home() {
 
   // Load maps & categories on mount
   useEffect(() => {
-    if (!IS_LOCAL_MODE && !currentWorkspaceId) return;
+    if (!tenantScope) return;
+    const requestedScopeKey = tenantScopeKey(tenantScope);
+    const controller = new AbortController();
     Promise.all([
-      apiFetch("/api/knowledge?action=maps").then((r) => r.json()),
-      apiFetch("/api/knowledge?action=categories").then((r) => r.json()),
+      apiFetch("/api/knowledge?action=maps", { signal: controller.signal }).then((response) => {
+        if (!response.ok) throw new Error("知识库目录加载失败");
+        return response.json();
+      }),
+      apiFetch("/api/knowledge?action=categories", { signal: controller.signal }).then((response) => {
+        if (!response.ok) throw new Error("知识库分类加载失败");
+        return response.json();
+      }),
     ])
       .then(([{ maps }, { categories }]) => {
+        if (requestedScopeKey !== activeTenantScopeKeyRef.current) return;
         setMaps(maps || []);
         setCategories(categories || []);
         setMapCatalogReady(true);
       })
-      .catch(() => setMapCatalogReady(true));
-  }, [setMaps, setCategories, currentWorkspaceId]);
+      .catch((error) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        if (requestedScopeKey === activeTenantScopeKeyRef.current) setMapCatalogReady(true);
+      });
+    return () => controller.abort();
+  }, [activeTenantScopeKey, setMaps, setCategories, tenantScope]);
 
   useEffect(() => {
     if (!currentWorkspaceDefaultMapId) return;
-    setMaps([]);
-    setCategories([]);
+    ++mapLoadRequestRef.current;
+    mapLoadAbortRef.current?.abort();
+    prefetchAbortRef.current?.abort();
+    prefetchedMapKeysRef.current.clear();
+    useMindGrowStore.getState().resetTenantContext();
+    activeModeRef.current = "knowledge";
+    lastMapByModeRef.current = { knowledge: currentWorkspaceDefaultMapId };
     setMapCatalogReady(false);
-    setNodes([]);
-    setEdges([]);
-    setEntityGraph({ entities: [], relations: [] });
+    setModeLibraryBusy(false);
+    setModeLibraryError("");
     setCurrentMapId(currentWorkspaceDefaultMapId);
-  }, [currentWorkspaceId, currentWorkspaceDefaultMapId, setMaps, setCategories, setNodes, setEdges, setEntityGraph, setCurrentMapId]);
+  }, [activeTenantScopeKey, currentWorkspaceDefaultMapId, setCurrentMapId]);
+
+  useEffect(() => tenantCache.subscribe((event) => {
+    if (event.type === "tenant-cleared") prefetchedMapKeysRef.current.clear();
+  }), []);
 
   const reloadAll = useCallback(async (): Promise<MindMap[]> => {
+    if (!tenantScope) return [];
+    const requestedScopeKey = tenantScopeKey(tenantScope);
     let allMaps: MindMap[] = [];
     try {
       const [mapsRes, catsRes] = await Promise.all([
         apiFetch("/api/knowledge?action=maps"),
         apiFetch("/api/knowledge?action=categories"),
       ]);
+      if (requestedScopeKey !== activeTenantScopeKeyRef.current) return [];
       if (mapsRes.ok) {
         const data = await mapsRes.json();
         allMaps = data.maps || [];
@@ -163,7 +187,7 @@ export default function Home() {
       setMapCatalogReady(true);
     } catch (e) { console.error(e); }
     return allMaps;
-  }, [setMaps, setCategories]);
+  }, [setMaps, setCategories, tenantScope]);
 
   const handleSwitchMap = useCallback((mapId: string) => {
     if (mapId === currentMapId) { setDrawerOpen(false); return; }
@@ -173,18 +197,18 @@ export default function Home() {
     mapLoadAbortRef.current?.abort();
     saveChatHistory();
     setCurrentMapId(mapId);
-    const cached = mapGraphCache.get(mapGraphCacheKey(currentWorkspaceId, mapId));
+    const cached = tenantScope ? tenantCache.getMapGraph(tenantScope, mapId) : undefined;
     if (cached) {
-      setNodes(cached.nodes);
-      setEdges(cached.edges);
-      setEntityGraph(cached.entityGraph);
+      setNodes(cached.snapshot.nodes);
+      setEdges(cached.snapshot.edges);
+      setEntityGraph(cached.snapshot.entityGraph);
       setModeLibraryBusy(false);
     } else {
       setModeLibraryBusy(true);
     }
     loadChatHistory(mapId);
     setDrawerOpen(false);
-  }, [currentMapId, currentWorkspaceId, setCurrentMapId, setNodes, setEdges, setEntityGraph, saveChatHistory, loadChatHistory]);
+  }, [currentMapId, tenantScope, setCurrentMapId, setNodes, setEdges, setEntityGraph, saveChatHistory, loadChatHistory]);
 
   // Switching product boards also switches to a board-owned knowledge library.
   // Meeting and article libraries are provisioned once, then reused on later visits.
@@ -292,7 +316,7 @@ export default function Home() {
       });
       const allMaps = await reloadAll();
       if (map.id === currentMapId) {
-        mapGraphCache.delete(mapGraphCacheKey(currentWorkspaceId, map.id));
+        if (tenantScope) tenantCache.clearMap(tenantScope, map.id);
         const fallback = allMaps.find((item) => item.id !== map.id && isMapForMode(item, currentMode));
         if (fallback) handleSwitchMap(fallback.id);
         else {
@@ -305,7 +329,7 @@ export default function Home() {
     } catch (e) { console.error(e); }
     setActionSheet("none");
     setContextMenu(null);
-  }, [currentMapId, currentMode, currentWorkspaceId, handleSwitchMap, reloadAll, setNodes, setEdges, setEntityGraph]);
+  }, [currentMapId, currentMode, tenantScope, handleSwitchMap, reloadAll, setNodes, setEdges, setEntityGraph]);
 
   const handleCreateCategory = useCallback(async () => {
     if (!newCategoryName.trim()) { setIsCreatingCategory(false); return; }
@@ -336,19 +360,25 @@ export default function Home() {
   }, [reloadAll]);
 
   // One authoritative graph loader for desktop, mobile and top-tab switches.
-  // It validates both the map id and product mode before committing a response.
+  // It validates request, tenant, map and mode before committing a response.
   useEffect(() => {
-    if (!mapCatalogReady) return;
-    const selectedMap = maps.find((map) => map.id === currentMapId);
+    if (!mapCatalogReady || !tenantScope) return;
+    const selectedMap = useMindGrowStore.getState().maps.find((map) => map.id === currentMapId);
     if (!selectedMap || !isMapForMode(selectedMap, currentMode)) return;
     const requestId = ++mapLoadRequestRef.current;
-    const requestedMode = currentMode;
-    const cacheKey = mapGraphCacheKey(currentWorkspaceId, currentMapId);
-    const cached = mapGraphCache.get(cacheKey);
+    const request: PageGraphRequest = {
+      requestId,
+      scope: tenantScope,
+      mapId: currentMapId,
+      mode: currentMode,
+      baseHydrationEpoch: useMindGrowStore.getState().getHydrationEpoch(currentMapId),
+      cacheReadToken: tenantCache.beginMapRead(tenantScope, currentMapId),
+    };
+    const cached = tenantCache.getMapGraph(tenantScope, currentMapId);
     if (cached) {
-      setNodes(cached.nodes);
-      setEdges(cached.edges);
-      setEntityGraph(cached.entityGraph);
+      setNodes(cached.snapshot.nodes);
+      setEdges(cached.snapshot.edges);
+      setEntityGraph(cached.snapshot.entityGraph);
       setModeLibraryBusy(false);
     } else {
       setModeLibraryBusy(true);
@@ -362,79 +392,70 @@ export default function Home() {
         return response.json();
       })
       .then((data) => {
-        const graph: CachedMapGraph = {
-          nodes: data.nodes || [],
-          edges: data.edges || [],
-          entityGraph: data.entityGraph || { entities: [], relations: [] },
-          storedAt: Date.now(),
-        };
-        mapGraphCache.set(cacheKey, graph);
-        if (requestId !== mapLoadRequestRef.current) return;
+        const graph = graphSnapshotFromResponse(data);
         const latest = useMindGrowStore.getState();
-        if (latest.currentMapId !== currentMapId || latest.currentMode !== requestedMode) return;
-        setNodes(graph.nodes);
-        setEdges(graph.edges);
-        setEntityGraph(graph.entityGraph);
-        setModeLibraryError("");
+        const result = commitPageGraphResponse(request, {
+          requestId: mapLoadRequestRef.current,
+          scopeKey: activeTenantScopeKeyRef.current,
+          mapId: latest.currentMapId,
+          mode: latest.currentMode,
+        }, graph);
+        if (result === "applied" || result === "rejected-local-dirty") setModeLibraryError("");
       })
       .catch((error) => {
         if (error instanceof DOMException && error.name === "AbortError") return;
-        if (requestId === mapLoadRequestRef.current && !cached) setModeLibraryError(error instanceof Error ? error.message : "知识图谱加载失败");
+        if (requestId === mapLoadRequestRef.current && activeTenantScopeKeyRef.current === tenantScopeKey(tenantScope) && !cached) {
+          setModeLibraryError(error instanceof Error ? error.message : "知识图谱加载失败");
+        }
       })
       .finally(() => {
-        if (requestId === mapLoadRequestRef.current) setModeLibraryBusy(false);
+        if (requestId === mapLoadRequestRef.current && activeTenantScopeKeyRef.current === tenantScopeKey(tenantScope)) setModeLibraryBusy(false);
       });
     loadChatHistory(currentMapId);
     return () => {
       controller.abort();
       if (mapLoadAbortRef.current === controller) mapLoadAbortRef.current = null;
     };
-  }, [currentMapId, currentMode, currentWorkspaceId, maps, mapCatalogReady, setNodes, setEdges, setEntityGraph, loadChatHistory]);
+  }, [currentMapId, currentMode, tenantScope, mapsSignature, mapCatalogReady, setNodes, setEdges, setEntityGraph, loadChatHistory]);
 
   // Warm the first library owned by every board after the catalog arrives.
   // Later top-tab switches can then paint from memory while revalidation runs.
   useEffect(() => {
-    if (!mapCatalogReady || maps.length === 0) return;
+    if (!mapCatalogReady || !tenantScope) return;
+    const currentMaps = useMindGrowStore.getState().maps;
+    if (currentMaps.length === 0) return;
+    const requestedScopeKey = tenantScopeKey(tenantScope);
     prefetchAbortRef.current?.abort();
     const controller = new AbortController();
     prefetchAbortRef.current = controller;
     const targets = (["knowledge", "meeting", "article"] as AppMode[])
-      .map((mode) => maps.find((map) => isMapForMode(map, mode)))
+      .map((mode) => currentMaps.find((map) => isMapForMode(map, mode)))
       .filter((map): map is MindMap => Boolean(map))
       .filter((map) => map.id !== currentMapId)
       .filter((map) => {
-        const key = mapGraphCacheKey(currentWorkspaceId, map.id);
-        if (mapGraphCache.has(key) || prefetchedMapKeysRef.current.has(key)) return false;
+        const key = tenantMapKey(tenantScope, map.id);
+        if (tenantCache.getMapGraph(tenantScope, map.id) || prefetchedMapKeysRef.current.has(key)) return false;
         prefetchedMapKeysRef.current.add(key);
         return true;
       });
     void Promise.allSettled(targets.map(async (map) => {
-      const response = await apiFetch(`/api/knowledge?mapId=${map.id}`, { signal: controller.signal });
-      if (!response.ok) throw new Error("prefetch failed");
-      const data = await response.json();
-      mapGraphCache.set(mapGraphCacheKey(currentWorkspaceId, map.id), {
-        nodes: data.nodes || [],
-        edges: data.edges || [],
-        entityGraph: data.entityGraph || { entities: [], relations: [] },
-        storedAt: Date.now(),
-      });
+      const key = tenantMapKey(tenantScope, map.id);
+      const token = tenantCache.beginMapRead(tenantScope, map.id);
+      try {
+        const response = await apiFetch(`/api/knowledge?mapId=${map.id}`, { signal: controller.signal });
+        if (!response.ok) throw new Error("prefetch failed");
+        const data = await response.json();
+        if (controller.signal.aborted || activeTenantScopeKeyRef.current !== requestedScopeKey) return;
+        tenantCache.commitServerSnapshot(token, graphSnapshotFromResponse(data));
+      } finally {
+        if (!tenantCache.getMapGraph(tenantScope, map.id)) prefetchedMapKeysRef.current.delete(key);
+      }
     }));
     return () => {
       controller.abort();
       if (prefetchAbortRef.current === controller) prefetchAbortRef.current = null;
     };
-  }, [currentMapId, currentWorkspaceId, mapCatalogReady, maps]);
-
-  // Keep an already-loaded cache entry aligned with local edits. Empty state
-  // created during a board switch is ignored because it has no cache entry yet.
-  useEffect(() => {
-    if (!mapCatalogReady) return;
-    const selectedMap = maps.find((map) => map.id === currentMapId);
-    if (!selectedMap || !isMapForMode(selectedMap, currentMode)) return;
-    const cacheKey = mapGraphCacheKey(currentWorkspaceId, currentMapId);
-    if (!mapGraphCache.has(cacheKey)) return;
-    mapGraphCache.set(cacheKey, { nodes, edges, entityGraph, storedAt: Date.now() });
-  }, [nodes, edges, entityGraph, currentMapId, currentMode, currentWorkspaceId, mapCatalogReady, maps]);
+  }, [currentMapId, tenantScope, mapCatalogReady, mapsSignature]);
 
   // Each product board owns a separate set of knowledge libraries.
   const visibleMaps = maps.filter((map) => isMapForMode(map, currentMode));
