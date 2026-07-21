@@ -20,7 +20,7 @@ export function TemplateBrowser({ onSelect, onClose }: TemplateBrowserProps) {
   });
 
   return (
-    <div className="fixed inset-0 z-[400] flex items-center justify-center bg-black/50" onClick={onClose}>
+    <div className="fixed inset-0 z-[400] flex items-center justify-center bg-black/50" data-testid="template-browser" onClick={onClose}>
       <div
         className="bg-[var(--card)] border border-[var(--border)] rounded-2xl w-[90vw] max-w-[480px] max-h-[85vh] flex flex-col shadow-2xl"
         style={{ paddingBottom: "max(env(safe-area-inset-bottom), 16px)" }}
@@ -118,6 +118,7 @@ export function TemplateBrowser({ onSelect, onClose }: TemplateBrowserProps) {
               </div>
               <button
                 onClick={() => onSelect(preview)}
+                data-testid="template-use"
                 className="w-full mt-4 py-2.5 bg-[var(--primary)] text-[var(--primary-foreground)] rounded-xl text-xs font-semibold cursor-pointer hover:opacity-90 transition-opacity"
               >
                 使用此模板创建知识库
@@ -133,6 +134,7 @@ export function TemplateBrowser({ onSelect, onClose }: TemplateBrowserProps) {
                 <button
                   key={tpl.id}
                   onClick={() => setPreview(tpl)}
+                  data-testid={`template-card-${tpl.id}`}
                   className="w-full text-left p-3 rounded-xl border border-[var(--border)] hover:bg-[var(--bg-hover)] hover:border-[var(--primary)]/30 transition-colors cursor-pointer"
                 >
                   <div className="flex items-start gap-3">

@@ -567,6 +567,52 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     await new Promise((resolve) => setTimeout(resolve, 400));
   });
 
+  await check("mobile template creation uses the shared graph loader once", async () => {
+    await clickByText(page, "button", "知识");
+    await page.waitForSelector('textarea[aria-label="输入知识或向知识库提问"]');
+    const existingMapIds = await page.evaluate(() => JSON.parse(localStorage.getItem("mindgrow.local.v2")).maps.map((map) => map.id));
+    await page.evaluate(() => {
+      window.__mindgrowLocalGraphRequests = [];
+      window.__mindgrowLocalGraphCapture = (event) => {
+        const detail = event.detail || {};
+        const url = new URL(detail.path || "", window.location.origin);
+        const mapId = url.searchParams.get("mapId");
+        if (detail.method === "GET" && url.pathname.endsWith("/api/knowledge") && mapId) window.__mindgrowLocalGraphRequests.push(mapId);
+      };
+      window.addEventListener("mindgrow:local-api-request", window.__mindgrowLocalGraphCapture);
+    });
+    try {
+      await page.click(".drawer-toggle-btn");
+      await page.waitForSelector('[data-testid="mobile-template-browser-open"]');
+      await page.click('[data-testid="mobile-template-browser-open"]');
+      await page.waitForSelector('[data-testid="template-browser"]');
+      await page.click('[data-testid="template-card-tpl_project_mgmt"]');
+      await page.waitForSelector('[data-testid="template-use"]');
+      await page.click('[data-testid="template-use"]');
+      await page.waitForFunction((knownIds) => {
+        const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+        return state.maps.some((map) => !knownIds.includes(map.id));
+      }, {}, existingMapIds);
+      const created = await page.evaluate((knownIds) => {
+        const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+        const map = state.maps.find((candidate) => !knownIds.includes(candidate.id));
+        return { id: map?.id || "", root: state.nodes[map?.id]?.[0]?.content || "" };
+      }, existingMapIds);
+      if (!created.id || !created.root) throw new Error("Template did not create a populated knowledge library");
+      await clickByText(page, "button", "图谱");
+      await page.waitForFunction((root) => document.body.innerText.includes(root), {}, created.root);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const requestCount = await page.evaluate((mapId) => window.__mindgrowLocalGraphRequests.filter((candidate) => candidate === mapId).length, created.id);
+      if (requestCount !== 1) throw new Error(`Expected one shared-loader request for ${created.id}, got ${requestCount}`);
+    } finally {
+      await page.evaluate(() => {
+        window.removeEventListener("mindgrow:local-api-request", window.__mindgrowLocalGraphCapture);
+        delete window.__mindgrowLocalGraphCapture;
+        delete window.__mindgrowLocalGraphRequests;
+      });
+    }
+  });
+
   await check("knowledge universe keeps board isolation and supports zoom", async () => {
     await page.setViewport({ width: 1440, height: 900 });
     await page.goto(`${BASE_URL}/universe?mode=article`, { waitUntil: "networkidle0", timeout: 30000 });

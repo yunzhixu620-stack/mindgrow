@@ -242,11 +242,15 @@ function IconPicker({ onSelect }: { onSelect: (icon: string) => void }) {
 // ============================================================
 // Main Sidebar component
 // ============================================================
-export function Sidebar() {
+interface SidebarProps {
+  onSwitchMap: (mapId: string) => void;
+  onMapCreated: (mapId: string) => Promise<void>;
+}
+
+export function Sidebar({ onSwitchMap, onMapCreated }: SidebarProps) {
   const {
     maps,
     currentMapId,
-    setCurrentMapId,
     sidebarOpen,
     setSidebarOpen,
     categories,
@@ -254,8 +258,6 @@ export function Sidebar() {
     setSearchResults,
     setHighlightedNodeId,
     currentMode,
-    saveChatHistory,
-    loadChatHistory,
     setNodes,
     setEdges,
   } = useMindGrowStore();
@@ -382,40 +384,23 @@ export function Sidebar() {
       });
       if (res.ok) {
         const { map } = await res.json();
-        saveChatHistory();
-        setCurrentMapId(map.id);
+        await onMapCreated(map.id);
         setNewName("");
         setIsCreating(false);
         setNewCategoryId(null);
-        // Reload maps and categories
-        const [mapsRes, catsRes] = await Promise.all([
-          apiFetch("/api/knowledge?action=maps"),
-          apiFetch("/api/knowledge?action=categories"),
-        ]);
-        if (mapsRes.ok) {
-          const { maps: allMaps } = await mapsRes.json();
-          useMindGrowStore.getState().setMaps(allMaps);
-        }
-        if (catsRes.ok) {
-          const { categories: allCats } = await catsRes.json();
-          useMindGrowStore.getState().setCategories(allCats);
-        }
-        loadChatHistory(map.id);
       }
     } catch (e) {
       console.error("Failed to create map:", e);
     }
-  }, [newName, newColor, newCategoryId, currentMode, setCurrentMapId, saveChatHistory, loadChatHistory]);
+  }, [newName, newColor, newCategoryId, currentMode, onMapCreated]);
 
   const handleSwitch = useCallback((mapId: string) => {
     if (mapId === currentMapId) return;
-    saveChatHistory();
-    setCurrentMapId(mapId);
-    loadChatHistory(mapId);
+    onSwitchMap(mapId);
     setContextMenu(null);
     setSearchResults([]);
     setHighlightedNodeId(null);
-  }, [currentMapId, saveChatHistory, setCurrentMapId, loadChatHistory, setSearchResults, setHighlightedNodeId]);
+  }, [currentMapId, onSwitchMap, setSearchResults, setHighlightedNodeId]);
 
   const handleSearchResultSelect = useCallback(async (result: LibrarySearchResult) => {
     await handleSwitch(result.map.id);
@@ -1027,25 +1012,7 @@ export function Sidebar() {
               });
               if (res.ok) {
                 const { map } = await res.json();
-                setCurrentMapId(map.id);
-                const [mapsRes, catsRes] = await Promise.all([
-                  apiFetch("/api/knowledge?action=maps"),
-                  apiFetch("/api/knowledge?action=categories"),
-                ]);
-                if (mapsRes.ok) {
-                  const { maps: allMaps } = await mapsRes.json();
-                  useMindGrowStore.getState().setMaps(allMaps);
-                }
-                if (catsRes.ok) {
-                  const { categories: allCats } = await catsRes.json();
-                  useMindGrowStore.getState().setCategories(allCats);
-                }
-                const dataRes = await apiFetch(`/api/knowledge?mapId=${map.id}`);
-                if (dataRes.ok) {
-                  const { nodes, edges } = await dataRes.json();
-                  useMindGrowStore.getState().setNodes(nodes || []);
-                  useMindGrowStore.getState().setEdges(edges || []);
-                }
+                await onMapCreated(map.id);
               }
             } catch (e) { console.error("Failed to create from template:", e); }
           }}

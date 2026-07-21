@@ -651,6 +651,12 @@ export async function apiFetch(path: string, init?: RequestInit): Promise<Respon
     return fetch(`${API_BASE_URL}${path}`, { ...init, cache: "no-store", headers });
   }
   if (typeof window === "undefined") return fetch(path, init);
+  // Local mode resolves API calls in memory, so browser Network tooling cannot
+  // observe duplicate loader calls. Emit metadata-only diagnostics for local
+  // regression tests; the hosted API path above never emits this event.
+  window.dispatchEvent(new CustomEvent("mindgrow:local-api-request", {
+    detail: { path, method: (init?.method || "GET").toUpperCase() },
+  }));
   if (path.startsWith("/api/knowledge")) return handleKnowledge(path, init);
   if (path.startsWith("/api/chat")) return handleChat(init);
   if (path.startsWith("/api/tools/")) return handleLocalTool(path, init);

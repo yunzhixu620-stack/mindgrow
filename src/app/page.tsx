@@ -210,6 +210,20 @@ export default function Home() {
     setDrawerOpen(false);
   }, [currentMapId, tenantScope, setCurrentMapId, setNodes, setEdges, setEntityGraph, saveChatHistory, loadChatHistory]);
 
+  const handleCreatedMap = useCallback(async (mapId: string) => {
+    // Keep catalog prefetch from racing the explicit navigation while the new
+    // map first appears in `maps`. The authoritative loader still performs the
+    // one graph request after handleSwitchMap selects the target.
+    const prefetchKey = tenantScope ? tenantMapKey(tenantScope, mapId) : null;
+    if (prefetchKey) prefetchedMapKeysRef.current.add(prefetchKey);
+    try {
+      await reloadAll();
+      handleSwitchMap(mapId);
+    } finally {
+      if (prefetchKey) prefetchedMapKeysRef.current.delete(prefetchKey);
+    }
+  }, [handleSwitchMap, reloadAll, tenantScope]);
+
   // Switching product boards also switches to a board-owned knowledge library.
   // Meeting and article libraries are provisioned once, then reused on later visits.
   useEffect(() => {
@@ -563,6 +577,7 @@ export default function Home() {
                   </button>}
                   {currentMode === "knowledge" && <button
                     onClick={() => setShowTemplates(true)}
+                    data-testid="mobile-template-browser-open"
                     className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--bg-hover)] text-[var(--muted-foreground)] cursor-pointer"
                     title="模板中心"
                   >
@@ -879,17 +894,7 @@ export default function Home() {
                 });
                 if (res.ok) {
                   const { map } = await res.json();
-                  saveChatHistory();
-                  setCurrentMapId(map.id);
-                  const dataRes = await apiFetch(`/api/knowledge?mapId=${map.id}`);
-                  if (dataRes.ok) {
-                    const { nodes, edges, entityGraph } = await dataRes.json();
-                    setNodes(nodes || []);
-                    setEdges(edges || []);
-                    setEntityGraph(entityGraph || { entities: [], relations: [] });
-                  }
-                  loadChatHistory(map.id);
-                  await reloadAll();
+                  await handleCreatedMap(map.id);
                 }
               } catch (e) { console.error(e); }
             }}
@@ -904,7 +909,7 @@ export default function Home() {
   // Meeting and article keep isolated libraries but reuse the map interaction.
   return (
     <main className="flex h-full w-full overflow-hidden" data-testid={`${currentMode}-workspace`} data-current-map-id={currentMapId} data-library-busy={modeLibraryBusy ? "true" : "false"}>
-      <Sidebar />
+      <Sidebar onSwitchMap={handleSwitchMap} onMapCreated={handleCreatedMap} />
       <div className={currentMode === "knowledge" ? "flex h-full shrink-0" : "h-full w-[clamp(360px,36vw,520px)] shrink-0 border-r border-[var(--border)]"}>
         {activeModePanel}
       </div>
