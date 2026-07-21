@@ -24,6 +24,13 @@ const useCases = [
   "专业服务：为咨询、法律、财务与医疗信息建立来源清晰的内部助手",
 ];
 
+const workflow = [
+  ["01", "输入", "粘贴碎片、网页、PDF或会议内容", "一段资料"],
+  ["02", "整理", "AI生成可编辑的分类与知识图谱", "主题 → 概念 → 证据"],
+  ["03", "检索", "从当前知识库召回相关内容", "GraphRAG 查证"],
+  ["04", "回答", "结论靠前，并附上可核验引用", "答案 [1] [2]"],
+];
+
 export default function GuidePage() {
   const faq = {
     "@context": "https://schema.org",
@@ -65,21 +72,24 @@ export default function GuidePage() {
           </div>
         </section>
 
-        <section className="mb-20" aria-labelledby="workflow-title">
-          <h2 id="workflow-title" className="text-2xl font-semibold mb-8">三步完成知识闭环</h2>
-          <ol className="grid md:grid-cols-3 gap-4 list-none">
-            {[
-              ["01", "记录", "输入知识、文章片段或一个问题。"],
-              ["02", "核对", "检查结构与引用，删掉不需要的分支。"],
-              ["03", "沉淀", "保存为知识节点，并继续检索、连接和导出。"],
-            ].map(([number, title, description]) => (
-              <li key={number} className="rounded-2xl bg-[var(--bg-elevated)] p-6">
-                <div className="text-xs text-[var(--text-tertiary)] mb-6">{number}</div>
-                <h3 className="text-lg font-semibold mb-2">{title}</h3>
-                <p className="text-sm leading-7 text-[var(--text-secondary)]">{description}</p>
-              </li>
-            ))}
-          </ol>
+        <section className="mb-20" aria-labelledby="workflow-title" data-testid="guide-timeline">
+          <div className="mb-8">
+            <h2 id="workflow-title" className="text-2xl font-semibold mb-2">一分钟看懂 MindGrow</h2>
+            <p className="text-sm text-[var(--text-secondary)]">输入一次，完成整理、检索和引用闭环。</p>
+          </div>
+          <div className="relative">
+            <div aria-hidden="true" className="hidden md:block absolute left-[12%] right-[12%] top-5 h-px bg-gradient-to-r from-[var(--primary)] via-cyan-400/50 to-violet-400/40" />
+            <ol className="relative grid md:grid-cols-4 gap-4 list-none">
+              {workflow.map(([number, title, description, preview]) => (
+                <li key={number} className="rounded-2xl border border-[var(--border)] bg-[var(--bg-surface)] p-5">
+                  <div className="relative z-10 mb-5 flex h-10 w-10 items-center justify-center rounded-full border border-[var(--primary-border)] bg-[var(--bg-base)] text-xs font-semibold text-[var(--primary)] shadow-[0_0_20px_rgba(34,211,167,0.12)]">{number}</div>
+                  <h3 className="text-base font-semibold mb-2">{title}</h3>
+                  <p className="min-h-12 text-xs leading-6 text-[var(--text-secondary)]">{description}</p>
+                  <div className="mt-4 rounded-xl border border-white/5 bg-[var(--bg-elevated)] px-3 py-2.5 text-[10px] font-medium text-[var(--primary-hover)]">{preview}</div>
+                </li>
+              ))}
+            </ol>
+          </div>
         </section>
 
         <section className="mb-20" aria-labelledby="scenes-title">

@@ -19,6 +19,36 @@ function renderMarkdown(text: string): string {
     .replace(/\n/g, '<br/>');
 }
 
+const CAPABILITY_PROMPT = "AI 知识助手包含哪些能力？";
+const CAPABILITY_ANSWER = "MindGrow 可以收集资料、整理知识、检索证据，并用可核验引用回答问题。";
+
+function CapabilityAnswer() {
+  const steps = [
+    ["01", "收集", "碎片、网页、PDF、会议"],
+    ["02", "整理", "分类、导图、实体关系"],
+    ["03", "检索", "GraphRAG 查找相关证据"],
+    ["04", "追溯", "引用原文；证据不足就拒答"],
+  ];
+
+  return (
+    <div data-testid="capability-answer" className="min-w-0">
+      <div className="font-semibold text-[var(--foreground)]">MindGrow 用一条链路完成 4 件事</div>
+      <div className="mt-3 space-y-2">
+        {steps.map(([number, title, description]) => (
+          <div key={number} className="flex items-center gap-2.5">
+            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--primary-subtle)] text-[9px] font-semibold text-[var(--primary)]">{number}</span>
+            <span className="w-9 shrink-0 text-xs font-semibold text-[var(--foreground)]">{title}</span>
+            <span className="min-w-0 text-[11px] text-[var(--text-secondary)]">{description}</span>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 rounded-lg border border-[var(--primary-border)] bg-[var(--primary-subtle)] px-3 py-2 text-[10px] text-[var(--primary-hover)]">
+        最短路径：粘贴内容 → 确认导图 → 向知识库提问
+      </div>
+    </div>
+  );
+}
+
 function AnswerFeedback({ messageId }: { messageId: string }) {
   const [rating, setRating] = useState<"up" | "down" | null>(null);
 
@@ -76,7 +106,9 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
         }`}
         style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}
       >
-        <div dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }} />
+        {msg.id.startsWith("capability_")
+          ? <CapabilityAnswer />
+          : <div dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }} />}
         {!isUser && msg.sources && msg.sources.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1.5 border-t border-white/5 pt-2" aria-label="回答来源">
             {msg.sources.map((source) => (
@@ -391,6 +423,15 @@ export function ChatPanel() {
     };
     addMessage(userMessage);
     setInput("");
+    if (userMessage.content.replace(/[？?]/g, "").trim() === CAPABILITY_PROMPT.replace(/[？?]/g, "")) {
+      addMessage({
+        id: `capability_${Date.now()}`,
+        role: "assistant",
+        content: CAPABILITY_ANSWER,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
     setProcessing(true);
     const requestMapId = currentMapId;
     activeChatRequestRef.current?.abort();
@@ -586,7 +627,7 @@ export function ChatPanel() {
 
         {messages.length <= 1 && !pendingMindMap && (
           <div className="flex flex-wrap gap-2 animate-fade-in">
-            {["AI 知识助手包含哪些能力？", "记录：RAG 回答需要引用可追溯来源", "如何发现当前知识库的缺口？"].map((prompt) => (
+            {[CAPABILITY_PROMPT, "记录：RAG 回答需要引用可追溯来源", "如何发现当前知识库的缺口？"].map((prompt) => (
               <button
                 type="button"
                 key={prompt}

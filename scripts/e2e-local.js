@@ -88,6 +88,8 @@ const revealAllStoredNodes = async (page) => {
     await page.waitForFunction(() => window.location.pathname.endsWith("/guide") || window.location.pathname.endsWith("/guide/"));
     const heading = await page.$eval("h1", (element) => element.textContent.trim());
     if (!heading.includes("可追溯的知识网络")) throw new Error("Usage guide did not render after clicking");
+    const timeline = await page.$('[data-testid="guide-timeline"]');
+    if (!timeline) throw new Error("Visual usage timeline is missing");
     const guideScroll = await page.$eval('[data-guide-scroll]', (element) => ({ scrollHeight: element.scrollHeight, clientHeight: element.clientHeight }));
     if (guideScroll.scrollHeight <= guideScroll.clientHeight) throw new Error("Usage guide is not vertically scrollable");
     await page.$eval('[data-guide-scroll]', (element) => { element.scrollTop = Math.floor((element.scrollHeight - element.clientHeight) * 0.55); element.dispatchEvent(new Event("scroll")); });
@@ -109,9 +111,19 @@ const revealAllStoredNodes = async (page) => {
     await page.waitForFunction(() => !document.querySelector('input[aria-label="搜索全部知识库"]').value);
   });
 
-  await check("grounded retrieval returns cited evidence", async () => {
+  await check("capability shortcut returns a concise fixed answer", async () => {
     const input = await page.$('textarea[aria-label="输入知识或向知识库提问"]');
     await input.type("AI 知识助手包含哪些能力？");
+    await page.click('button[aria-label="发送"]');
+    await page.waitForSelector('[data-testid="capability-answer"]');
+    const answer = await page.$eval('[data-testid="capability-answer"]', (element) => element.textContent.trim());
+    if (!answer.includes("收集") || !answer.includes("整理") || !answer.includes("检索") || !answer.includes("追溯")) throw new Error("Fixed capability answer is incomplete");
+    if (answer.length > 180) throw new Error(`Fixed capability answer is too long: ${answer.length}`);
+  });
+
+  await check("grounded retrieval returns cited evidence", async () => {
+    const input = await page.$('textarea[aria-label="输入知识或向知识库提问"]');
+    await input.type("RAG 回答需要满足哪些引用要求？");
     await page.click('button[aria-label="发送"]');
     await page.waitForFunction(() => document.body.innerText.includes("根据当前知识库，找到"));
     const text = await page.evaluate(() => document.body.innerText);
