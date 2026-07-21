@@ -29,6 +29,27 @@ interface HistoryEntry {
 // ============================================================
 export type HydrateGraphResult = "applied" | "rejected-stale-request" | "rejected-local-dirty";
 
+export interface WriteRequestToken {
+  requestId: string;
+  mapId: string;
+  scope: TenantScope;
+  localEditVersionAtStart: number;
+  localOverlayToken?: LocalOverlayToken;
+}
+
+export interface WriteErrorState {
+  code?: string;
+  message: string;
+  at: number;
+}
+
+export type WriteResult =
+  | { ok: true }
+  | { ok: false; cancelled?: false; code?: string; message: string }
+  | { ok: false; cancelled: true };
+
+export type EndWriteResult = "confirmed" | "preserved-local" | "failed" | "cancelled" | "ignored-stale-write";
+
 export interface MindGrowState {
   // Current map
   currentMapId: string;
@@ -59,6 +80,7 @@ export interface MindGrowState {
   // counters reject stale work; cache.localOverlay is the only dirty source.
   hydrationEpochByMap: Record<string, number>;
   localEditVersionByMap: Record<string, number>;
+  localOverlayTokenByMap: Record<string, LocalOverlayToken>;
   getHydrationEpoch: (mapId: string) => number;
   getLocalEditVersion: (mapId: string) => number;
   hydrateGraphFromServer: (
@@ -74,6 +96,17 @@ export interface MindGrowState {
     recipe: (draft: GraphSnapshot) => void,
   ) => LocalOverlayToken | null;
   resetTenantContext: () => void;
+
+  // Map-scoped write lifecycle. Reads and model-only requests never enter it.
+  pendingWritesByMap: Record<string, number>;
+  activeWriteRequests: Record<string, WriteRequestToken>;
+  lastWriteSucceededAtByMap: Record<string, number>;
+  lastWriteErrorByMap: Record<string, WriteErrorState>;
+  networkOnline: boolean;
+  beginWrite: (mapId: string, scope: TenantScope) => WriteRequestToken;
+  endWrite: (token: WriteRequestToken, result: WriteResult) => EndWriteResult;
+  setNetworkOnline: (online: boolean) => void;
+  isMapDirty: (mapId: string) => boolean;
 
   // Undo/Redo
   history: HistoryEntry[];
@@ -147,6 +180,7 @@ export interface MindGrowState {
 // Max history entries
 // ============================================================
 const MAX_HISTORY = 50;
+let writeRequestSequence = 0;
 
 export const useMindGrowStore = create<MindGrowState>((set, get) => ({
   currentMapId: "map_default",
@@ -192,6 +226,7 @@ export const useMindGrowStore = create<MindGrowState>((set, get) => ({
 
   hydrationEpochByMap: {},
   localEditVersionByMap: {},
+  localOverlayTokenByMap: {},
   getHydrationEpoch: (mapId) => get().hydrationEpochByMap[mapId] ?? 0,
   getLocalEditVersion: (mapId) => get().localEditVersionByMap[mapId] ?? 0,
   hydrateGraphFromServer: (mapId, snapshot, baseHydrationEpoch, scope, cacheReadToken) => {
@@ -227,13 +262,81 @@ export const useMindGrowStore = create<MindGrowState>((set, get) => ({
       entityGraph: state.entityGraph,
     };
     const next = produce(base, recipe);
+    const overlayToken = tenantCache.setLocalOverlay(scope, mapId, next);
     set(produce((draft: MindGrowState) => {
       draft.nodes = next.nodes;
       draft.edges = next.edges;
       draft.entityGraph = next.entityGraph;
       draft.localEditVersionByMap[mapId] = (draft.localEditVersionByMap[mapId] ?? 0) + 1;
+      draft.localOverlayTokenByMap[mapId] = overlayToken;
     }));
-    return tenantCache.setLocalOverlay(scope, mapId, next);
+    return overlayToken;
+  },
+  pendingWritesByMap: {},
+  activeWriteRequests: {},
+  lastWriteSucceededAtByMap: {},
+  lastWriteErrorByMap: {},
+  networkOnline: true,
+  beginWrite: (mapId, scope) => {
+    tenantMapKey(scope, mapId);
+    const state = get();
+    const token: WriteRequestToken = {
+      requestId: `write_${++writeRequestSequence}`,
+      mapId,
+      scope,
+      localEditVersionAtStart: state.localEditVersionByMap[mapId] ?? 0,
+      localOverlayToken: state.localOverlayTokenByMap[mapId],
+    };
+    set(produce((draft: MindGrowState) => {
+      draft.pendingWritesByMap[mapId] = (draft.pendingWritesByMap[mapId] ?? 0) + 1;
+      draft.activeWriteRequests[token.requestId] = token;
+    }));
+    return token;
+  },
+  endWrite: (token, result) => {
+    const state = get();
+    const active = state.activeWriteRequests[token.requestId];
+    if (!active || active.mapId !== token.mapId || tenantMapKey(active.scope, active.mapId) !== tenantMapKey(token.scope, token.mapId)) {
+      return "ignored-stale-write";
+    }
+
+    const versionUnchanged = (state.localEditVersionByMap[token.mapId] ?? 0) === token.localEditVersionAtStart;
+    const confirmed = Boolean(
+      result.ok
+      && versionUnchanged
+      && token.localOverlayToken
+      && tenantCache.confirmLocalOverlay(token.localOverlayToken),
+    );
+    const completedAt = Date.now();
+    set(produce((draft: MindGrowState) => {
+      delete draft.activeWriteRequests[token.requestId];
+      const pending = Math.max(0, (draft.pendingWritesByMap[token.mapId] ?? 1) - 1);
+      if (pending) draft.pendingWritesByMap[token.mapId] = pending;
+      else delete draft.pendingWritesByMap[token.mapId];
+
+      if (result.ok) {
+        draft.lastWriteSucceededAtByMap[token.mapId] = completedAt;
+        delete draft.lastWriteErrorByMap[token.mapId];
+        if (confirmed) delete draft.localOverlayTokenByMap[token.mapId];
+      } else if (result.cancelled) {
+        // Navigation and tenant resets may cancel writes. Keep local data but
+        // do not present a user-actionable server error.
+      } else {
+        draft.lastWriteErrorByMap[token.mapId] = {
+          code: result.code,
+          message: result.message,
+          at: completedAt,
+        };
+      }
+    }));
+
+    if (result.ok) return confirmed || !token.localOverlayToken ? "confirmed" : "preserved-local";
+    return result.cancelled ? "cancelled" : "failed";
+  },
+  setNetworkOnline: (networkOnline) => set({ networkOnline }),
+  isMapDirty: (mapId) => {
+    const token = get().localOverlayTokenByMap[mapId];
+    return Boolean(token && tenantCache.isLocalOverlayCurrent(token));
   },
   resetTenantContext: () => set(produce((draft: MindGrowState) => {
     draft.currentMapId = "map_default";
@@ -259,6 +362,11 @@ export const useMindGrowStore = create<MindGrowState>((set, get) => ({
     draft.collapsedNodes.clear();
     draft.hydrationEpochByMap = {};
     draft.localEditVersionByMap = {};
+    draft.localOverlayTokenByMap = {};
+    draft.pendingWritesByMap = {};
+    draft.activeWriteRequests = {};
+    draft.lastWriteSucceededAtByMap = {};
+    draft.lastWriteErrorByMap = {};
     draft.currentMode = "knowledge";
   })),
 

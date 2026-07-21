@@ -391,6 +391,7 @@ export function ArticleParser() {
       const response = await apiFetch("/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        writeForMapId: requestMapId,
         body: JSON.stringify({
           mapId: requestMapId, mindMap: result.mindMap, source: "article", citations: result.citations,
           documentChunks: result.documentChunks || result.citations,

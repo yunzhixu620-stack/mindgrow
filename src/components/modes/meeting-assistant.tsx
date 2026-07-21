@@ -96,6 +96,7 @@ export function MeetingAssistant() {
       const response = await apiFetch("/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        writeForMapId: requestMapId,
         body: JSON.stringify({
           mapId: requestMapId, mindMap: result.mindMap, source: "meeting",
           citations: result.citations,

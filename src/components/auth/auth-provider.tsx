@@ -4,7 +4,7 @@ import type { Session, User } from "@supabase/supabase-js";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { resetTenantData, resolveAuthTransition } from "@/components/auth/auth-tenant-reset";
 import { getAuthRedirectUrl } from "@/lib/auth-urls";
-import { IS_LOCAL_MODE, apiFetch, setActiveWorkspaceId } from "@/lib/client-api";
+import { IS_LOCAL_MODE, apiFetch, setActiveUserId, setActiveWorkspaceId } from "@/lib/client-api";
 import { supabase } from "@/lib/supabase-browser";
 
 export interface Workspace {
@@ -53,6 +53,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     resetTenantData(userId, workspaceIds);
     knownWorkspaceIdsRef.current.clear();
     window.localStorage.removeItem("mindgrow.workspace.v1");
+    setActiveUserId(null);
     setActiveWorkspaceId(null);
     setSession(null);
     setWorkspaces([]);
@@ -100,6 +101,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const transition = resolveAuthTransition("INITIAL_SESSION", lastUserIdRef.current, data.session);
       if (transition.shouldReset) resetTenant(lastUserIdRef.current);
       lastUserIdRef.current = transition.nextUserId;
+      setActiveUserId(transition.nextUserId);
       setSession(data.session);
       if (data.session) {
         try { await refreshWorkspaces(); } catch (error) { setMessage(error instanceof Error ? error.message : "工作区加载失败"); }
@@ -112,6 +114,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const transition = resolveAuthTransition(event, previousUserId, nextSession);
       if (transition.shouldReset) resetTenant(previousUserId);
       lastUserIdRef.current = transition.nextUserId;
+      setActiveUserId(transition.nextUserId);
       setSession(nextSession);
       if (nextSession) {
         window.setTimeout(() => void refreshWorkspaces().catch((error) => setMessage(error.message)), 0);

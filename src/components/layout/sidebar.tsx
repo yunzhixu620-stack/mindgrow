@@ -416,6 +416,7 @@ export function Sidebar({ onSwitchMap, onMapCreated }: SidebarProps) {
       const deletion = await apiFetch("/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        writeForMapId: map.id,
         body: JSON.stringify({ action: "deleteMap", mapId: map.id }),
       });
       if (!deletion.ok) throw new Error("删除知识库失败");
@@ -450,6 +451,7 @@ export function Sidebar({ onSwitchMap, onMapCreated }: SidebarProps) {
       await apiFetch("/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        writeForMapId: map.id,
         body: JSON.stringify({ action: "clearMap", mapId: map.id }),
       });
       if (map.id === currentMapId) {
@@ -471,6 +473,7 @@ export function Sidebar({ onSwitchMap, onMapCreated }: SidebarProps) {
       await apiFetch("/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        writeForMapId: editingId,
         body: JSON.stringify({ action: "renameMap", mapId: editingId, name: editName.trim() }),
       });
       const mapsRes = await apiFetch("/api/knowledge?action=maps");
@@ -558,6 +561,7 @@ export function Sidebar({ onSwitchMap, onMapCreated }: SidebarProps) {
       await apiFetch("/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        writeForMapId: mapId,
         body: JSON.stringify({ action: "moveMapToCategory", mapId, categoryId }),
       });
       const [mapsRes, catsRes] = await Promise.all([

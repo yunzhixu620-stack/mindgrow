@@ -201,6 +201,16 @@ export class TenantCache {
     return true;
   }
 
+  isLocalOverlayCurrent(token: LocalOverlayToken): boolean {
+    const current = this.maps.get(token.key);
+    return Boolean(
+      token.key.startsWith(`${token.tenantKey}:map:`)
+      && current?.localOverlay
+      && current.localRevision === token.revision
+      && current.localBaseEpoch === token.baseEpoch,
+    );
+  }
+
   discardLocalOverlay(token: LocalOverlayToken): boolean {
     const current = this.maps.get(token.key);
     if (!token.key.startsWith(`${token.tenantKey}:map:`)) return false;

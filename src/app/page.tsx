@@ -326,6 +326,7 @@ export default function Home() {
       await apiFetch("/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        writeForMapId: map.id,
         body: JSON.stringify({ action: "deleteMap", mapId: map.id }),
       });
       const allMaps = await reloadAll();
@@ -365,6 +366,7 @@ export default function Home() {
       await apiFetch("/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        writeForMapId: mapId,
         body: JSON.stringify({ action: "moveMapToCategory", mapId, categoryId }),
       });
       await reloadAll();

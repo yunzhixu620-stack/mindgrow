@@ -522,6 +522,7 @@ export function ChatPanel() {
       const res = await apiFetch("/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        writeForMapId: requestMapId,
         body: JSON.stringify({
           mindMap: filteredMindMap,
           mapId: requestMapId,
