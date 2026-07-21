@@ -1,6 +1,6 @@
 // MindGrow API Proxy for Alibaba Cloud Function Compute.
 // Environment: MINDGROW_API_KEY, SUPABASE_URL, SUPABASE_KEY,
-// optional ALLOWED_ORIGINS and UPSTREAM_TIMEOUT_MS.
+// optional ALLOWED_ORIGINS, UPSTREAM_TIMEOUT_MS, and local-only auth flags.
 
 const http = require('http');
 const https = require('https');
@@ -17,6 +17,9 @@ const PORT = Number.parseInt(process.env.FC_SERVER_PORT || process.env.PORT || '
 // into a false 503. Transient 429/5xx responses are retried below.
 const UPSTREAM_TIMEOUT_MS = Number.parseInt(process.env.UPSTREAM_TIMEOUT_MS || '45000', 10);
 const AUTH_REQUIRED = process.env.AUTH_REQUIRED !== 'false';
+const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCase() || 'development';
+const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
+const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
 const API_VERSION = '10.5.2';
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -182,7 +185,10 @@ function requestError(statusCode, publicCode, message) {
 }
 
 async function authenticateUser(req) {
-  if (!AUTH_REQUIRED) return { id: 'local_test_user', email: 'local@mindgrow.test' };
+  if (!AUTH_REQUIRED) {
+    if (ANON_LOCAL_ENABLED) return { id: 'local_test_user', email: 'local@mindgrow.test' };
+    throw requestError(503, 'AUTH_CONFIGURATION_INVALID', 'Authentication is not safely configured');
+  }
   const authorization = String(req.headers.authorization || '');
   const match = authorization.match(/^Bearer\s+(.+)$/i);
   if (!match) throw requestError(401, 'AUTH_REQUIRED', 'Sign in is required');
@@ -3886,6 +3892,7 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/health' || pathname === '/api/health') {
       const checks = {
         function: 'ok',
+        authConfiguration: AUTH_REQUIRED || ANON_LOCAL_ENABLED ? 'ok' : 'invalid',
         modelConfigured: Boolean(DASHSCOPE_KEY),
         knowledgeStoreConfigured: Boolean(SUPABASE_URL && SUPABASE_KEY),
         knowledgeStore: 'unknown',
@@ -3912,10 +3919,18 @@ const server = http.createServer(async (req, res) => {
         checks.hybridRetrieval = 'not_configured';
         checks.entityGraph = 'not_configured';
       }
-      const healthy = checks.modelConfigured && checks.knowledgeStore === 'ok'
+      const healthy = checks.authConfiguration === 'ok' && checks.modelConfigured && checks.knowledgeStore === 'ok'
         && checks.hybridRetrieval === 'ready' && checks.entityGraph === 'ready';
       res.writeHead(healthy ? 200 : 503, { 'Content-Type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({ status: healthy ? 'ok' : 'degraded', version: API_VERSION, checks, timestamp: new Date().toISOString() }));
+      return res.end(JSON.stringify({
+        status: healthy ? 'ok' : 'degraded',
+        version: API_VERSION,
+        authRequired: AUTH_REQUIRED,
+        nodeEnv: NODE_ENV,
+        allowAnonLocal: ANON_LOCAL_ENABLED,
+        checks,
+        timestamp: new Date().toISOString(),
+      }));
     }
 
     let result;
