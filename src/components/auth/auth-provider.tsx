@@ -70,6 +70,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const savedId = window.localStorage.getItem("mindgrow.workspace.v1");
     const selected = rows.find((item) => item.id === savedId) || rows[0] || null;
     knownWorkspaceIdsRef.current = new Set(rows.map((item) => item.id));
+    if (selected) window.localStorage.setItem("mindgrow.workspace.v1", selected.id);
+    else window.localStorage.removeItem("mindgrow.workspace.v1");
     setWorkspaces(rows);
     setCurrentWorkspace(selected);
     setActiveWorkspaceId(selected?.id || null);
