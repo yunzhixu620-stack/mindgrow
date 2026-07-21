@@ -21,12 +21,14 @@
 
 ## 3. 合成监控与发布门禁
 
-- 每 5 分钟：`GET /health`，要求 HTTP 200、`version=10.2.9`、model/store/hybridRetrieval 均为 ready 或 ok。
+- 每 5 分钟：`GET /health`，要求 HTTP 200、`version` 与 `docs/api-version.txt` 一致，model/store/hybridRetrieval 均为 ready 或 ok。版本文件是运行时 `API_VERSION` 的 CI 校验镜像，不是第二个真源。
 - 每 15 分钟：匿名访问 knowledge/workspaces/audio 均应为 401；任何 2xx 视为 SEV0。
 - 每 60 分钟：专用测试账号列出 workspaces/maps，不执行付费模型。
 - 每天：专用测试知识库解析一篇固定短文，验证 citation quote 与来源一致；生成一次 Audio 脚本。
-- 每次发布：lint、build、本地 E2E、公网 E2E、后端冒烟、Supabase 权限审计全部通过。
+- 每次发布：`check:api-version`、lint、build、本地 E2E、公网 E2E、后端冒烟、Supabase 权限审计全部通过。
 - 每周：恢复演练一次（数据库只读、模型超时、TTS 失败、GitHub 静态资源缓存）。
+
+API 发版时先修改 `fc-proxy/index.js` 的 `API_VERSION`，再在同一个 PR 同步 `docs/api-version.txt`，最后运行 `npm run check:api-version`。禁止只改镜像文件或把镜像称为运行时版本真源。
 
 ## 4. Runbook：Supabase 不可达
 

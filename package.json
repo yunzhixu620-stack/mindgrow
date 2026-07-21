@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "check:api-version": "node scripts/check-api-version.js",
     "lint": "eslint . --ext .js,.ts,.tsx --max-warnings=0",
     "test:unit": "vitest run --reporter=default",
     "test:unit:watch": "vitest",
