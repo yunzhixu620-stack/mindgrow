@@ -193,6 +193,13 @@ describe("MindGrow Store tenant reset", () => {
       collapsedNodes: new Set(["node-tenant"]),
       hydrationEpochByMap: { "map-a": 4 },
       localEditVersionByMap: { "map-a": 7 },
+      localOverlayTokenByMap: { "map-a": { key: "tenant:user-a:workspace-a:map:map-a", tenantKey: "tenant:user-a:workspace-a", revision: 7, baseEpoch: 4 } },
+      pendingWritesByMap: { "map-a": 1 },
+      activeWriteRequests: {
+        write_reset: { requestId: "write_reset", mapId: "map-a", scope: scopeA, localEditVersionAtStart: 7 },
+      },
+      lastWriteSucceededAtByMap: { "map-a": 10 },
+      lastWriteErrorByMap: { "map-a": { message: "failed", at: 11 } },
       currentMode: "article",
       sidebarOpen: false,
       layoutDirection: "horizontal",
@@ -225,6 +232,11 @@ describe("MindGrow Store tenant reset", () => {
       collapsedNodes: reset.collapsedNodes,
       hydrationEpochByMap: reset.hydrationEpochByMap,
       localEditVersionByMap: reset.localEditVersionByMap,
+      localOverlayTokenByMap: reset.localOverlayTokenByMap,
+      pendingWritesByMap: reset.pendingWritesByMap,
+      activeWriteRequests: reset.activeWriteRequests,
+      lastWriteSucceededAtByMap: reset.lastWriteSucceededAtByMap,
+      lastWriteErrorByMap: reset.lastWriteErrorByMap,
       currentMode: reset.currentMode,
     }).toEqual({
       currentMapId: "map_default",
@@ -250,6 +262,11 @@ describe("MindGrow Store tenant reset", () => {
       collapsedNodes: new Set(),
       hydrationEpochByMap: {},
       localEditVersionByMap: {},
+      localOverlayTokenByMap: {},
+      pendingWritesByMap: {},
+      activeWriteRequests: {},
+      lastWriteSucceededAtByMap: {},
+      lastWriteErrorByMap: {},
       currentMode: "knowledge",
     });
     expect({ sidebarOpen: reset.sidebarOpen, layoutDirection: reset.layoutDirection, showHelp: reset.showHelp })

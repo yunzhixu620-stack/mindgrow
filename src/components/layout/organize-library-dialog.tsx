@@ -143,7 +143,7 @@ export function OrganizeLibraryDialog({ maps, categories, onClose, onDone }: {
       }
       for (const map of maps) {
         const categoryId = categoryIds.get(proposal.assignments[map.id]) || null;
-        const response = await apiFetch("/api/knowledge", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "moveMapToCategory", mapId: map.id, categoryId }) });
+        const response = await apiFetch("/api/knowledge", { method: "POST", headers: { "Content-Type": "application/json" }, writeForMapId: map.id, body: JSON.stringify({ action: "moveMapToCategory", mapId: map.id, categoryId }) });
         if (!response.ok) throw new Error("知识库迁移失败");
       }
       await onDone();
@@ -162,7 +162,7 @@ export function OrganizeLibraryDialog({ maps, categories, onClose, onDone }: {
     try {
       const snapshot = JSON.parse(raw) as UndoSnapshot;
       for (const [mapId, categoryId] of Object.entries(snapshot.assignments)) {
-        const response = await apiFetch("/api/knowledge", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "moveMapToCategory", mapId, categoryId }) });
+        const response = await apiFetch("/api/knowledge", { method: "POST", headers: { "Content-Type": "application/json" }, writeForMapId: mapId, body: JSON.stringify({ action: "moveMapToCategory", mapId, categoryId }) });
         if (!response.ok) throw new Error("知识库恢复失败");
       }
       for (const categoryId of snapshot.createdCategoryIds) {

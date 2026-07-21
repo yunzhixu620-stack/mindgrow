@@ -1,10 +1,17 @@
 import { API_BASE_URL } from "@/lib/config";
 import { supabase } from "@/lib/supabase-browser";
 import { aiEntityGraphToEntityGraph } from "@/lib/entity-graph";
+import type { TenantScope } from "@/lib/tenant-cache";
+import { useMindGrowStore, type WriteRequestToken } from "@/store/mindgrow-store";
 import type { AIEntityGraph, AIMindMap, Category, Citation, EntityGraph, KnowledgeEdge, KnowledgeNode, MindMap } from "@/types";
 
 const STORAGE_KEY = "mindgrow.local.v2";
+let activeUserId: string | null = null;
 let activeWorkspaceId: string | null = null;
+
+export function setActiveUserId(userId: string | null) {
+  activeUserId = userId;
+}
 
 export function setActiveWorkspaceId(workspaceId: string | null) {
   activeWorkspaceId = workspaceId;
@@ -641,14 +648,100 @@ function handleLocalTool(path: string, init?: RequestInit): Response {
 
 export const IS_LOCAL_MODE = !API_BASE_URL;
 
-export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+export interface ApiFetchOptions extends RequestInit {
+  writeForMapId?: string;
+}
+
+let networkListenerUsers = 0;
+let removeNetworkListeners: (() => void) | null = null;
+
+export function retainNetworkStatusListener(): () => void {
+  if (typeof window === "undefined" || typeof navigator === "undefined") return () => {};
+  networkListenerUsers += 1;
+  if (!removeNetworkListeners) {
+    const update = () => useMindGrowStore.getState().setNetworkOnline(navigator.onLine);
+    update();
+    window.addEventListener("online", update);
+    window.addEventListener("offline", update);
+    removeNetworkListeners = () => {
+      window.removeEventListener("online", update);
+      window.removeEventListener("offline", update);
+    };
+  }
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    networkListenerUsers = Math.max(0, networkListenerUsers - 1);
+    if (networkListenerUsers === 0 && removeNetworkListeners) {
+      removeNetworkListeners();
+      removeNetworkListeners = null;
+    }
+  };
+}
+
+export function sanitizeWriteErrorMessage(value: unknown): string {
+  const raw = value instanceof Error ? value.message : String(value || "写入失败");
+  return raw
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]")
+    .replace(/\b(?:eyJ[A-Za-z0-9_-]{8,}\.){2}[A-Za-z0-9_-]{8,}\b/g, "[redacted-token]")
+    .replace(/\b(?:authorization|apikey|api[_-]?key|token|secret)\s*[:=]\s*[^\s,;]+/gi, "$1=[redacted]")
+    .slice(0, 180);
+}
+
+function beginTrackedWrite(mapId: string | undefined, scope: TenantScope | null): WriteRequestToken | null {
+  if (!mapId?.trim() || !scope) return null;
+  return useMindGrowStore.getState().beginWrite(mapId, scope);
+}
+
+function finishTrackedWrite(token: WriteRequestToken | null, response?: Response, error?: unknown): void {
+  if (!token) return;
+  if (error instanceof Error && error.name === "AbortError") {
+    useMindGrowStore.getState().endWrite(token, { ok: false, cancelled: true });
+    return;
+  }
+  if (error) {
+    useMindGrowStore.getState().endWrite(token, {
+      ok: false,
+      code: error instanceof Error ? error.name : "NETWORK_ERROR",
+      message: sanitizeWriteErrorMessage(error),
+    });
+    return;
+  }
+  if (response?.ok) {
+    useMindGrowStore.getState().endWrite(token, { ok: true });
+    return;
+  }
+  useMindGrowStore.getState().endWrite(token, {
+    ok: false,
+    code: response ? `HTTP_${response.status}` : "WRITE_FAILED",
+    message: response ? `写入失败（HTTP ${response.status}）` : "写入失败",
+  });
+}
+
+export async function apiFetch(path: string, options?: ApiFetchOptions): Promise<Response> {
+  const { writeForMapId, ...init } = options || {};
+  const method = (init.method || "GET").toUpperCase();
+  const trackedMapId = method === "GET" || method === "HEAD" ? undefined : writeForMapId;
   if (API_BASE_URL) {
-    const { data } = await supabase.auth.getSession();
-    const headers = new Headers(init?.headers);
-    if (data.session?.access_token) headers.set("Authorization", `Bearer ${data.session.access_token}`);
-    const workspaceId = activeWorkspaceId || (typeof window !== "undefined" ? window.localStorage.getItem("mindgrow.workspace.v1") : null);
-    if (workspaceId) headers.set("X-Workspace-Id", workspaceId);
-    return fetch(`${API_BASE_URL}${path}`, { ...init, cache: "no-store", headers });
+    const storedWorkspaceId = activeWorkspaceId || (typeof window !== "undefined" ? window.localStorage.getItem("mindgrow.workspace.v1") : null);
+    const writeScope = activeUserId && storedWorkspaceId ? { userId: activeUserId, workspaceId: storedWorkspaceId } : null;
+    // Capture the local edit version at the API call boundary. Waiting for
+    // getSession first would let a newer edit be mistaken for the payload
+    // already being sent by this request.
+    const writeToken = beginTrackedWrite(trackedMapId, writeScope);
+    try {
+      const { data } = await supabase.auth.getSession();
+      const headers = new Headers(init?.headers);
+      if (data.session?.access_token) headers.set("Authorization", `Bearer ${data.session.access_token}`);
+      if (storedWorkspaceId) headers.set("X-Workspace-Id", storedWorkspaceId);
+      const response = await fetch(`${API_BASE_URL}${path}`, { ...init, cache: "no-store", headers });
+      finishTrackedWrite(writeToken, response);
+      return response;
+    } catch (error) {
+      finishTrackedWrite(writeToken, undefined, error);
+      throw error;
+    }
   }
   if (typeof window === "undefined") return fetch(path, init);
   // Local mode resolves API calls in memory, so browser Network tooling cannot
@@ -657,8 +750,17 @@ export async function apiFetch(path: string, init?: RequestInit): Promise<Respon
   window.dispatchEvent(new CustomEvent("mindgrow:local-api-request", {
     detail: { path, method: (init?.method || "GET").toUpperCase() },
   }));
-  if (path.startsWith("/api/knowledge")) return handleKnowledge(path, init);
-  if (path.startsWith("/api/chat")) return handleChat(init);
-  if (path.startsWith("/api/tools/")) return handleLocalTool(path, init);
-  return fetch(path, init);
+  const writeToken = beginTrackedWrite(trackedMapId, { userId: "local-user", workspaceId: "local-workspace" });
+  try {
+    let response: Response;
+    if (path.startsWith("/api/knowledge")) response = handleKnowledge(path, init);
+    else if (path.startsWith("/api/chat")) response = handleChat(init);
+    else if (path.startsWith("/api/tools/")) response = handleLocalTool(path, init);
+    else response = await fetch(path, init);
+    finishTrackedWrite(writeToken, response);
+    return response;
+  } catch (error) {
+    finishTrackedWrite(writeToken, undefined, error);
+    throw error;
+  }
 }

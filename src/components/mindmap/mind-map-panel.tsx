@@ -20,9 +20,11 @@ import ReactFlow, {
   MarkerType,
 } from "reactflow";
 import "reactflow/dist/style.css";
+import { useAuth } from "@/components/auth/auth-provider";
 import { useMindGrowStore } from "@/store/mindgrow-store";
 import { EntityGraph, GraphEntity, KnowledgeNode, KnowledgeEdge } from "@/types";
-import { apiFetch } from "@/lib/client-api";
+import { apiFetch, IS_LOCAL_MODE } from "@/lib/client-api";
+import type { TenantScope } from "@/lib/tenant-cache";
 import { MODE_LIBRARY_CONFIG } from "@/lib/mode-libraries";
 import { entityGraphToKnowledgeGraph, entityViewNodeId, isEntityViewNode } from "@/lib/entity-graph";
 
@@ -36,6 +38,7 @@ const BRANCH_COLORS = [
 
 const DISPLAY_OVERVIEW_PREFIX = "__mindgrow_overview__";
 const MAX_UNGROUPED_ROOTS = 5;
+const LOCAL_TENANT_SCOPE: TenantScope = { userId: "local-user", workspaceId: "local-workspace" };
 
 const ENTITY_TYPE_LABELS: Record<string, string> = {
   person: "人物", organization: "组织", model: "模型", method: "方法",
@@ -806,6 +809,13 @@ function HelpPanel({ onClose }: { onClose: () => void }) {
 // Main Component
 // ============================================================
 export function MindMapPanel() {
+  const { user, currentWorkspace } = useAuth();
+  const tenantScope = useMemo<TenantScope | null>(() => {
+    if (IS_LOCAL_MODE) return LOCAL_TENANT_SCOPE;
+    return user?.id && currentWorkspace?.id
+      ? { userId: user.id, workspaceId: currentWorkspace.id }
+      : null;
+  }, [currentWorkspace?.id, user?.id]);
   const {
     nodes: storeNodes,
     edges: storeEdges,
@@ -823,13 +833,14 @@ export function MindMapPanel() {
     pushHistory, undo, redo,
     showHelp, setShowHelp,
     currentMode,
+    mutateGraphLocally,
   } = useMindGrowStore();
 
   const [direction, setDirection] = useState<"vertical" | "horizontal">("vertical");
   const [spacing, setSpacing] = useState<"compact" | "normal" | "wide">("compact");
   const [showSearch, setShowSearch] = useState(false);
   const [localSearch, setLocalSearch] = useState("");
-  const [editingNode, setEditingNode] = useState<{ id: string; content: string; desc: string } | null>(null);
+  const [editingNode, setEditingNode] = useState<{ id: string; mapId: string; content: string; desc: string } | null>(null);
   const [showSpacing, setShowSpacing] = useState(false);
   const [showToolbar, setShowToolbar] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
@@ -1035,18 +1046,19 @@ export function MindMapPanel() {
       for (const change of changes) {
         if ("id" in change && isDisplayOverviewNode(change.id)) continue;
         if (change.type === "remove") {
-          try { await apiFetch("/api/knowledge?nodeId=" + change.id, { method: "DELETE" }); }
+          try { await apiFetch("/api/knowledge?nodeId=" + change.id, { method: "DELETE", writeForMapId: currentMapId }); }
           catch (e) { console.error("Failed to delete node:", e); }
         } else if (change.type === "position" && change.position && !change.dragging) {
           apiFetch("/api/knowledge", {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
+            writeForMapId: currentMapId,
             body: JSON.stringify({ nodeId: change.id, positionX: change.position.x, positionY: change.position.y }),
           }).catch(console.error);
         }
       }
     },
-    [onNodesChange, showingEntityGraph]
+    [currentMapId, onNodesChange, showingEntityGraph]
   );
 
   // Keyboard shortcuts
@@ -1061,7 +1073,7 @@ export function MindMapPanel() {
         pushHistory();
         for (const node of selected) {
           removeNode(node.id);
-          apiFetch("/api/knowledge?nodeId=" + node.id, { method: "DELETE" })
+          apiFetch("/api/knowledge?nodeId=" + node.id, { method: "DELETE", writeForMapId: currentMapId })
             .then((r) => r.json())
             .then((d) => {
               if (d.success) {
@@ -1121,31 +1133,44 @@ export function MindMapPanel() {
       if (!nodeId) return;
       if (isEntityViewNode(nodeId)) return;
       const node = storeNodes.find((n) => n.id === nodeId);
-      if (node) setEditingNode({ id: nodeId, content: node.content, desc: node.desc || "" });
+      if (node) setEditingNode({ id: nodeId, mapId: currentMapId, content: node.content, desc: node.desc || "" });
     };
     document.addEventListener("dblclick", handler);
     return () => document.removeEventListener("dblclick", handler);
-  }, [storeNodes]);
+  }, [currentMapId, storeNodes]);
 
   // Commit node edit
   const commitEdit = useCallback(async () => {
-    if (!editingNode || !editingNode.content.trim()) {
+    if (!editingNode || editingNode.mapId !== currentMapId || !editingNode.content.trim()) {
       setEditingNode(null);
       return;
     }
     pushHistory();
+    const content = editingNode.content.trim();
+    const desc = editingNode.desc.trim();
+    if (tenantScope) {
+      mutateGraphLocally(currentMapId, tenantScope, (draft) => {
+        const node = draft.nodes.find((candidate) => candidate.id === editingNode.id);
+        if (!node) return;
+        node.content = content;
+        node.desc = desc;
+        node.updatedAt = new Date().toISOString();
+      });
+    }
     try {
-      await apiFetch("/api/knowledge", {
+      const response = await apiFetch("/api/knowledge", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nodeId: editingNode.id, content: editingNode.content.trim(), desc: editingNode.desc.trim() }),
+        writeForMapId: currentMapId,
+        body: JSON.stringify({ nodeId: editingNode.id, content, desc }),
       });
+      if (!response.ok) throw new Error(`Failed to update node (HTTP ${response.status})`);
       reloadMap();
     } catch (e) {
       console.error("Failed to update node:", e);
     }
     setEditingNode(null);
-  }, [editingNode, reloadMap, pushHistory]);
+  }, [currentMapId, editingNode, mutateGraphLocally, reloadMap, pushHistory, tenantScope]);
 
   // Right-click context menu on nodes
   useEffect(() => {
@@ -1183,21 +1208,21 @@ export function MindMapPanel() {
   const handleCtxEdit = useCallback(() => {
     if (!contextMenu) return;
     const node = storeNodes.find((n) => n.id === contextMenu.nodeId);
-    if (node) setEditingNode({ id: node.id, content: node.content, desc: node.desc || "" });
+    if (node) setEditingNode({ id: node.id, mapId: currentMapId, content: node.content, desc: node.desc || "" });
     setContextMenu(null);
-  }, [contextMenu, storeNodes, setContextMenu]);
+  }, [contextMenu, currentMapId, storeNodes, setContextMenu]);
 
   // Context menu: delete
   const handleCtxDelete = useCallback(() => {
     if (!contextMenu) return;
     pushHistory();
     removeNode(contextMenu.nodeId);
-    apiFetch("/api/knowledge?nodeId=" + contextMenu.nodeId, { method: "DELETE" })
+    apiFetch("/api/knowledge?nodeId=" + contextMenu.nodeId, { method: "DELETE", writeForMapId: currentMapId })
       .then((r) => r.json())
       .then((d) => { if (d.success) reloadMap(); })
       .catch(console.error);
     setContextMenu(null);
-  }, [contextMenu, removeNode, reloadMap, pushHistory, setContextMenu]);
+  }, [contextMenu, currentMapId, removeNode, reloadMap, pushHistory, setContextMenu]);
 
   // Export PNG
   const handleExportPng = useCallback(() => {
