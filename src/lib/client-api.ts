@@ -578,6 +578,37 @@ function buildLocalEntityGraph(mindMap: AIMindMap): AIEntityGraph {
   return { entities, relations };
 }
 
+function localCitationAudit(
+  claims: { id: string; section: string; text: string; citationIndexes: number[]; critical?: boolean }[],
+  citations: Citation[],
+) {
+  const perClaim = claims.filter((claim) => claim.text.trim()).map((claim, index) => {
+    const citationIndexes = Array.from(new Set(claim.citationIndexes.filter((item) => Number.isInteger(item) && item > 0)));
+    const supported = citationIndexes.length > 0;
+    return { index, ...claim, critical: claim.critical !== false, citationIndexes, supported, status: supported ? "supported" : "unsupported" };
+  });
+  const supported = perClaim.filter((claim) => claim.supported);
+  const critical = perClaim.filter((claim) => claim.critical);
+  const supportedCritical = critical.filter((claim) => claim.supported);
+  const refusalReason = critical.length > 0 && supportedCritical.length === 0 ? "ALL_KEY_CLAIMS_UNSUPPORTED" : null;
+  const warnings = [];
+  if (supported.length < perClaim.length) warnings.push(`${perClaim.length - supported.length} 条结论缺少足够直接证据，已逐条标记而不是强行配引`);
+  if (refusalReason) warnings.push("关键结论全部缺少直接证据，已拒绝输出事实性结论");
+  return {
+    claimCount: perClaim.length,
+    citedClaimCount: supported.length,
+    unsupportedClaimCount: perClaim.length - supported.length,
+    coverage: perClaim.length ? supported.length / perClaim.length : 1,
+    criticalClaimCount: critical.length,
+    supportedCriticalClaimCount: supportedCritical.length,
+    unsupportedCriticalClaimCount: critical.length - supportedCritical.length,
+    verifiedQuoteCount: citations.length,
+    perClaim,
+    refusalReason,
+    warnings,
+  };
+}
+
 function handleLocalTool(path: string, init?: RequestInit): Response {
   const body = bodyOf(init);
   const toolPath = new URL(path, "http://mindgrow.local").pathname;
@@ -590,20 +621,26 @@ function handleLocalTool(path: string, init?: RequestInit): Response {
     const citations: Citation[] = excerpts.map((quote, index) => ({ index: index + 1, quote, locator: `会议原文第 ${index + 1} 句`, sourceType: "meeting" }));
     mindMap.rootCitationIndexes = citations.length ? [1] : [];
     mindMap.children = mindMap.children.map((child, index) => ({ ...child, citationIndexes: citations.length ? [Math.min(index + 1, citations.length)] : [], itemCitationIndexes: child.items.map((_, itemIndex) => citations.length ? [Math.min(index + itemIndex + 1, citations.length)] : []) }));
+    const summary = mindMap.rootDesc || "";
+    const summaryCitationIndexes = citations.length ? [1] : [];
+    const openQuestions = [{ text: "本地演示模式未调用云端模型，请登录云端版获得完整提取结果", citationIndexes: [] }];
     return json({
       title: mindMap.root,
-      summary: mindMap.rootDesc || "",
-      summaryCitationIndexes: citations.length ? [1] : [],
+      summary,
+      summaryCitationIndexes,
       topics: mindMap.children.map((child) => ({ title: child.topic, citationIndexes: child.citationIndexes, details: child.items.map((text, itemIndex) => ({ text, citationIndexes: child.itemCitationIndexes?.[itemIndex] || [] })) })),
       decisions: [],
       actionItems: [],
       risks: [],
-      openQuestions: [{ text: "本地演示模式未调用云端模型，请登录云端版获得完整提取结果", citationIndexes: [] }],
+      openQuestions,
       mindMap,
       entityGraph: buildLocalEntityGraph(mindMap),
       citations,
       documentChunks: citations,
-      citationAudit: { claimCount: 1, citedClaimCount: citations.length ? 1 : 0, coverage: citations.length ? 1 : 0, verifiedQuoteCount: citations.length, warnings: [] },
+      citationAudit: localCitationAudit([
+        { id: "summary", section: "conclusion", text: summary, citationIndexes: summaryCitationIndexes },
+        { id: "open-question-1", section: "extension", text: openQuestions[0].text, citationIndexes: [], critical: false },
+      ], citations),
     });
   }
   if (toolPath.endsWith("/article")) {
@@ -615,18 +652,26 @@ function handleLocalTool(path: string, init?: RequestInit): Response {
     const cited = (index: number) => citations.length ? [citations[index % citations.length].index] : [];
     mindMap.rootCitationIndexes = cited(0);
     mindMap.children = mindMap.children.map((child, index) => ({ ...child, citationIndexes: cited(index), itemCitationIndexes: child.items.map((_, itemIndex) => cited(index + itemIndex)) }));
+    const summary = mindMap.rootDesc || "";
+    const keyPoints = mindMap.children.flatMap((child, index) => child.items.map((text, itemIndex) => ({ text, citationIndexes: cited(index + itemIndex) }))).slice(0, 10);
+    const auditClaims = [
+      { id: "summary", section: "conclusion", text: summary, citationIndexes: cited(0) },
+      ...keyPoints.map((item, index) => ({ id: `key-point-${index + 1}`, section: "conclusion", text: item.text, citationIndexes: item.citationIndexes })),
+      { id: "mind-map-root", section: "structure", text: `${mindMap.root} ${mindMap.rootDesc || ""}`, citationIndexes: mindMap.rootCitationIndexes || [], critical: false },
+      ...mindMap.children.map((child, index) => ({ id: `mind-map-branch-${index + 1}`, section: "structure", text: `${child.topic} ${child.desc || ""}`, citationIndexes: child.citationIndexes || [], critical: false })),
+    ];
     return json({
       title: mindMap.root,
-      summary: mindMap.rootDesc || "",
+      summary,
       summaryCitationIndexes: cited(0),
-      keyPoints: mindMap.children.flatMap((child, index) => child.items.map((text, itemIndex) => ({ text, citationIndexes: cited(index + itemIndex) }))).slice(0, 10),
+      keyPoints,
       arguments: [],
       questions: ["文章有哪些适用边界？"],
       mindMap,
       entityGraph: buildLocalEntityGraph(mindMap),
       citations,
       documentChunks: citations,
-      citationAudit: { claimCount: 1 + mindMap.children.length, citedClaimCount: citations.length ? 1 + mindMap.children.length : 0, coverage: citations.length ? 1 : 0, verifiedQuoteCount: citations.length, warnings: [] },
+      citationAudit: localCitationAudit(auditClaims, citations),
       extraction: body.extraction || { pageCount: 0, tablePages: [], imagePages: [], scannedPages: [], truncated: false },
       sourceUrl: body.url || "",
       sourceType: body.sourceType || "text",

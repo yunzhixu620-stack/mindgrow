@@ -311,7 +311,9 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     if (!meetingLibrary?.description.includes("[MindGrow:meeting]")) throw new Error("Meeting board did not enter its own knowledge library");
     await page.type('textarea[placeholder*="会议记录"]', "今天讨论知识助手发布计划。决定本周完成登录测试。小王负责回归验证，周五前完成。风险是文章解析接口可能超时。");
     await clickByText(page, "button", "生成结构化会议纪要");
-    await page.waitForFunction(() => document.body.innerText.includes("会议摘要"));
+    await page.waitForSelector('[data-testid="answer-card"]');
+    const meetingAnswerSections = await page.$$eval('[data-testid="answer-card"] > section', (sections) => sections.map((section) => section.textContent.trim()));
+    if (!["结论", "证据", "AI 延伸"].every((label) => meetingAnswerSections.some((section) => section.includes(label)))) throw new Error("Meeting answer is not separated into conclusion, evidence, and AI extension");
     await page.waitForFunction(() => document.querySelectorAll(".react-flow__node").length >= 3);
     await clickByText(page, "button", "保存到会议知识库");
     await page.waitForFunction(() => document.body.innerText.includes("会议知识节点"));
@@ -338,8 +340,22 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     await fileInput.uploadFile(pdfPath);
     await page.waitForFunction(() => document.body.innerText.includes("已读取 2 页"));
     await clickByText(page, "button", "解析文章");
-    await page.waitForFunction(() => document.body.innerText.includes("核心要点"));
-    await page.waitForFunction(() => document.body.innerText.includes("[1]"));
+    await page.waitForSelector('[data-testid="answer-card"]');
+    await page.waitForSelector('[data-testid="answer-card"] [data-testid="citation-chip"]');
+    const answerSections = await page.$$eval('[data-testid="answer-card"] > section', (sections) => sections.map((section) => section.getAttribute("data-testid")));
+    if (!["answer-conclusion", "answer-evidence", "answer-extension"].every((section) => answerSections.includes(section))) throw new Error(`Article answer sections are incomplete: ${answerSections.join(", ")}`);
+    const claimToggleCount = await page.$$eval('[data-testid="answer-card"] [data-testid="answer-claims-toggle"]', (toggles) => toggles.length);
+    if (claimToggleCount !== 1) throw new Error(`Expected one progressive conclusion toggle, got ${claimToggleCount}`);
+    const collapsedClaimCount = await page.$$eval('[data-testid="answer-card"] [data-claim-status]', (claims) => claims.length);
+    await page.click('[data-testid="answer-card"] [data-testid="answer-claims-toggle"]');
+    await page.waitForFunction((previous) => document.querySelectorAll('[data-testid="answer-card"] [data-claim-status]').length > previous, {}, collapsedClaimCount);
+    await page.hover('[data-testid="answer-card"] [data-testid="citation-chip"]');
+    await page.waitForSelector('[data-testid="answer-card"] [data-testid="citation-tooltip"]', { visible: true });
+    const citationIndex = await page.$eval('[data-testid="answer-card"] [data-testid="citation-chip"]', (chip) => chip.getAttribute("data-citation-index"));
+    await page.click('[data-testid="answer-card"] [data-testid="citation-chip"]');
+    await page.waitForFunction((index) => document.querySelector(`[data-testid="citation-evidence"][data-citation-index="${index}"]`)?.getAttribute("data-highlighted") === "true", {}, citationIndex);
+    await page.waitForFunction((index) => document.querySelector(`[data-testid="citation-evidence"][data-citation-index="${index}"]`)?.getAttribute("data-highlighted") === "false", { timeout: 5000 }, citationIndex);
+    if (!await page.evaluate(() => document.querySelector('[data-testid="answer-card"]')?.textContent.includes("PDF 本轮仅提供页码/段落 locator"))) throw new Error("PDF locator limitation is not disclosed");
     await page.waitForFunction(() => document.body.innerText.includes("图谱增强检索（GraphRAG）论文结构预览"));
     await page.waitForFunction(() => document.querySelectorAll(".react-flow__node").length >= 3);
     if (!await page.$('input[aria-label="搜索论文链路"]')) throw new Error("Paper link navigator search is missing");
@@ -431,7 +447,7 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     await repeatedFile.uploadFile(pdfPath);
     await page.waitForFunction(() => document.body.innerText.includes("已读取 2 页"));
     await clickByText(page, "button", "解析文章");
-    await page.waitForFunction(() => document.body.innerText.includes("核心要点"));
+    await page.waitForSelector('[data-testid="answer-card"]');
     await clickByText(page, "button", "保存到文章知识库");
     await page.waitForFunction(() => document.body.innerText.includes("文章知识节点"));
   });
@@ -527,9 +543,11 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     if (!extraction.hasPageTwo || !extraction.hasLineBreaks || extraction.length < 20000) throw new Error(`PDF layout extraction is incomplete: ${JSON.stringify(extraction)}`);
     await clickByText(page, "button", "解析文章");
     await page.waitForFunction(() => document.body.innerText.includes("文档解析覆盖"));
+    await page.waitForSelector('[data-testid="answer-card"]');
     const coverageText = await page.evaluate(() => document.body.innerText);
     if (!coverageText.includes("图片页：")) throw new Error("Image-page diagnostics are missing");
-    if (!coverageText.includes("引用完整性检查")) throw new Error("Citation coverage audit is missing");
+    if (!coverageText.includes("关键结论支持")) throw new Error("Per-claim citation support audit is missing");
+    if (!coverageText.includes("PDF 本轮仅提供页码/段落 locator")) throw new Error("PDF locator limitation is missing");
     await page.screenshot({ path: path.join(artifactDir, "layoutlmv3-document-coverage.png"), fullPage: true });
   });
 

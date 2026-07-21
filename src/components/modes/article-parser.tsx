@@ -7,7 +7,8 @@ import { useScriptSpeech, type SpeechSegment } from "@/hooks/use-script-speech";
 import { useMindGrowStore } from "@/store/mindgrow-store";
 import { mindMapToPreviewGraph } from "@/lib/mindmap-preview";
 import { aiEntityGraphToEntityGraph } from "@/lib/entity-graph";
-import type { AIEntityGraph, AIMindMap, Citation } from "@/types";
+import { AnswerCard } from "@/components/answer/answer-card";
+import type { AIEntityGraph, AIMindMap, Citation, CitationAudit } from "@/types";
 
 interface CitedText { text: string; citationIndexes: number[] }
 interface ArticleResult {
@@ -21,7 +22,7 @@ interface ArticleResult {
   entityGraph?: AIEntityGraph;
   citations: Citation[];
   documentChunks?: Citation[];
-  citationAudit?: { claimCount: number; citedClaimCount: number; coverage: number; verifiedQuoteCount: number; warnings: string[] };
+  citationAudit?: CitationAudit;
   extraction?: PdfExtraction;
   sourceUrl?: string;
   sourceType: "url" | "pdf" | "text";
@@ -365,6 +366,10 @@ export function ArticleParser() {
 
   async function createAudioOverview() {
     if (!result) return;
+    if (result.citationAudit?.refusalReason === "ALL_KEY_CLAIMS_UNSUPPORTED") {
+      setNotice("关键结论缺少直接证据，暂不生成音频概览");
+      return;
+    }
     setAudioBusy(true); setNotice(""); setAudio(null); speech.stop();
     try {
       const response = await apiFetch("/api/tools/audio-overview", {
@@ -385,6 +390,10 @@ export function ArticleParser() {
 
   async function save() {
     if (!result?.mindMap) return;
+    if (result.citationAudit?.refusalReason === "ALL_KEY_CLAIMS_UNSUPPORTED") {
+      setNotice("关键结论缺少直接证据，已阻止写入长期知识库");
+      return;
+    }
     const requestMapId = currentMapId;
     setSaving(true); setNotice("");
     try {
@@ -459,6 +468,7 @@ export function ArticleParser() {
   }
 
   const citationByIndex = new Map((result?.citations || []).map((item) => [item.index, item]));
+  const answerRefused = result?.citationAudit?.refusalReason === "ALL_KEY_CLAIMS_UNSUPPORTED";
   const showCitations = (indexes: number[] = []) => (
     <span className="ml-1 inline-flex flex-wrap gap-1 align-middle">
       {indexes.map((index) => <button key={index} type="button" onClick={() => setSelectedCitation(citationByIndex.get(index) || null)} className="rounded bg-[var(--primary-subtle)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--primary-hover)] hover:ring-1 hover:ring-[var(--primary)]" aria-label={`查看引用 ${index}`}>[{index}]</button>)}
@@ -483,16 +493,28 @@ export function ArticleParser() {
 
       {result && <div className="mt-5 space-y-3 animate-fade-in">
         <ArticleWikiNavigator mindMap={result.mindMap} showCitations={showCitations} />
-        {result.citationAudit && <ArticleBlock title="引用完整性检查"><div className="flex flex-wrap gap-2"><span className="rounded-full bg-[var(--primary-subtle)] px-2 py-1">结论引用覆盖率 {Math.round(result.citationAudit.coverage * 100)}%</span><span className="rounded-full bg-[var(--bg-elevated)] px-2 py-1">{result.citationAudit.verifiedQuoteCount} 个可逐字核验证据块</span></div>{result.citationAudit.warnings.length > 0 && <ul className="mt-2 space-y-1 text-amber-300">{result.citationAudit.warnings.map((warning, index) => <li key={index}>• {warning}</li>)}</ul>}</ArticleBlock>}
         {result.extraction && (result.extraction.tablePages.length > 0 || result.extraction.imagePages.length > 0 || result.extraction.scannedPages.length > 0) && <ArticleBlock title="文档解析覆盖"><div>表格/多列页：{result.extraction.tablePages.join("、") || "无"}</div><div>图片页：{result.extraction.imagePages.join("、") || "无"}</div><div>疑似扫描页：{result.extraction.scannedPages.join("、") || "无"}</div>{result.extraction.imagePages.length > 0 && <div className="mt-1 text-amber-300">图片页已保留图注与位置提示；涉及图中曲线、坐标或像素内容的结论需视觉模型复核。</div>}</ArticleBlock>}
-        <ArticleBlock title={result.title}><p>{result.summary || "未提取到摘要"}{showCitations(result.summaryCitationIndexes)}</p></ArticleBlock>
-        <ArticleBlock title="核心要点">{result.keyPoints.length ? <ul className="space-y-1.5">{result.keyPoints.map((item, index) => <li key={index}>• {item.text}{showCitations(item.citationIndexes)}</li>)}</ul> : <span className="text-[var(--text-tertiary)]">未提取到要点</span>}</ArticleBlock>
-        <ArticleBlock title="论点与证据">{result.arguments.length ? result.arguments.map((item, index) => <div key={index} className="mb-2 last:mb-0"><div className="font-medium">{index + 1}. {item.claim}{showCitations(item.citationIndexes)}</div>{item.evidence && <div className="mt-0.5 text-[var(--text-tertiary)]">依据：{item.evidence}</div>}</div>) : <span className="text-[var(--text-tertiary)]">未提取到论点</span>}</ArticleBlock>
-        <ArticleBlock title="可继续追问"><SimpleList items={result.questions} empty="暂无" /></ArticleBlock>
+        <AnswerCard
+          title={result.title}
+          conclusion={[
+            ...(result.summary ? [{ text: result.summary, citationIndexes: result.summaryCitationIndexes, auditText: result.summary }] : []),
+            ...result.keyPoints.map((item) => ({ text: item.text, citationIndexes: item.citationIndexes, auditText: item.text })),
+          ]}
+          evidence={result.arguments.map((item) => ({
+            text: item.claim,
+            detail: item.evidence ? `依据：${item.evidence}` : undefined,
+            citationIndexes: item.citationIndexes,
+            auditText: `${item.claim} ${item.evidence || ""}`,
+          }))}
+          extension={result.questions}
+          citations={result.citations}
+          audit={result.citationAudit}
+          sourceType={result.sourceType}
+        />
         {selectedCitation && <ArticleBlock title={`引用 [${selectedCitation.index}] · ${selectedCitation.locator || "原文"}`}><blockquote className="border-l-2 border-[var(--primary)] pl-2 text-[var(--text-secondary)]">“{selectedCitation.quote}”</blockquote>{result.sourceUrl && <a className="mt-2 inline-block text-[var(--primary-hover)] underline" href={result.sourceUrl} target="_blank" rel="noreferrer">打开原网页核对</a>}</ArticleBlock>}
-        <button onClick={() => void createAudioOverview()} disabled={audioBusy} className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] py-2.5 text-sm font-medium disabled:opacity-40">{audioBusy ? "正在生成引用型播客脚本与音频…" : "🎧 生成音频概览"}</button>
+        <button onClick={() => void createAudioOverview()} disabled={audioBusy || answerRefused} className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] py-2.5 text-sm font-medium disabled:opacity-40">{audioBusy ? "正在生成引用型播客脚本与音频…" : answerRefused ? "证据不足，暂不生成音频" : "🎧 生成音频概览"}</button>
         {audio && <AudioOverviewCard audio={audio} speech={speech} showCitations={showCitations} />}
-        <button onClick={() => void save()} disabled={saving} className="w-full rounded-xl border border-[var(--primary-border)] bg-[var(--primary-subtle)] py-2.5 text-sm font-medium text-[var(--primary-hover)] disabled:opacity-40">{saving ? "正在保存…" : "保存到文章知识库（含引用）"}</button>
+        <button onClick={() => void save()} disabled={saving || answerRefused} className="w-full rounded-xl border border-[var(--primary-border)] bg-[var(--primary-subtle)] py-2.5 text-sm font-medium text-[var(--primary-hover)] disabled:opacity-40">{saving ? "正在保存…" : answerRefused ? "证据不足，暂不保存" : "保存到文章知识库（含引用）"}</button>
       </div>}
       </div>
       <div className="mt-4 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4">
@@ -573,7 +595,4 @@ function AudioOverviewCard({ audio, speech, showCitations }: { audio: AudioOverv
 
 function ArticleBlock({ title, children }: { title: string; children: React.ReactNode }) {
   return <div className="rounded-xl border border-[var(--border)] bg-[var(--background)] p-3 text-xs leading-relaxed"><h3 className="mb-2 font-semibold text-[var(--primary-hover)]">{title}</h3>{children}</div>;
-}
-function SimpleList({ items, empty }: { items: string[]; empty: string }) {
-  return items.length ? <ul className="space-y-1">{items.map((item, index) => <li key={index}>• {item}</li>)}</ul> : <span className="text-[var(--text-tertiary)]">{empty}</span>;
 }

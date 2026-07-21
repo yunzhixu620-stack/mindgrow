@@ -6,7 +6,8 @@ import { useMindGrowStore } from "@/store/mindgrow-store";
 import { useSpeechInput } from "@/hooks/use-speech-input";
 import { mindMapToPreviewGraph } from "@/lib/mindmap-preview";
 import { aiEntityGraphToEntityGraph } from "@/lib/entity-graph";
-import type { AIEntityGraph, AIMindMap, Citation } from "@/types";
+import { AnswerCard } from "@/components/answer/answer-card";
+import type { AIEntityGraph, AIMindMap, Citation, CitationAudit } from "@/types";
 
 interface CitedText { text: string; citationIndexes: number[] }
 
@@ -23,7 +24,7 @@ interface MeetingResult {
   entityGraph?: AIEntityGraph;
   citations: Citation[];
   documentChunks?: Citation[];
-  citationAudit?: { claimCount: number; citedClaimCount: number; coverage: number; verifiedQuoteCount: number; warnings: string[] };
+  citationAudit?: CitationAudit;
 }
 
 function meetingDueLabel(item: MeetingResult["actionItems"][number]) {
@@ -48,7 +49,6 @@ export function MeetingAssistant() {
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
-  const [selectedCitation, setSelectedCitation] = useState<Citation | null>(null);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -67,7 +67,7 @@ export function MeetingAssistant() {
   async function generate() {
     if (transcript.trim().length < 10) { setNotice("请先输入或录入会议内容"); return; }
     const requestMapId = currentMapId;
-    setBusy(true); setNotice(""); setResult(null); setSelectedCitation(null); setEntityGraph({ entities: [], relations: [] });
+    setBusy(true); setNotice(""); setResult(null); setEntityGraph({ entities: [], relations: [] });
     try {
       const response = await apiFetch("/api/tools/meeting", {
         method: "POST",
@@ -90,6 +90,10 @@ export function MeetingAssistant() {
 
   async function save() {
     if (!result?.mindMap) return;
+    if (result.citationAudit?.refusalReason === "ALL_KEY_CLAIMS_UNSUPPORTED") {
+      setNotice("关键结论缺少直接证据，已阻止写入长期知识库");
+      return;
+    }
     const requestMapId = currentMapId;
     setSaving(true); setNotice("");
     try {
@@ -120,8 +124,7 @@ export function MeetingAssistant() {
     finally { if (mountedRef.current) setSaving(false); }
   }
 
-  const citationByIndex = new Map((result?.citations || []).map((item) => [item.index, item]));
-  const showCitations = (indexes: number[] = []) => <span className="ml-1 inline-flex flex-wrap gap-1 align-middle">{indexes.map((index) => <button key={index} type="button" onClick={() => setSelectedCitation(citationByIndex.get(index) || null)} aria-label={`查看会议引用 ${index}`} className="rounded bg-[var(--primary-subtle)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--primary-hover)] hover:ring-1 hover:ring-[var(--primary)]">[{index}]</button>)}</span>;
+  const answerRefused = result?.citationAudit?.refusalReason === "ALL_KEY_CLAIMS_UNSUPPORTED";
 
   return (
     <section className="h-full w-full overflow-y-auto bg-[var(--background)]" data-mode-library-id={currentMapId} data-testid="meeting-content-workspace">
@@ -147,24 +150,30 @@ export function MeetingAssistant() {
         </div>
 
       {result && <div className="space-y-3 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4 animate-fade-in">
-        {result.citationAudit && <ResultBlock title="引用完整性"><div>结论引用覆盖率：{Math.round(result.citationAudit.coverage * 100)}% · {result.citationAudit.verifiedQuoteCount} 个原文证据块</div>{result.citationAudit.warnings.length > 0 && <div className="mt-1 text-amber-300">{result.citationAudit.warnings.join("；")}</div>}</ResultBlock>}
-        <ResultBlock title="会议摘要"><p>{result.summary || "未提取到摘要"}{showCitations(result.summaryCitationIndexes)}</p></ResultBlock>
-        <ResultBlock title="会议决议"><ResultList items={result.decisions} empty="未形成明确决议" showCitations={showCitations} /></ResultBlock>
-        <ResultBlock title="行动项">{result.actionItems.length ? result.actionItems.map((item, index) => <div key={index} className="mb-2 last:mb-0"><div className="font-medium">□ {item.task}{showCitations(item.citationIndexes)}</div><div className="text-[10px] text-[var(--text-tertiary)] mt-0.5">负责人：{item.owner || "待确认"} · 截止：{meetingDueLabel(item)}</div></div>) : <span className="text-[var(--text-tertiary)]">未提取到行动项</span>}</ResultBlock>
-        <ResultBlock title="风险与待确认"><ResultList items={[...result.risks, ...result.openQuestions]} empty="暂无" showCitations={showCitations} /></ResultBlock>
-        {selectedCitation && <ResultBlock title={`会议引用 [${selectedCitation.index}] · ${selectedCitation.locator || "原文"}`}><blockquote className="border-l-2 border-[var(--primary)] pl-2 text-[var(--text-secondary)]">“{selectedCitation.quote}”</blockquote></ResultBlock>}
-        <button onClick={() => void save()} disabled={saving} className="w-full rounded-xl border border-[var(--primary-border)] bg-[var(--primary-subtle)] py-2.5 text-sm font-medium text-[var(--primary-hover)] disabled:opacity-40">{saving ? "正在保存…" : "保存到会议知识库"}</button>
+        <AnswerCard
+          title={result.title || "会议纪要"}
+          conclusion={[
+            ...(result.summary ? [{ text: result.summary, citationIndexes: result.summaryCitationIndexes, auditText: result.summary }] : []),
+            ...result.decisions.map((item) => ({ text: item.text, citationIndexes: item.citationIndexes, auditText: item.text })),
+          ]}
+          evidence={[
+            ...result.actionItems.map((item) => ({
+              text: item.task,
+              detail: `负责人：${item.owner || "待确认"} · 截止：${meetingDueLabel(item)}`,
+              citationIndexes: item.citationIndexes,
+              auditText: `${item.task} ${item.owner || ""} ${item.due || ""}`,
+            })),
+            ...result.risks.map((item) => ({ text: `风险：${item.text}`, citationIndexes: item.citationIndexes, auditText: item.text })),
+          ]}
+          extension={result.openQuestions.map((item) => item.text)}
+          citations={result.citations}
+          audit={result.citationAudit}
+          sourceType="meeting"
+        />
+        <button onClick={() => void save()} disabled={saving || answerRefused} className="w-full rounded-xl border border-[var(--primary-border)] bg-[var(--primary-subtle)] py-2.5 text-sm font-medium text-[var(--primary-hover)] disabled:opacity-40">{saving ? "正在保存…" : answerRefused ? "证据不足，暂不保存" : "保存到会议知识库"}</button>
       </div>}
         </div>
       </div>
     </section>
   );
-}
-
-function ResultBlock({ title, children }: { title: string; children: React.ReactNode }) {
-  return <div className="rounded-xl border border-[var(--border)] bg-[var(--background)] p-3 text-xs leading-relaxed"><h3 className="mb-2 font-semibold text-[var(--primary-hover)]">{title}</h3>{children}</div>;
-}
-
-function ResultList({ items, empty, showCitations }: { items: CitedText[]; empty: string; showCitations: (indexes?: number[]) => React.ReactNode }) {
-  return items.length ? <ul className="space-y-1">{items.map((item, index) => <li key={index}>• {item.text}{showCitations(item.citationIndexes)}</li>)}</ul> : <span className="text-[var(--text-tertiary)]">{empty}</span>;
 }
