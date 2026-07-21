@@ -1,7 +1,8 @@
 "use client";
 
 import type { Session, User } from "@supabase/supabase-js";
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { resetTenantData, resolveAuthTransition } from "@/components/auth/auth-tenant-reset";
 import { getAuthRedirectUrl } from "@/lib/auth-urls";
 import { IS_LOCAL_MODE, apiFetch, setActiveWorkspaceId } from "@/lib/client-api";
 import { supabase } from "@/lib/supabase-browser";
@@ -40,15 +41,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [currentWorkspace, setCurrentWorkspace] = useState<Workspace | null>(null);
   const [message, setMessage] = useState("");
+  const lastUserIdRef = useRef<string | null>(null);
+  const knownWorkspaceIdsRef = useRef<Set<string>>(new Set());
+  const workspaceLoadGenerationRef = useRef(0);
+
+  const resetTenant = useCallback((userId: string | null) => {
+    workspaceLoadGenerationRef.current += 1;
+    const workspaceIds = new Set(knownWorkspaceIdsRef.current);
+    const savedWorkspaceId = window.localStorage.getItem("mindgrow.workspace.v1");
+    if (savedWorkspaceId) workspaceIds.add(savedWorkspaceId);
+    resetTenantData(userId, workspaceIds);
+    knownWorkspaceIdsRef.current.clear();
+    window.localStorage.removeItem("mindgrow.workspace.v1");
+    setActiveWorkspaceId(null);
+    setSession(null);
+    setWorkspaces([]);
+    setCurrentWorkspace(null);
+  }, []);
 
   const refreshWorkspaces = useCallback(async () => {
     if (IS_LOCAL_MODE) return;
+    const loadGeneration = workspaceLoadGenerationRef.current;
     const response = await apiFetch("/api/workspaces", { cache: "no-store" });
     const data = await response.json();
+    if (loadGeneration !== workspaceLoadGenerationRef.current) return;
     if (!response.ok) throw new Error(data.error || "工作区加载失败");
     const rows = (data.workspaces || []) as Workspace[];
     const savedId = window.localStorage.getItem("mindgrow.workspace.v1");
     const selected = rows.find((item) => item.id === savedId) || rows[0] || null;
+    knownWorkspaceIdsRef.current = new Set(rows.map((item) => item.id));
     setWorkspaces(rows);
     setCurrentWorkspace(selected);
     setActiveWorkspaceId(selected?.id || null);
@@ -74,20 +95,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let active = true;
     supabase.auth.getSession().then(async ({ data }) => {
       if (!active) return;
+      const transition = resolveAuthTransition("INITIAL_SESSION", lastUserIdRef.current, data.session);
+      if (transition.shouldReset) resetTenant(lastUserIdRef.current);
+      lastUserIdRef.current = transition.nextUserId;
       setSession(data.session);
       if (data.session) {
         try { await refreshWorkspaces(); } catch (error) { setMessage(error instanceof Error ? error.message : "工作区加载失败"); }
       }
       if (active) setLoading(false);
     });
-    const { data: subscription } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    const { data: subscription } = supabase.auth.onAuthStateChange((event, nextSession) => {
       if (!active) return;
+      const previousUserId = lastUserIdRef.current;
+      const transition = resolveAuthTransition(event, previousUserId, nextSession);
+      if (transition.shouldReset) resetTenant(previousUserId);
+      lastUserIdRef.current = transition.nextUserId;
       setSession(nextSession);
-      if (!nextSession) {
-        setWorkspaces([]);
-        setCurrentWorkspace(null);
-        setActiveWorkspaceId(null);
-      } else {
+      if (nextSession) {
         window.setTimeout(() => void refreshWorkspaces().catch((error) => setMessage(error.message)), 0);
       }
     });
@@ -95,7 +119,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       active = false;
       subscription.subscription.unsubscribe();
     };
-  }, [refreshWorkspaces]);
+  }, [refreshWorkspaces, resetTenant]);
 
   const signIn = useCallback(async (email: string, password: string) => {
     setMessage("");
@@ -126,9 +150,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const signOut = useCallback(async () => {
-    await supabase.auth.signOut();
-    window.localStorage.removeItem("mindgrow.workspace.v1");
-  }, []);
+    const previousUserId = lastUserIdRef.current;
+    resetTenant(previousUserId);
+    lastUserIdRef.current = null;
+    const { error } = await supabase.auth.signOut();
+    if (error) throw error;
+  }, [resetTenant]);
 
   const createWorkspace = useCallback(async (name: string) => {
     const response = await apiFetch("/api/workspaces", {
