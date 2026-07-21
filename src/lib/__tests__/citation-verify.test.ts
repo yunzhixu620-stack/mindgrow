@@ -5,9 +5,23 @@ import { describe, expect, it } from "vitest";
 const {
   normalizeForExactMatch,
   isVerbatimQuote,
+  verifiedIndexes,
+  verifiedCitationPayload,
 } = require("../../../fc-proxy/index.js").__citationInternal as {
   normalizeForExactMatch: (value: unknown) => string;
   isVerbatimQuote: (quote: unknown, chunkContent: unknown) => boolean;
+  verifiedIndexes: (
+    value: unknown,
+    allowedIndexes: Set<number>,
+    claim: string,
+    citations: Array<Record<string, unknown>>,
+    sourceChunks: Array<Record<string, unknown>>,
+  ) => number[];
+  verifiedCitationPayload: (
+    citations: Array<Record<string, unknown>>,
+    sourceChunks: Array<Record<string, unknown>>,
+    expectedSourceType: string,
+  ) => { citations: Array<Record<string, unknown>>; allowedIndexes: Set<number> };
 };
 
 describe("citation exact-match utilities", () => {
@@ -33,6 +47,66 @@ describe("citation exact-match utilities", () => {
   it("does not erase punctuation to manufacture a match", () => {
     expect(isVerbatimQuote("risk is low", "risk is not low")).toBe(false);
     expect(isVerbatimQuote("A-B", "A B")).toBe(false);
+  });
+
+  it("keeps only allowed citations whose quote is verbatim and metadata is complete", () => {
+    const citations = [{
+      index: 1,
+      quote: "DPR retrieves passages from Wikipedia.",
+      locator: "page 3",
+      sourceType: "pdf",
+    }];
+    const chunks = [{ index: 1, content: "RAG uses DPR. DPR retrieves passages from Wikipedia." }];
+    expect(verifiedIndexes([1, 2], new Set([1]), "DPR retrieval", citations, chunks)).toEqual([1]);
+
+    expect(verifiedIndexes([1], new Set([1]), "DPR retrieval", [
+      { ...citations[0], quote: "DPR retrieves documents from Wikipedia." },
+    ], chunks)).toEqual([]);
+    expect(verifiedIndexes([1], new Set([1]), "DPR retrieval", [
+      { ...citations[0], locator: "" },
+    ], chunks)).toEqual([]);
+    expect(verifiedIndexes([1], new Set([1]), "DPR retrieval", [
+      { ...citations[0], sourceType: "" },
+    ], chunks)).toEqual([]);
+  });
+
+  it("does not manufacture a verified citation when the model supplied none", () => {
+    const citation = {
+      index: 1,
+      quote: "DPR retrieves passages from Wikipedia.",
+      locator: "page 3",
+      sourceType: "pdf",
+    };
+    expect(verifiedIndexes([], new Set([1]), "DPR retrieves passages", [citation], [
+      { index: 1, content: citation.quote },
+    ])).toEqual([]);
+  });
+
+  it("sanitizes the payload again at the persistence boundary", () => {
+    const chunk = {
+      index: 1,
+      content: "DPR retrieves passages from Wikipedia.",
+      sourceType: "pdf",
+    };
+    const citation = {
+      index: 1,
+      quote: "DPR retrieves passages from Wikipedia.",
+      locator: "page 3",
+      sourceType: "pdf",
+    };
+    const valid = verifiedCitationPayload([citation], [chunk], "pdf");
+    expect(valid.citations).toHaveLength(1);
+    expect(valid.allowedIndexes).toEqual(new Set([1]));
+
+    expect(verifiedCitationPayload([
+      { ...citation, quote: "DPR retrieves documents from Wikipedia." },
+    ], [chunk], "pdf").citations).toEqual([]);
+    expect(verifiedCitationPayload([
+      { ...citation, sourceType: "url" },
+    ], [chunk], "pdf").citations).toEqual([]);
+    expect(verifiedCitationPayload([citation], [
+      { ...chunk, sourceType: "text" },
+    ], "pdf").citations).toEqual([]);
   });
 
   it("keeps all test exports in the single final CommonJS export", () => {
