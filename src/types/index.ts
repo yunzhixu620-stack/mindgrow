@@ -113,6 +113,31 @@ export interface Citation {
   sourceType?: "url" | "pdf" | "text" | "meeting";
 }
 
+export interface CitationClaimAuditRow {
+  index: number;
+  id: string;
+  section: string;
+  text: string;
+  citationIndexes: number[];
+  critical: boolean;
+  supported: boolean;
+  status: "supported" | "unsupported";
+}
+
+export interface CitationAudit {
+  claimCount: number;
+  citedClaimCount: number;
+  unsupportedClaimCount: number;
+  coverage: number;
+  criticalClaimCount: number;
+  supportedCriticalClaimCount: number;
+  unsupportedCriticalClaimCount: number;
+  verifiedQuoteCount: number;
+  perClaim: CitationClaimAuditRow[];
+  refusalReason: "ALL_KEY_CLAIMS_UNSUPPORTED" | null;
+  warnings: string[];
+}
+
 export interface AnswerSource {
   id: string;
   title: string;

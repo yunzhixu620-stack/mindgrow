@@ -382,15 +382,42 @@ check("modified citation quotes are rejected before claims or graph rows can per
   assert.deepStrictEqual(verifiedCitationPayload(modified, sourceChunks, "pdf").citations, []);
   const audit = citationAudit([{ text: "DPR retrieval", citationIndexes: indexes }], modified);
   assert.strictEqual(audit.coverage, 0);
+  assert.strictEqual(audit.perClaim[0].status, "unsupported");
+  assert.strictEqual(audit.refusalReason, "ALL_KEY_CLAIMS_UNSUPPORTED");
 });
 
-check("citation audit exposes unsupported claims instead of force-citing", () => {
+check("citation audit reports a fully supported answer", () => {
   const audit = citationAudit([
-    { text: "supported", citationIndexes: [1] },
-    { text: "unsupported", citationIndexes: [] },
+    { id: "summary", section: "conclusion", text: "supported summary", citationIndexes: [1] },
+    { id: "point", section: "conclusion", text: "supported point", citationIndexes: [2] },
+  ], all[0].chunks.slice(0, 2));
+  assert.strictEqual(audit.coverage, 1);
+  assert.deepStrictEqual(audit.perClaim.map((item) => item.status), ["supported", "supported"]);
+  assert.strictEqual(audit.refusalReason, null);
+});
+
+check("citation audit marks one unsupported claim without refusing the supported answer", () => {
+  const audit = citationAudit([
+    { id: "supported", section: "conclusion", text: "supported", citationIndexes: [1] },
+    { id: "unsupported", section: "evidence", text: "unsupported", citationIndexes: [] },
   ], all[0].chunks.slice(0, 2));
   assert.strictEqual(audit.coverage, 0.5);
   assert.strictEqual(audit.warnings.length, 1);
+  assert.strictEqual(audit.perClaim[1].supported, false);
+  assert.strictEqual(audit.unsupportedCriticalClaimCount, 1);
+  assert.strictEqual(audit.refusalReason, null);
+});
+
+check("citation audit refuses when every key claim is unsupported", () => {
+  const audit = citationAudit([
+    { id: "summary", section: "conclusion", text: "unsupported summary", citationIndexes: [] },
+    { id: "point", section: "conclusion", text: "unsupported point", citationIndexes: [] },
+    { id: "question", section: "extension", critical: false, text: "open question", citationIndexes: [1] },
+  ], all[0].chunks.slice(0, 2));
+  assert.strictEqual(audit.supportedCriticalClaimCount, 0);
+  assert.strictEqual(audit.unsupportedCriticalClaimCount, 2);
+  assert.strictEqual(audit.perClaim[2].critical, false);
+  assert.strictEqual(audit.refusalReason, "ALL_KEY_CLAIMS_UNSUPPORTED");
 });
 
 check("meeting evidence keeps corrected dates and negative decisions traceable", () => {

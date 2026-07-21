@@ -2404,10 +2404,10 @@ function recoveredChineseArticleResponse(body, context) {
   ];
   const extraction = body.extraction && typeof body.extraction === 'object' ? body.extraction : {};
   const audit = citationAudit([
-    { text: summary, citationIndexes: citationAt(0) },
-    ...keyPoints,
-    { text: `${mindMap.root} ${mindMap.rootDesc}`, citationIndexes: mindMap.rootCitationIndexes },
-    ...mindMap.children.map((item) => ({ text: `${item.topic} ${item.desc}`, citationIndexes: item.citationIndexes })),
+    { id: 'summary', section: 'conclusion', text: summary, citationIndexes: citationAt(0) },
+    ...keyPoints.map((item, index) => ({ ...item, id: `key-point-${index + 1}`, section: 'conclusion' })),
+    { id: 'mind-map-root', section: 'structure', critical: false, text: `${mindMap.root} ${mindMap.rootDesc}`, citationIndexes: mindMap.rootCitationIndexes },
+    ...mindMap.children.map((item, index) => ({ id: `mind-map-branch-${index + 1}`, section: 'structure', critical: false, text: `${item.topic} ${item.desc}`, citationIndexes: item.citationIndexes })),
   ], citations);
   return {
     status: 200,
@@ -2699,16 +2699,45 @@ function fallbackMeetingAnalysis(title, transcript, citations, allowedIndexes) {
 
 function citationAudit(claims, citations) {
   const rows = claims.filter((item) => item && normalizeSpaces(item.text));
-  const cited = rows.filter((item) => Array.isArray(item.citationIndexes) && item.citationIndexes.length > 0);
-  const verifiedQuotes = citations.filter((item) => item.quote && item.locator).length;
+  const verifiedCitationRows = (Array.isArray(citations) ? citations : [])
+    .filter((item) => item && Number.isInteger(Number(item.index)) && item.quote && item.locator);
+  const verifiedCitationIndexes = new Set(verifiedCitationRows.map((item) => Number(item.index)));
+  const perClaim = rows.map((item, index) => {
+    const citationIndexes = normalizeCitationIndexes(item.citationIndexes, verifiedCitationIndexes);
+    const supported = citationIndexes.length > 0;
+    return {
+      index,
+      id: String(item.id || `claim-${index + 1}`).slice(0, 120),
+      section: String(item.section || 'claim').slice(0, 40),
+      text: normalizeSpaces(item.text).slice(0, 4000),
+      citationIndexes,
+      critical: item.critical !== false,
+      supported,
+      status: supported ? 'supported' : 'unsupported',
+    };
+  });
+  const cited = perClaim.filter((item) => item.supported);
+  const criticalClaims = perClaim.filter((item) => item.critical);
+  const supportedCriticalClaims = criticalClaims.filter((item) => item.supported);
+  const verifiedQuotes = verifiedCitationRows.length;
   const warnings = [];
-  if (cited.length < rows.length) warnings.push(`${rows.length - cited.length} 条结论缺少足够直接证据，已保留为空而不是强行配引`);
-  if (citations.length === 0) warnings.push('没有生成可逐字核验的原文证据');
+  if (cited.length < perClaim.length) warnings.push(`${perClaim.length - cited.length} 条结论缺少足够直接证据，已逐条标记而不是强行配引`);
+  if (verifiedCitationRows.length === 0) warnings.push('没有生成可逐字核验的原文证据');
+  const refusalReason = criticalClaims.length > 0 && supportedCriticalClaims.length === 0
+    ? 'ALL_KEY_CLAIMS_UNSUPPORTED'
+    : null;
+  if (refusalReason) warnings.push('关键结论全部缺少直接证据，已拒绝输出事实性结论');
   return {
-    claimCount: rows.length,
+    claimCount: perClaim.length,
     citedClaimCount: cited.length,
-    coverage: rows.length ? Number((cited.length / rows.length).toFixed(3)) : 1,
+    unsupportedClaimCount: perClaim.length - cited.length,
+    coverage: perClaim.length ? Number((cited.length / perClaim.length).toFixed(3)) : 1,
+    criticalClaimCount: criticalClaims.length,
+    supportedCriticalClaimCount: supportedCriticalClaims.length,
+    unsupportedCriticalClaimCount: criticalClaims.length - supportedCriticalClaims.length,
     verifiedQuoteCount: verifiedQuotes,
+    perClaim,
+    refusalReason,
     warnings,
   };
 }
@@ -2934,9 +2963,11 @@ async function handleMeetingTool(body) {
   const summary = String(parsed.summary || mindMap.rootDesc || '').slice(0, 3000);
   const summaryCitationIndexes = verifiedIndexes(parsed.summaryCitationIndexes, allowedIndexes, summary, citations, citations);
   const audit = citationAudit([
-    { text: summary, citationIndexes: summaryCitationIndexes },
-    ...decisions, ...risks, ...openQuestions,
-    ...actionItems.map((item) => ({ text: `${item.task} ${item.owner} ${item.due}`, citationIndexes: item.citationIndexes })),
+    { id: 'summary', section: 'conclusion', text: summary, citationIndexes: summaryCitationIndexes },
+    ...decisions.map((item, index) => ({ ...item, id: `decision-${index + 1}`, section: 'conclusion' })),
+    ...risks.map((item, index) => ({ ...item, id: `risk-${index + 1}`, section: 'evidence' })),
+    ...openQuestions.map((item, index) => ({ ...item, id: `open-question-${index + 1}`, section: 'extension', critical: false })),
+    ...actionItems.map((item, index) => ({ id: `action-${index + 1}`, section: 'evidence', text: `${item.task} ${item.owner} ${item.due}`, citationIndexes: item.citationIndexes })),
   ], citations);
   const entityGraph = usedDeterministicFallback
     ? normalizedEntityGraph(parsed.entityGraph, allowedIndexes, citations)
@@ -3069,11 +3100,11 @@ async function handleArticleTool(body) {
   const summary = String(parsed.summary || mindMap.rootDesc || '').slice(0, 4000);
   const summaryCitationIndexes = verifiedIndexes(parsed.summaryCitationIndexes, allowedIndexes, summary, citations, citations);
   const audit = citationAudit([
-    { text: summary, citationIndexes: summaryCitationIndexes },
-    ...keyPoints,
-    ...argumentsList.map((item) => ({ text: `${item.claim} ${item.evidence}`, citationIndexes: item.citationIndexes })),
-    { text: `${mindMap.root} ${mindMap.rootDesc || ''}`, citationIndexes: mindMap.rootCitationIndexes },
-    ...mindMap.children.map((item) => ({ text: `${item.topic} ${item.desc || ''}`, citationIndexes: item.citationIndexes })),
+    { id: 'summary', section: 'conclusion', text: summary, citationIndexes: summaryCitationIndexes },
+    ...keyPoints.map((item, index) => ({ ...item, id: `key-point-${index + 1}`, section: 'conclusion' })),
+    ...argumentsList.map((item, index) => ({ id: `argument-${index + 1}`, section: 'evidence', text: `${item.claim} ${item.evidence}`, citationIndexes: item.citationIndexes })),
+    { id: 'mind-map-root', section: 'structure', critical: false, text: `${mindMap.root} ${mindMap.rootDesc || ''}`, citationIndexes: mindMap.rootCitationIndexes },
+    ...mindMap.children.map((item, index) => ({ id: `mind-map-branch-${index + 1}`, section: 'structure', critical: false, text: `${item.topic} ${item.desc || ''}`, citationIndexes: item.citationIndexes })),
   ], citations);
   const extraction = body.extraction && typeof body.extraction === 'object' ? body.extraction : {};
   const entityGraph = await ensureEvidenceEntityGraph(parsed.entityGraph, allowedIndexes, citations, sourceType);
