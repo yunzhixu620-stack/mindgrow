@@ -1,5 +1,16 @@
 import { create } from "zustand";
+import { enableMapSet, produce } from "immer";
 import { KnowledgeNode, KnowledgeEdge, ChatMessage, AISuggestion, AIMindMap, Category, MindMap, EntityGraph } from "@/types";
+import {
+  tenantCache,
+  tenantMapKey,
+  type CacheReadToken,
+  type GraphSnapshot,
+  type LocalOverlayToken,
+  type TenantScope,
+} from "@/lib/tenant-cache";
+
+enableMapSet();
 
 export type AppMode = "knowledge" | "meeting" | "article";
 export type LayoutDirection = "vertical" | "horizontal";
@@ -16,7 +27,9 @@ interface HistoryEntry {
 // ============================================================
 // State interface
 // ============================================================
-interface MindGrowState {
+export type HydrateGraphResult = "applied" | "rejected-stale-request" | "rejected-local-dirty";
+
+export interface MindGrowState {
   // Current map
   currentMapId: string;
   setCurrentMapId: (id: string) => void;
@@ -41,6 +54,26 @@ interface MindGrowState {
   addEdge: (edge: KnowledgeEdge) => void;
   entityGraph: EntityGraph;
   setEntityGraph: (graph: EntityGraph) => void;
+
+  // Server hydration and local editing are separate causal channels. These
+  // counters reject stale work; cache.localOverlay is the only dirty source.
+  hydrationEpochByMap: Record<string, number>;
+  localEditVersionByMap: Record<string, number>;
+  getHydrationEpoch: (mapId: string) => number;
+  getLocalEditVersion: (mapId: string) => number;
+  hydrateGraphFromServer: (
+    mapId: string,
+    snapshot: GraphSnapshot,
+    baseHydrationEpoch: number,
+    scope: TenantScope,
+    cacheReadToken: CacheReadToken,
+  ) => HydrateGraphResult;
+  mutateGraphLocally: (
+    mapId: string,
+    scope: TenantScope,
+    recipe: (draft: GraphSnapshot) => void,
+  ) => LocalOverlayToken | null;
+  resetTenantContext: () => void;
 
   // Undo/Redo
   history: HistoryEntry[];
@@ -156,6 +189,78 @@ export const useMindGrowStore = create<MindGrowState>((set, get) => ({
   addEdge: (edge) => set((state) => ({ edges: [...state.edges, edge] })),
   entityGraph: { entities: [], relations: [] },
   setEntityGraph: (entityGraph) => set({ entityGraph }),
+
+  hydrationEpochByMap: {},
+  localEditVersionByMap: {},
+  getHydrationEpoch: (mapId) => get().hydrationEpochByMap[mapId] ?? 0,
+  getLocalEditVersion: (mapId) => get().localEditVersionByMap[mapId] ?? 0,
+  hydrateGraphFromServer: (mapId, snapshot, baseHydrationEpoch, scope, cacheReadToken) => {
+    const state = get();
+    const currentHydrationEpoch = state.hydrationEpochByMap[mapId] ?? 0;
+    if (state.currentMapId !== mapId || currentHydrationEpoch !== baseHydrationEpoch) {
+      return "rejected-stale-request";
+    }
+    if (cacheReadToken.key !== tenantMapKey(scope, mapId)) return "rejected-stale-request";
+    if (!tenantCache.commitServerSnapshot(cacheReadToken, snapshot)) return "rejected-stale-request";
+
+    const cached = tenantCache.getCachedMapGraph(scope, mapId);
+    if (!cached?.serverSnapshot) return "rejected-stale-request";
+    const serverSnapshot = cached.serverSnapshot;
+    const hasLocalOverlay = cached.localOverlay !== undefined;
+    set(produce((draft: MindGrowState) => {
+      draft.hydrationEpochByMap[mapId] = currentHydrationEpoch + 1;
+      if (hasLocalOverlay) return;
+      draft.nodes = serverSnapshot.nodes;
+      draft.edges = serverSnapshot.edges;
+      draft.entityGraph = serverSnapshot.entityGraph;
+    }));
+    return hasLocalOverlay ? "rejected-local-dirty" : "applied";
+  },
+  mutateGraphLocally: (mapId, scope, recipe) => {
+    const state = get();
+    if (state.currentMapId !== mapId) return null;
+    // Validate the complete tenant key before changing either Store or cache.
+    tenantMapKey(scope, mapId);
+    const base: GraphSnapshot = {
+      nodes: state.nodes,
+      edges: state.edges,
+      entityGraph: state.entityGraph,
+    };
+    const next = produce(base, recipe);
+    set(produce((draft: MindGrowState) => {
+      draft.nodes = next.nodes;
+      draft.edges = next.edges;
+      draft.entityGraph = next.entityGraph;
+      draft.localEditVersionByMap[mapId] = (draft.localEditVersionByMap[mapId] ?? 0) + 1;
+    }));
+    return tenantCache.setLocalOverlay(scope, mapId, next);
+  },
+  resetTenantContext: () => set(produce((draft: MindGrowState) => {
+    draft.currentMapId = "map_default";
+    draft.maps = [];
+    draft.categories = [];
+    draft.nodes = [];
+    draft.edges = [];
+    draft.entityGraph = { entities: [], relations: [] };
+    draft.history = [];
+    draft.historyIndex = -1;
+    draft.messages = [];
+    draft.chatHistory = {};
+    draft.messageMapId = null;
+    draft.isProcessing = false;
+    draft.pendingSuggestion = null;
+    draft.pendingMindMap = null;
+    draft.pendingPlacement = null;
+    draft.searchQuery = "";
+    draft.searchResults = [];
+    draft.editingNodeId = null;
+    draft.contextMenu = null;
+    draft.highlightedNodeId = null;
+    draft.collapsedNodes.clear();
+    draft.hydrationEpochByMap = {};
+    draft.localEditVersionByMap = {};
+    draft.currentMode = "knowledge";
+  })),
 
   // Undo/Redo
   history: [],
