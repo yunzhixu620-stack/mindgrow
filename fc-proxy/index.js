@@ -2436,6 +2436,25 @@ function normalizeSpaces(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
+// Exact citation matching deliberately permits only deterministic text
+// canonicalization. It must never grow similarity thresholds, token overlap,
+// edit distance or n-gram fallbacks: after normalization the quote still has
+// to be one continuous source substring.
+function normalizeForExactMatch(value) {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFKC')
+    .replace(/\s+/g, ' ')
+    .replace(/[‘’“”"']/g, '"')
+    .trim();
+}
+
+function isVerbatimQuote(quote, chunkContent) {
+  const normalizedQuote = normalizeForExactMatch(quote);
+  const normalizedChunk = normalizeForExactMatch(chunkContent);
+  return normalizedQuote.length >= 4 && normalizedChunk.includes(normalizedQuote);
+}
+
 function normalizeDocumentLayout(value) {
   return String(value || '')
     .replace(/\r\n?/g, '\n')
@@ -4120,6 +4139,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  __citationInternal: { normalizeForExactMatch, isVerbatimQuote },
   buildDocumentChunks,
   buildMeetingCitations,
   fallbackMeetingAnalysis,
