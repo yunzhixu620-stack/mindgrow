@@ -7,6 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint . --ext .js,.ts,.tsx --max-warnings=0",
+    "test:unit": "vitest run --reporter=default",
+    "test:unit:watch": "vitest",
     "test:e2e:local": "node scripts/e2e-local.js",
     "test:e2e:public": "node scripts/e2e-public.js",
     "test:backend": "node scripts/backend-smoke.js",
@@ -28,12 +30,14 @@
     "@types/node": "^20.0.0",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
+    "@vitest/coverage-v8": "^3.2.7",
     "autoprefixer": "^10.4.0",
     "eslint": "^8.57.0",
     "eslint-config-next": "^15.5.16",
     "postcss": "^8.5.10",
     "tailwindcss": "^3.4.0",
-    "typescript": "^5.5.0"
+    "typescript": "^5.5.0",
+    "vitest": "^3.2.7"
   },
   "overrides": {
     "postcss": "$postcss"
