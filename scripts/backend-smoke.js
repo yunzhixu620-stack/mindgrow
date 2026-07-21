@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const baseUrl = (process.env.MINDGROW_API_BASE_URL || "https://mindgrow-api-eyippxdkkh.cn-hangzhou.fcapp.run").replace(/\/$/, "");
+const baseUrl = (process.env.MINDGROW_API_BASE || process.env.MINDGROW_API_BASE_URL || "https://mindgrow-api-eyippxdkkh.cn-hangzhou.fcapp.run").replace(/\/$/, "");
 const expectedApiVersion = process.env.MINDGROW_EXPECTED_API_VERSION || "10.5.2";
 const accessToken = process.env.MINDGROW_ACCESS_TOKEN || "";
 let workspaceId = process.env.MINDGROW_WORKSPACE_ID || "";
@@ -105,5 +105,5 @@ function expectStatus(result, status) {
   const report = { checkedAt: new Date().toISOString(), baseUrl, authenticatedChecksRun: Boolean(accessToken), summary: { passed: results.filter((item) => item.ok).length, failed: results.filter((item) => !item.ok).length }, results };
   fs.writeFileSync(path.join(artifactDir, "backend-smoke-report.json"), JSON.stringify(report, null, 2));
   console.log(`\n${report.summary.passed}/${results.length} backend checks passed`);
-  if (report.summary.failed) process.exit(1);
+  if (report.summary.failed) process.exitCode = 1;
 })();
