@@ -3541,6 +3541,58 @@ async function handleKnowledge(req, context) {
         data: { categories: rows.map((category) => ({ id: category.id, name: category.name, icon: category.icon || '📁', color: category.color || '#22d3a7', sortOrder: category.sort_order || 0, createdAt: category.created_at })) },
       };
     }
+    if (query.action === 'universe') {
+      // The universe used to load every map through a separate API request.
+      // Fetch compact workspace-wide graph rows in parallel and group them in
+      // the function so the browser performs one authenticated round trip.
+      const [mapRows, nodeRows, edgeRows, entityRows, relationRows] = await Promise.all([
+        supabaseRequest('GET', `maps?workspace_id=eq.${workspace}&select=*&order=is_default.desc,updated_at.desc&limit=500`),
+        supabaseRequest('GET', `nodes?workspace_id=eq.${workspace}&status=eq.active&select=id,map_id,content,desc,type,status,source,confidence,created_at,updated_at&limit=12000`),
+        supabaseRequest('GET', `edges?workspace_id=eq.${workspace}&select=id,map_id,source_id,target_id,relation,weight,created_at&limit=24000`),
+        supabaseRequest('GET', `graph_entities?workspace_id=eq.${workspace}&select=id,map_id,canonical_name,entity_type,aliases,description,confidence&order=confidence.desc&limit=12000`),
+        supabaseRequest('GET', `graph_relations?workspace_id=eq.${workspace}&select=id,map_id,source_entity_id,target_entity_id,relation_type,label,status,confidence&order=confidence.desc&limit=24000`),
+      ]);
+      if (![mapRows, nodeRows, edgeRows, entityRows, relationRows].every(Array.isArray)) throw dependencyError('knowledge_store');
+      const graphByMap = new Map(mapRows.map((row) => [row.id, {
+        map: convertMap(row), nodes: [], edges: [], entityGraph: { entities: [], relations: [] },
+      }]));
+      nodeRows.forEach((row) => {
+        const graph = graphByMap.get(row.map_id);
+        if (graph && graph.nodes.length < 2000) graph.nodes.push(convertNode(row));
+      });
+      edgeRows.forEach((row) => {
+        const graph = graphByMap.get(row.map_id);
+        if (graph && graph.edges.length < 4000) graph.edges.push(convertEdge(row));
+      });
+      entityRows.forEach((row) => {
+        const graph = graphByMap.get(row.map_id);
+        if (!graph || graph.entityGraph.entities.length >= 2000) return;
+        graph.entityGraph.entities.push({
+          id: row.id,
+          canonicalName: row.canonical_name,
+          entityType: row.entity_type,
+          aliases: Array.isArray(row.aliases) ? row.aliases : [],
+          description: row.description || '',
+          confidence: Number(row.confidence || 0),
+          citations: [],
+        });
+      });
+      relationRows.forEach((row) => {
+        const graph = graphByMap.get(row.map_id);
+        if (!graph || graph.entityGraph.relations.length >= 4000) return;
+        graph.entityGraph.relations.push({
+          id: row.id,
+          sourceId: row.source_entity_id,
+          targetId: row.target_entity_id,
+          relationType: row.relation_type,
+          label: row.label || row.relation_type,
+          status: row.status || 'asserted',
+          confidence: Number(row.confidence || 0),
+          citations: [],
+        });
+      });
+      return { status: 200, data: { libraries: Array.from(graphByMap.values()), generatedAt: new Date().toISOString() } };
+    }
     if (query.action === 'search') {
       const searchQuery = String(query.q || '').trim().slice(0, 100);
       if (!searchQuery) return { status: 200, data: { query: searchQuery, results: [], total: 0 } };

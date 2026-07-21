@@ -15,6 +15,8 @@ interface LibraryGraph {
 }
 
 const UNIVERSE_REQUEST_TIMEOUT_MS = 12000;
+const UNIVERSE_CACHE_TTL_MS = 60_000;
+let universeCache: { libraries: LibraryGraph[]; storedAt: number } | null = null;
 
 async function fetchUniverseJson<T>(path: string, attempts = 2): Promise<T> {
   let lastError: unknown = null;
@@ -33,6 +35,29 @@ async function fetchUniverseJson<T>(path: string, attempts = 2): Promise<T> {
   }
   if (lastError instanceof Error && lastError.name !== "AbortError") throw lastError;
   throw new Error(`连接超时（已自动重试，单次上限 ${UNIVERSE_REQUEST_TIMEOUT_MS / 1000} 秒）`);
+}
+
+async function fetchUniverseLibraries(): Promise<LibraryGraph[]> {
+  try {
+    const data = await fetchUniverseJson<{ libraries?: LibraryGraph[] }>("/api/knowledge?action=universe", 1);
+    if (Array.isArray(data.libraries)) return data.libraries;
+  } catch {
+    // Older backend versions are still readable while the aggregate endpoint
+    // rolls out, so production deployment can remain backward compatible.
+  }
+  const data = await fetchUniverseJson<{ maps?: MindMap[] }>("/api/knowledge?action=maps");
+  let failedGraphs = 0;
+  const graphs = await Promise.all(((data.maps || []) as MindMap[]).map(async (map) => {
+    try {
+      const graph = await fetchUniverseJson<{ nodes?: KnowledgeNode[]; edges?: KnowledgeEdge[]; entityGraph?: EntityGraph }>(`/api/knowledge?mapId=${encodeURIComponent(map.id)}`);
+      return { map, nodes: graph.nodes || [], edges: graph.edges || [], entityGraph: graph.entityGraph || { entities: [], relations: [] } } as LibraryGraph;
+    } catch {
+      failedGraphs += 1;
+      return { map, nodes: [], edges: [], entityGraph: { entities: [], relations: [] } } as LibraryGraph;
+    }
+  }));
+  if (failedGraphs === graphs.length && graphs.length > 0) throw new Error("知识宇宙加载失败");
+  return graphs;
 }
 
 interface GraphNode {
@@ -293,7 +318,7 @@ export function UniverseView() {
   const setCurrentMapId = useMindGrowStore((state) => state.setCurrentMapId);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const loadRequestRef = useRef(0);
-  const [libraries, setLibraries] = useState<LibraryGraph[]>([]);
+  const [libraries, setLibraries] = useState<LibraryGraph[]>(() => universeCache?.libraries || []);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [warning, setWarning] = useState("");
@@ -319,29 +344,22 @@ export function UniverseView() {
 
   useEffect(() => {
     const requestId = ++loadRequestRef.current;
-    setLoading(true);
+    const cached = universeCache && Date.now() - universeCache.storedAt < UNIVERSE_CACHE_TTL_MS
+      ? universeCache.libraries
+      : null;
+    if (cached) setLibraries(cached);
+    setLoading(!cached);
     setError("");
     setWarning("");
-    setLibraries([]);
+    if (!cached) setLibraries([]);
     setHoveredNode(null);
     setOffset({ x: 0, y: 0 });
     setZoom(0.82);
-    void fetchUniverseJson<{ maps?: MindMap[] }>("/api/knowledge?action=maps")
-      .then(async (data) => {
-        const maps = ((data.maps || []) as MindMap[]).filter((map) => scope === "all" || isMapForMode(map, scope));
-        let failedGraphs = 0;
-        const graphs = await Promise.all(maps.map(async (map) => {
-          try {
-            const graph = await fetchUniverseJson<{ nodes?: KnowledgeNode[]; edges?: KnowledgeEdge[]; entityGraph?: EntityGraph }>(`/api/knowledge?mapId=${encodeURIComponent(map.id)}`);
-            return { map, nodes: graph.nodes || [], edges: graph.edges || [], entityGraph: graph.entityGraph || { entities: [], relations: [] } } as LibraryGraph;
-          } catch (_) {
-            failedGraphs += 1;
-            return { map, nodes: [], edges: [], entityGraph: { entities: [], relations: [] } } as LibraryGraph;
-          }
-        }));
+    void fetchUniverseLibraries()
+      .then((graphs) => {
         if (requestId === loadRequestRef.current) {
+          universeCache = { libraries: graphs, storedAt: Date.now() };
           setLibraries(graphs);
-          if (failedGraphs > 0) setWarning(`${failedGraphs} 个知识库暂时未加载，可点击重试；其余数据已正常展示。`);
         }
       })
       .catch((reason) => {
@@ -350,9 +368,20 @@ export function UniverseView() {
       .finally(() => {
         if (requestId === loadRequestRef.current) setLoading(false);
       });
-  }, [scope, reloadToken]);
+  }, [reloadToken]);
 
-  const universeData = useMemo(() => buildUniverseData(libraries), [libraries]);
+  useEffect(() => {
+    setHoveredNode(null);
+    setOffset({ x: 0, y: 0 });
+    setZoom(0.82);
+  }, [scope]);
+
+  const visibleLibraries = useMemo(
+    () => libraries.filter((library) => scope === "all" || isMapForMode(library.map, scope)),
+    [libraries, scope],
+  );
+
+  const universeData = useMemo(() => buildUniverseData(visibleLibraries), [visibleLibraries]);
   const positionedNodes = useMemo(
     () => simulateForceLayout(universeData.nodes.map((node) => ({ ...node })), universeData.links),
     [universeData],
@@ -484,16 +513,16 @@ export function UniverseView() {
   const openHoveredLibrary = useCallback(() => {
     const node = positionedNodes.find((item) => item.id === hoveredNode);
     if (!node) return;
-    const library = libraries.find((item) => item.map.id === node.mapId);
+    const library = visibleLibraries.find((item) => item.map.id === node.mapId);
     if (library) {
       const mode: AppMode = isMapForMode(library.map, "article") ? "article" : isMapForMode(library.map, "meeting") ? "meeting" : "knowledge";
       setCurrentMode(mode);
     }
     setCurrentMapId(node.mapId);
     router.push("/");
-  }, [hoveredNode, positionedNodes, libraries, router, setCurrentMapId, setCurrentMode]);
+  }, [hoveredNode, positionedNodes, visibleLibraries, router, setCurrentMapId, setCurrentMode]);
 
-  const totalNodes = libraries.reduce((sum, library) => sum + library.nodes.length, 0);
+  const totalNodes = visibleLibraries.reduce((sum, library) => sum + library.nodes.length, 0);
   const modeConfig = scope === "all" ? { label: "统一知识", shortLabel: "全部" } : MODE_LIBRARY_CONFIG[scope];
 
   return (
@@ -515,7 +544,7 @@ export function UniverseView() {
 
       <div className="absolute left-4 top-16 z-30 max-w-[min(620px,calc(100%-2rem))] rounded-2xl border border-white/10 bg-black/55 p-4 backdrop-blur-xl">
         <div className="text-sm font-semibold text-white">🌌 {modeConfig.label}宇宙</div>
-        <div className="mt-1 text-xs leading-5 text-zinc-400">{libraries.length} 个知识库 · {totalNodes} 个节点 · <span data-testid="universe-cross-library-count" data-count={universeData.crossLibraryCount}>{universeData.crossLibraryCount}</span> 条跨库关系</div>
+        <div className="mt-1 text-xs leading-5 text-zinc-400">{visibleLibraries.length} 个知识库 · {totalNodes} 个节点 · <span data-testid="universe-cross-library-count" data-count={universeData.crossLibraryCount}>{universeData.crossLibraryCount}</span> 条跨库关系</div>
         <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-zinc-400">
           <span><i className="mr-1 inline-block h-px w-4 bg-white/25 align-middle" />库内层级</span>
           <span><i className="mr-1 inline-block h-px w-4 border-t border-dashed border-pink-300/70 align-middle" />概念关联</span>
@@ -538,7 +567,7 @@ export function UniverseView() {
         <button type="button" onClick={() => setReloadToken((value) => value + 1)} className="shrink-0 rounded-lg border border-amber-200/30 px-2 py-1 font-semibold hover:bg-white/10">重新加载</button>
       </div>}
 
-      {(loading || error || (!loading && libraries.length === 0)) && (
+      {(loading || error || (!loading && visibleLibraries.length === 0)) && (
         <div className="absolute inset-0 z-20 flex items-center justify-center bg-[#0a0a0f]/80 px-6">
           <div className="max-w-sm rounded-2xl border border-white/10 bg-zinc-950/90 p-6 text-center shadow-2xl">
             <div className="text-4xl">{error ? "⚠️" : loading ? "🪐" : "🌱"}</div>

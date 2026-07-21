@@ -241,6 +241,17 @@ function handleKnowledge(path: string, init?: RequestInit): Response {
     const action = url.searchParams.get("action");
     if (action === "maps") return json({ maps: state.maps });
     if (action === "categories") return json({ categories: state.categories });
+    if (action === "universe") {
+      return json({
+        libraries: state.maps.map((map) => ({
+          map,
+          nodes: state.nodes[map.id] || [],
+          edges: state.edges[map.id] || [],
+          entityGraph: state.entityGraphs[map.id] || { entities: [], relations: [] },
+        })),
+        generatedAt: now(),
+      });
+    }
     if (action === "search") {
       const query = (url.searchParams.get("q") || "").trim().slice(0, 100);
       if (!query) return json({ query, results: [], total: 0 });

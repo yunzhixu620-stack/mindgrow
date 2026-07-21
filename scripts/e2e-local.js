@@ -407,7 +407,9 @@ const revealAllStoredNodes = async (page) => {
   });
 
   await check("top product tabs switch both content and graph without cross-board residue", async () => {
+    const switchDurations = [];
     for (const [label, mode] of [["会议助手", "meeting"], ["知识碎片", "knowledge"], ["文章解析", "article"]]) {
+      const startedAt = Date.now();
       await clickByText(page, "button", label);
       await page.waitForSelector(`[data-testid="knowledge-graph-workspace"][data-graph-mode="${mode}"]`);
       await page.waitForFunction((expectedMode) => {
@@ -419,7 +421,11 @@ const revealAllStoredNodes = async (page) => {
         const description = map.description || "";
         return expectedMode === "meeting" ? description.includes("[MindGrow:meeting]") : expectedMode === "article" ? description.includes("[MindGrow:article]") : !description.includes("[MindGrow:");
       }, {}, mode);
+      switchDurations.push(Date.now() - startedAt);
     }
+    const slowestSwitch = Math.max(...switchDurations);
+    if (slowestSwitch > 1500) throw new Error(`Warm product switch took ${slowestSwitch}ms: ${switchDurations.join(", ")}`);
+    process.stdout.write(`  product switch latency: ${switchDurations.join("ms, ")}ms\n`);
     await clickByText(page, "button", "会议助手");
     await clickByText(page, "button", "知识碎片");
     await clickByText(page, "button", "文章解析");
@@ -542,8 +548,12 @@ const revealAllStoredNodes = async (page) => {
     if (headerCount !== 1) throw new Error(`Expected one application header, got ${headerCount}`);
     const hasBackButton = await page.evaluate(() => document.body.innerText.includes("返回当前知识库"));
     if (!hasBackButton) throw new Error("Universe navigation is incomplete");
+    const scopeSwitchStartedAt = Date.now();
     await clickByText(page, '[data-testid="universe-scope-switch"] button', "全部知识");
     await page.waitForSelector('[data-testid="universe-view"][data-universe-mode="all"]');
+    const scopeSwitchDuration = Date.now() - scopeSwitchStartedAt;
+    if (scopeSwitchDuration > 1000) throw new Error(`Universe scope switch took ${scopeSwitchDuration}ms`);
+    process.stdout.write(`  universe scope latency: ${scopeSwitchDuration}ms\n`);
     const allScopeText = await page.$eval('[data-testid="universe-view"]', (element) => element.textContent);
     if (!allScopeText.includes("文章") || !allScopeText.includes("会议")) throw new Error("Unified universe does not expose article and meeting knowledge");
     await clickByText(page, '[data-testid="universe-scope-switch"] button', "文章");
