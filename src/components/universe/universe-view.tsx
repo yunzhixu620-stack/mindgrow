@@ -2,63 +2,19 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { apiFetch } from "@/lib/client-api";
+import { useAuth } from "@/components/auth/auth-provider";
+import { IS_LOCAL_MODE } from "@/lib/client-api";
 import { isMapForMode, MODE_LIBRARY_CONFIG } from "@/lib/mode-libraries";
+import { tenantCache, tenantScopeKey, type TenantScope } from "@/lib/tenant-cache";
 import { useMindGrowStore, type AppMode } from "@/store/mindgrow-store";
-import type { EntityGraph, KnowledgeEdge, KnowledgeNode, MindMap } from "@/types";
+import {
+  fetchUniverseLibraries,
+  universeFallbackWarning,
+  type LibraryGraph,
+} from "@/components/universe/universe-loader";
 
-interface LibraryGraph {
-  map: MindMap;
-  nodes: KnowledgeNode[];
-  edges: KnowledgeEdge[];
-  entityGraph: EntityGraph;
-}
-
-const UNIVERSE_REQUEST_TIMEOUT_MS = 12000;
 const UNIVERSE_CACHE_TTL_MS = 60_000;
-let universeCache: { libraries: LibraryGraph[]; storedAt: number } | null = null;
-
-async function fetchUniverseJson<T>(path: string, attempts = 2): Promise<T> {
-  let lastError: unknown = null;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), UNIVERSE_REQUEST_TIMEOUT_MS);
-    try {
-      const response = await apiFetch(path, { signal: controller.signal });
-      if (!response.ok) throw new Error(`请求失败（HTTP ${response.status}）`);
-      return await response.json() as T;
-    } catch (error) {
-      lastError = error;
-    } finally {
-      window.clearTimeout(timer);
-    }
-  }
-  if (lastError instanceof Error && lastError.name !== "AbortError") throw lastError;
-  throw new Error(`连接超时（已自动重试，单次上限 ${UNIVERSE_REQUEST_TIMEOUT_MS / 1000} 秒）`);
-}
-
-async function fetchUniverseLibraries(): Promise<LibraryGraph[]> {
-  try {
-    const data = await fetchUniverseJson<{ libraries?: LibraryGraph[] }>("/api/knowledge?action=universe", 1);
-    if (Array.isArray(data.libraries)) return data.libraries;
-  } catch {
-    // Older backend versions are still readable while the aggregate endpoint
-    // rolls out, so production deployment can remain backward compatible.
-  }
-  const data = await fetchUniverseJson<{ maps?: MindMap[] }>("/api/knowledge?action=maps");
-  let failedGraphs = 0;
-  const graphs = await Promise.all(((data.maps || []) as MindMap[]).map(async (map) => {
-    try {
-      const graph = await fetchUniverseJson<{ nodes?: KnowledgeNode[]; edges?: KnowledgeEdge[]; entityGraph?: EntityGraph }>(`/api/knowledge?mapId=${encodeURIComponent(map.id)}`);
-      return { map, nodes: graph.nodes || [], edges: graph.edges || [], entityGraph: graph.entityGraph || { entities: [], relations: [] } } as LibraryGraph;
-    } catch {
-      failedGraphs += 1;
-      return { map, nodes: [], edges: [], entityGraph: { entities: [], relations: [] } } as LibraryGraph;
-    }
-  }));
-  if (failedGraphs === graphs.length && graphs.length > 0) throw new Error("知识宇宙加载失败");
-  return graphs;
-}
+const LOCAL_TENANT_SCOPE: TenantScope = { userId: "local-user", workspaceId: "local-workspace" };
 
 interface GraphNode {
   id: string;
@@ -313,12 +269,22 @@ function simulateForceLayout(nodes: GraphNode[], links: GraphLink[], iterations 
 
 export function UniverseView() {
   const router = useRouter();
+  const { user, currentWorkspace } = useAuth();
+  const tenantScope = useMemo<TenantScope | null>(() => {
+    if (IS_LOCAL_MODE) return LOCAL_TENANT_SCOPE;
+    if (!user?.id || !currentWorkspace?.id) return null;
+    return { userId: user.id, workspaceId: currentWorkspace.id };
+  }, [currentWorkspace?.id, user?.id]);
+  const activeTenantScopeKey = tenantScope ? tenantScopeKey(tenantScope) : null;
   const currentMode = useMindGrowStore((state) => state.currentMode);
   const setCurrentMode = useMindGrowStore((state) => state.setCurrentMode);
   const setCurrentMapId = useMindGrowStore((state) => state.setCurrentMapId);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const loadRequestRef = useRef(0);
-  const [libraries, setLibraries] = useState<LibraryGraph[]>(() => universeCache?.libraries || []);
+  const loadAbortRef = useRef<AbortController | null>(null);
+  const activeTenantScopeKeyRef = useRef<string | null>(activeTenantScopeKey);
+  activeTenantScopeKeyRef.current = activeTenantScopeKey;
+  const [libraries, setLibraries] = useState<LibraryGraph[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [warning, setWarning] = useState("");
@@ -344,8 +310,21 @@ export function UniverseView() {
 
   useEffect(() => {
     const requestId = ++loadRequestRef.current;
-    const cached = universeCache && Date.now() - universeCache.storedAt < UNIVERSE_CACHE_TTL_MS
-      ? universeCache.libraries
+    loadAbortRef.current?.abort();
+    if (!tenantScope) {
+      setLibraries([]);
+      setLoading(true);
+      setError("");
+      setWarning("");
+      return;
+    }
+    const requestedScopeKey = tenantScopeKey(tenantScope);
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
+    const cacheReadToken = tenantCache.beginUniverseRead(tenantScope);
+    const cachedEntry = tenantCache.getUniverseSnapshot(tenantScope);
+    const cached = cachedEntry && Date.now() - cachedEntry.storedAt < UNIVERSE_CACHE_TTL_MS
+      ? cachedEntry.snapshot.libraries
       : null;
     if (cached) setLibraries(cached);
     setLoading(!cached);
@@ -355,20 +334,28 @@ export function UniverseView() {
     setHoveredNode(null);
     setOffset({ x: 0, y: 0 });
     setZoom(0.82);
-    void fetchUniverseLibraries()
-      .then((graphs) => {
-        if (requestId === loadRequestRef.current) {
-          universeCache = { libraries: graphs, storedAt: Date.now() };
-          setLibraries(graphs);
-        }
+    void fetchUniverseLibraries(controller.signal)
+      .then((result) => {
+        if (requestId !== loadRequestRef.current || activeTenantScopeKeyRef.current !== requestedScopeKey) return;
+        if (!tenantCache.commitUniverseSnapshot(cacheReadToken, { libraries: result.libraries })) return;
+        const committed = tenantCache.getUniverseSnapshot(tenantScope);
+        if (committed) setLibraries(committed.snapshot.libraries);
+        setWarning(universeFallbackWarning(result));
       })
       .catch((reason) => {
-        if (requestId === loadRequestRef.current) setError(reason instanceof Error ? reason.message : "知识宇宙加载失败");
+        if (reason instanceof Error && reason.name === "AbortError") return;
+        if (requestId === loadRequestRef.current && activeTenantScopeKeyRef.current === requestedScopeKey) {
+          setError(reason instanceof Error ? reason.message : "知识宇宙加载失败");
+        }
       })
       .finally(() => {
-        if (requestId === loadRequestRef.current) setLoading(false);
+        if (requestId === loadRequestRef.current && activeTenantScopeKeyRef.current === requestedScopeKey) setLoading(false);
       });
-  }, [reloadToken]);
+    return () => {
+      controller.abort();
+      if (loadAbortRef.current === controller) loadAbortRef.current = null;
+    };
+  }, [reloadToken, tenantScope]);
 
   useEffect(() => {
     setHoveredNode(null);
