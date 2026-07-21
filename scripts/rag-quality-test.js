@@ -40,7 +40,9 @@ const {
   entityGraphQueryPlan,
   rankEntityGraphSeeds,
   relationStatusPenalty,
+  __citationInternal,
 } = require("../fc-proxy/index.js");
+const { verifiedIndexes, verifiedCitationPayload } = __citationInternal;
 
 const root = path.join(__dirname, "..", "tests", "fixtures", "papers");
 const fixtures = [
@@ -82,8 +84,8 @@ check("Supabase new API keys are not sent as invalid Bearer JWTs", () => {
 
 check("LLM Wiki entities and relations require direct source evidence", () => {
   const citations = [
-    { index: 1, quote: "RAG combines parametric memory with a non-parametric Wikipedia index." },
-    { index: 2, quote: "DPR is used as the dense retriever for RAG." },
+    { index: 1, quote: "RAG combines parametric memory with a non-parametric Wikipedia index.", content: "RAG combines parametric memory with a non-parametric Wikipedia index.", locator: "page 1", sourceType: "pdf" },
+    { index: 2, quote: "DPR is used as the dense retriever for RAG.", content: "DPR is used as the dense retriever for RAG.", locator: "page 2", sourceType: "pdf" },
   ];
   const graph = normalizedEntityGraph({
     entities: [
@@ -361,6 +363,25 @@ check("GraphRAG acronym fallback finds the correct entity node", () => {
 
 check("invalid citation ids are rejected", () => {
   assert.deepStrictEqual(normalizeCitationIndexes([1, 1, 999, -1, "2"], new Set([1, 2])), [1, 2]);
+});
+
+check("modified citation quotes are rejected before claims or graph rows can persist", () => {
+  const sourceChunks = [{
+    index: 1,
+    content: "DPR retrieves passages from Wikipedia.",
+    sourceType: "pdf",
+  }];
+  const modified = [{
+    index: 1,
+    quote: "DPR retrieves documents from Wikipedia.",
+    locator: "page 3",
+    sourceType: "pdf",
+  }];
+  const indexes = verifiedIndexes([1], new Set([1]), "DPR retrieval", modified, sourceChunks);
+  assert.deepStrictEqual(indexes, []);
+  assert.deepStrictEqual(verifiedCitationPayload(modified, sourceChunks, "pdf").citations, []);
+  const audit = citationAudit([{ text: "DPR retrieval", citationIndexes: indexes }], modified);
+  assert.strictEqual(audit.coverage, 0);
 });
 
 check("citation audit exposes unsupported claims instead of force-citing", () => {

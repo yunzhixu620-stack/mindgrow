@@ -2063,7 +2063,14 @@ function ensureMindMapSourceCoverage(mindMap, sourceText, citations, allowedInde
     missingFacts.forEach((fact) => {
       if (target.items.length >= 20) return;
       target.items.push(fact);
-      target.itemCitationIndexes.push(verifiedIndexes([], allowedIndexes, fact, evidence));
+      // These facts are copied directly from source text, so provenance can be
+      // assigned only when the whole fact is an exact chunk substring. This is
+      // deterministic source tracing, not the old bestCitationIndexes fuzzy
+      // fallback that could turn semantic similarity into a verified quote.
+      const exactSource = evidence.find((citation) => isVerbatimQuote(fact, citation && citation.content));
+      target.itemCitationIndexes.push(verifiedIndexes(
+        exactSource ? [exactSource.index] : [], allowedIndexes, fact, evidence, evidence,
+      ));
     });
   }
   const output = {
@@ -2099,7 +2106,7 @@ function normalizedEntityGraph(value, allowedIndexes, citations) {
     const typeValue = String((item && (item.type || item.entityType)) || 'other').trim().toLowerCase();
     const type = ENTITY_TYPES.has(typeValue) ? typeValue : 'other';
     const citationIndexes = verifiedIndexes(
-      item && item.citationIndexes, allowedIndexes, `${name} ${description}`, evidence,
+      item && item.citationIndexes, allowedIndexes, `${name} ${description}`, evidence, evidence,
     );
     const aliases = [...new Set((Array.isArray(item && item.aliases) ? item.aliases : [])
       .map((alias) => String(alias || '').trim().slice(0, 200)).filter((alias) => alias && alias !== name))].slice(0, 12);
@@ -2123,7 +2130,9 @@ function normalizedEntityGraph(value, allowedIndexes, citations) {
     const label = String((item && item.label) || type).trim().slice(0, 120);
     const rawStatus = String((item && item.status) || 'asserted').trim().toLowerCase();
     const status = RELATION_STATUSES.has(rawStatus) ? rawStatus : 'asserted';
-    const citationIndexes = normalizeCitationIndexes(item && item.citationIndexes, allowedIndexes);
+    const citationIndexes = verifiedIndexes(
+      item && item.citationIndexes, allowedIndexes, `${source} ${label} ${target}`, evidence, evidence,
+    );
     const confidence = Math.min(1, Math.max(0, Number(item && item.confidence) || 0.7));
     return { source, target, type, label, status, citationIndexes, confidence };
   }).filter((item) => entityIds.has(item.source) && entityIds.has(item.target) && item.source !== item.target
@@ -2549,10 +2558,48 @@ function bestCitationIndexes(text, citations, limit) {
     .map((item) => item.index);
 }
 
-function verifiedIndexes(value, allowedIndexes, claim, citations) {
+const CITATION_SOURCE_TYPES = new Set(['url', 'pdf', 'text', 'meeting']);
+
+function verifiedIndexes(value, allowedIndexes, _claim, citations, sourceChunks) {
   const provided = normalizeCitationIndexes(value, allowedIndexes);
-  if (provided.length) return provided;
-  return bestCitationIndexes(claim, citations, 2);
+  if (!provided.length) return [];
+  const evidenceByIndex = new Map((Array.isArray(citations) ? citations : [])
+    .map((item) => [Number(item && item.index), item]));
+  const chunksByIndex = new Map((Array.isArray(sourceChunks) ? sourceChunks : [])
+    .map((item) => [Number(item && item.index), item]));
+  return provided.filter((index) => {
+    const citation = evidenceByIndex.get(index);
+    const chunk = chunksByIndex.get(index);
+    if (!citation || !chunk) return false;
+    if (!String(citation.locator || '').trim()) return false;
+    if (!CITATION_SOURCE_TYPES.has(String(citation.sourceType || '').trim().toLowerCase())) return false;
+    return isVerbatimQuote(citation.quote, chunk.content);
+  });
+}
+
+function verifiedCitationPayload(sourceCitations, sourceChunks, expectedSourceType) {
+  const sourceType = String(expectedSourceType || '').trim().toLowerCase();
+  if (!CITATION_SOURCE_TYPES.has(sourceType)) return { citations: [], allowedIndexes: new Set() };
+  const chunksByIndex = new Map((Array.isArray(sourceChunks) ? sourceChunks : [])
+    .map((item) => [Number(item && item.index), item]));
+  const candidateIndexes = new Set(chunksByIndex.keys());
+  const verified = (Array.isArray(sourceCitations) ? sourceCitations : []).slice(0, 80).reduce((rows, citation) => {
+    const index = Number(citation && citation.index);
+    const chunk = chunksByIndex.get(index);
+    if (!Number.isInteger(index) || index < 1 || !chunk) return rows;
+    const citationType = String(citation && citation.sourceType || '').trim().toLowerCase();
+    const chunkType = String(chunk && chunk.sourceType || '').trim().toLowerCase();
+    if (citationType !== sourceType || chunkType !== sourceType) return rows;
+    if (!verifiedIndexes([index], candidateIndexes, '', [citation], [chunk]).length) return rows;
+    rows.push({
+      ...citation,
+      index,
+      content: String(chunk.content || ''),
+      sourceType,
+    });
+    return rows;
+  }, []);
+  return { citations: verified, allowedIndexes: new Set(verified.map((item) => item.index)) };
 }
 
 function evidencePrompt(citations) {
@@ -2847,33 +2894,33 @@ async function handleMeetingTool(body) {
     }
   }
   let mindMap = normalizedMindMap(parsed.mindMap, title, allowedIndexes) || fallbackMindMap(title, transcript);
-  mindMap.rootCitationIndexes = verifiedIndexes(mindMap.rootCitationIndexes, allowedIndexes, `${mindMap.root} ${mindMap.rootDesc}`, citations);
+  mindMap.rootCitationIndexes = verifiedIndexes(mindMap.rootCitationIndexes, allowedIndexes, `${mindMap.root} ${mindMap.rootDesc}`, citations, citations);
   mindMap.children = (mindMap.children || []).map((child) => ({
     ...child,
-    citationIndexes: verifiedIndexes(child.citationIndexes, allowedIndexes, `${child.topic} ${child.desc || ''}`, citations),
+    citationIndexes: verifiedIndexes(child.citationIndexes, allowedIndexes, `${child.topic} ${child.desc || ''}`, citations, citations),
     itemCitationIndexes: (child.items || []).map((item, index) => verifiedIndexes(
-      child.itemCitationIndexes && child.itemCitationIndexes[index], allowedIndexes, item, citations,
+      child.itemCitationIndexes && child.itemCitationIndexes[index], allowedIndexes, item, citations, citations,
     )),
   }));
   const meetingCoverage = ensureMindMapSourceCoverage(mindMap, transcript, citations, allowedIndexes);
   mindMap = meetingCoverage.mindMap;
   const citedText = (item) => {
     const text = String(typeof item === 'string' ? item : (item && item.text) || '').trim().slice(0, 1200);
-    return { text, citationIndexes: verifiedIndexes(item && item.citationIndexes, allowedIndexes, text, citations) };
+    return { text, citationIndexes: verifiedIndexes(item && item.citationIndexes, allowedIndexes, text, citations, citations) };
   };
   const decisions = (Array.isArray(parsed.decisions) ? parsed.decisions : []).slice(0, 30).map(citedText).filter((item) => item.text);
   const risks = (Array.isArray(parsed.risks) ? parsed.risks : []).slice(0, 30).map(citedText).filter((item) => item.text);
   const openQuestions = (Array.isArray(parsed.openQuestions) ? parsed.openQuestions : []).slice(0, 30).map(citedText).filter((item) => item.text);
   const topics = (Array.isArray(parsed.topics) ? parsed.topics : []).slice(0, 20).map((item) => ({
     title: String((item && item.title) || '').trim().slice(0, 500),
-    citationIndexes: verifiedIndexes(item && item.citationIndexes, allowedIndexes, item && item.title, citations),
+    citationIndexes: verifiedIndexes(item && item.citationIndexes, allowedIndexes, item && item.title, citations, citations),
     details: (Array.isArray(item && item.details) ? item.details : []).slice(0, 20).map(citedText).filter((detail) => detail.text),
   })).filter((item) => item.title);
   const actionItems = (Array.isArray(parsed.actionItems) ? parsed.actionItems : []).slice(0, 50).map((item) => {
     const task = String((item && item.task) || '').trim().slice(0, 1000);
     const owner = String((item && item.owner) || '').trim().slice(0, 200);
     const explicitDue = String((item && item.due) || '').trim().slice(0, 200);
-    const citationIndexes = verifiedIndexes(item && item.citationIndexes, allowedIndexes, `${task} ${owner} ${explicitDue}`, citations);
+    const citationIndexes = verifiedIndexes(item && item.citationIndexes, allowedIndexes, `${task} ${owner} ${explicitDue}`, citations, citations);
     const citedEvidence = citationIndexes.map((index) => String((citations[index - 1] && citations[index - 1].quote) || '')).join(' ');
     const dueMatch = citedEvidence.match(/(?:截止|期限(?:为|至)?|due(?:\s+on)?)[：:\s]*([0-9]{4}[-/.年][0-9]{1,2}(?:[-/.月][0-9]{1,2}日?)?)/i);
     return {
@@ -2885,7 +2932,7 @@ async function handleMeetingTool(body) {
     };
   }).filter((item) => item.task);
   const summary = String(parsed.summary || mindMap.rootDesc || '').slice(0, 3000);
-  const summaryCitationIndexes = verifiedIndexes(parsed.summaryCitationIndexes, allowedIndexes, summary, citations);
+  const summaryCitationIndexes = verifiedIndexes(parsed.summaryCitationIndexes, allowedIndexes, summary, citations, citations);
   const audit = citationAudit([
     { text: summary, citationIndexes: summaryCitationIndexes },
     ...decisions, ...risks, ...openQuestions,
@@ -2991,15 +3038,15 @@ async function handleArticleTool(body) {
   stage = 'RESPONSE_NORMALIZATION';
   const inferredTitle = String(parsed.title || content.split('\n')[0] || '文章解析').slice(0, 200);
   let mindMap = normalizedMindMap(parsed.mindMap, inferredTitle, allowedIndexes) || fallbackMindMap(inferredTitle, content);
-  mindMap.rootCitationIndexes = verifiedIndexes(mindMap.rootCitationIndexes, allowedIndexes, `${mindMap.root} ${mindMap.rootDesc}`, citations);
+  mindMap.rootCitationIndexes = verifiedIndexes(mindMap.rootCitationIndexes, allowedIndexes, `${mindMap.root} ${mindMap.rootDesc}`, citations, citations);
   mindMap.children = (mindMap.children || []).map((child) => {
-    const childIndexes = verifiedIndexes(child.citationIndexes, allowedIndexes, `${child.topic} ${child.desc || ''}`, citations);
+    const childIndexes = verifiedIndexes(child.citationIndexes, allowedIndexes, `${child.topic} ${child.desc || ''}`, citations, citations);
     return {
       ...child,
       citationIndexes: childIndexes,
       itemCitationIndexes: (child.items || []).map((item, itemIndex) => {
         const existing = child.itemCitationIndexes && child.itemCitationIndexes[itemIndex];
-        return verifiedIndexes(existing, allowedIndexes, item, citations);
+        return verifiedIndexes(existing, allowedIndexes, item, citations, citations);
       }),
     };
   });
@@ -3009,7 +3056,7 @@ async function handleArticleTool(body) {
   mindMap = articleCoverage.mindMap;
   const keyPoints = normalizedCitedTexts(parsed.keyPoints, allowedIndexes).map((item) => ({
     ...item,
-    citationIndexes: verifiedIndexes(item.citationIndexes, allowedIndexes, item.text, citations),
+    citationIndexes: verifiedIndexes(item.citationIndexes, allowedIndexes, item.text, citations, citations),
   }));
   const argumentsList = (Array.isArray(parsed.arguments) ? parsed.arguments : []).slice(0, 40).map((item) => ({
     claim: String((item && item.claim) || '').trim().slice(0, 1000),
@@ -3017,10 +3064,10 @@ async function handleArticleTool(body) {
     citationIndexes: normalizeCitationIndexes(item && item.citationIndexes, allowedIndexes),
   })).filter((item) => item.claim).map((item) => ({
     ...item,
-    citationIndexes: verifiedIndexes(item.citationIndexes, allowedIndexes, `${item.claim} ${item.evidence}`, citations),
+    citationIndexes: verifiedIndexes(item.citationIndexes, allowedIndexes, `${item.claim} ${item.evidence}`, citations, citations),
   }));
   const summary = String(parsed.summary || mindMap.rootDesc || '').slice(0, 4000);
-  const summaryCitationIndexes = verifiedIndexes(parsed.summaryCitationIndexes, allowedIndexes, summary, citations);
+  const summaryCitationIndexes = verifiedIndexes(parsed.summaryCitationIndexes, allowedIndexes, summary, citations, citations);
   const audit = citationAudit([
     { text: summary, citationIndexes: summaryCitationIndexes },
     ...keyPoints,
@@ -3592,18 +3639,22 @@ async function createGraph(workspaceId, mapId, mindMap, source, document, source
   if (edges.length) await supabaseRequest('POST', 'edges', edges);
   let citationRows = [];
   let sourceDocument = null;
+  let verifiedSourceCitations = [];
+  let verifiedEntityGraph = { entities: [], relations: [] };
   let chunkIndex = { count: 0, embedded: 0, status: 'not_requested' };
   let entityIndex = { entities: 0, relations: 0, evidence: 0, status: 'not_requested' };
   if (document && Array.isArray(sourceCitations) && sourceCitations.length > 0) {
-    const allowedTypes = new Set(['url', 'pdf', 'text', 'meeting']);
-    const contentHash = canonicalDocumentHash(
-      Array.isArray(documentChunks) && documentChunks.length ? documentChunks : sourceCitations,
-    );
+    const sourceChunksForWrite = Array.isArray(documentChunks) && documentChunks.length ? documentChunks : sourceCitations;
+    const documentType = CITATION_SOURCE_TYPES.has(String(document.sourceType || '').toLowerCase())
+      ? String(document.sourceType).toLowerCase() : 'text';
+    const verifiedPayload = verifiedCitationPayload(sourceCitations, sourceChunksForWrite, documentType);
+    verifiedSourceCitations = verifiedPayload.citations;
+    verifiedEntityGraph = normalizedEntityGraph(entityGraph, verifiedPayload.allowedIndexes, verifiedSourceCitations);
+    const contentHash = canonicalDocumentHash(sourceChunksForWrite);
     const existingDocuments = await supabaseRequest('GET', `source_documents?workspace_id=eq.${workspace}&map_id=eq.${map}&content_hash=eq.${contentHash}&select=id&limit=1`);
     const existingDocument = Array.isArray(existingDocuments) ? existingDocuments[0] : null;
     const documentId = existingDocument && existingDocument.id ? existingDocument.id : `doc_${seed}`;
-    const documentType = allowedTypes.has(document.sourceType) ? document.sourceType : 'text';
-    const citationByIndex = new Map(sourceCitations.slice(0, 80).map((item) => [Number.parseInt(item.index, 10), item]));
+    const citationByIndex = new Map(verifiedSourceCitations.map((item) => [item.index, item]));
     sourceDocument = {
       id: documentId,
       workspace_id: workspaceId,
@@ -3645,7 +3696,7 @@ async function createGraph(workspaceId, mapId, mindMap, source, document, source
           workspaceId,
           mapId,
           documentId,
-          Array.isArray(documentChunks) && documentChunks.length ? documentChunks : sourceCitations,
+          sourceChunksForWrite,
         );
         await supabaseRequest('PATCH', `source_documents?workspace_id=eq.${workspace}&id=eq.${encodeURIComponent(documentId)}`, {
           chunk_count: chunkIndex.count,
@@ -3665,10 +3716,10 @@ async function createGraph(workspaceId, mapId, mindMap, source, document, source
       throw error;
     }
   }
-  if (sourceDocument && entityGraph && Array.isArray(entityGraph.entities) && entityGraph.entities.length > 0) {
+  if (sourceDocument && verifiedEntityGraph.entities.length > 0) {
     try {
       entityIndex = await createEntityGraphRows(
-        workspaceId, mapId, sourceDocument.id, entityGraph, sourceCitations,
+        workspaceId, mapId, sourceDocument.id, verifiedEntityGraph, verifiedSourceCitations,
       );
     } catch (error) {
       entityIndex = { entities: 0, relations: 0, evidence: 0, status: 'migration_required' };
@@ -4139,7 +4190,7 @@ if (require.main === module) {
 }
 
 module.exports = {
-  __citationInternal: { normalizeForExactMatch, isVerbatimQuote },
+  __citationInternal: { normalizeForExactMatch, isVerbatimQuote, verifiedIndexes, verifiedCitationPayload },
   buildDocumentChunks,
   buildMeetingCitations,
   fallbackMeetingAnalysis,
