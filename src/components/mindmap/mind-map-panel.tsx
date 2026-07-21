@@ -17,13 +17,14 @@ import ReactFlow, {
   NodeProps,
   Handle,
   ReactFlowInstance,
+  MarkerType,
 } from "reactflow";
 import "reactflow/dist/style.css";
 import { useMindGrowStore } from "@/store/mindgrow-store";
-import { KnowledgeNode, KnowledgeEdge } from "@/types";
+import { EntityGraph, GraphEntity, KnowledgeNode, KnowledgeEdge } from "@/types";
 import { apiFetch } from "@/lib/client-api";
 import { MODE_LIBRARY_CONFIG } from "@/lib/mode-libraries";
-import { entityGraphToKnowledgeGraph, isEntityViewNode } from "@/lib/entity-graph";
+import { entityGraphToKnowledgeGraph, entityViewNodeId, isEntityViewNode } from "@/lib/entity-graph";
 
 // ============================================================
 // Branch color palette
@@ -35,6 +36,18 @@ const BRANCH_COLORS = [
 
 const DISPLAY_OVERVIEW_PREFIX = "__mindgrow_overview__";
 const MAX_UNGROUPED_ROOTS = 5;
+
+const ENTITY_TYPE_LABELS: Record<string, string> = {
+  person: "人物", organization: "组织", model: "模型", method: "方法",
+  dataset: "数据集", metric: "指标", task: "任务", event: "事件",
+  decision: "决策", time: "时间", concept: "概念", claim: "声明", other: "实体",
+};
+
+const ENTITY_TYPE_COLORS: Record<string, string> = {
+  person: "#f59e0b", organization: "#f97316", model: "#38bdf8", method: "#22d3a7",
+  dataset: "#a78bfa", metric: "#818cf8", task: "#06b6d4", event: "#fb7185",
+  decision: "#f472b6", time: "#94a3b8", concept: "#60a5fa", claim: "#e879f9", other: "#64748b",
+};
 
 function isDisplayOverviewNode(nodeId: string) {
   return nodeId.startsWith(DISPLAY_OVERVIEW_PREFIX);
@@ -224,7 +237,183 @@ function MindGrowNode({ data, selected }: NodeProps) {
   );
 }
 
-const nodeTypes = { mindGrowNode: MindGrowNode };
+function EntityNode({ data, selected }: NodeProps) {
+  const entity = data.entity as GraphEntity;
+  const color = ENTITY_TYPE_COLORS[entity.entityType] || ENTITY_TYPE_COLORS.other;
+  const dimmed = data.dimmed as boolean;
+  const neighborCount = data.neighborCount as number;
+  return (
+    <div
+      className={`group relative flex h-[86px] w-[86px] cursor-pointer items-center justify-center rounded-full border text-center transition-all duration-200 ${selected ? "scale-110" : "hover:scale-105"}`}
+      style={{
+        color: "#f8fafc",
+        borderColor: selected ? color : `${color}aa`,
+        background: `radial-gradient(circle at 35% 30%, ${color}38, #0b1220 72%)`,
+        boxShadow: selected ? `0 0 28px ${color}55` : `0 0 12px ${color}18`,
+        opacity: dimmed ? 0.18 : 1,
+      }}
+      data-testid="entity-network-node"
+    >
+      <Handle type="target" position={Position.Top} className="!h-1.5 !w-1.5 !border-0 !bg-transparent" />
+      <div className="px-2">
+        <div className="line-clamp-2 break-words text-[11px] font-semibold leading-tight">{entity.canonicalName}</div>
+        <div className="mt-1 text-[8px]" style={{ color }}>{ENTITY_TYPE_LABELS[entity.entityType] || entity.entityType}</div>
+      </div>
+      <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full border border-white/10 bg-[#09090b] px-1 text-[8px] text-zinc-400">{neighborCount}</span>
+      <div className="pointer-events-none absolute left-[calc(100%+12px)] top-1/2 z-[120] hidden w-72 -translate-y-1/2 rounded-2xl border border-violet-300/25 bg-[#111116]/95 p-4 text-left shadow-2xl backdrop-blur-xl group-hover:block" data-testid="entity-hover-card">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold text-white">{entity.canonicalName}</div>
+            <div className="mt-1 text-[10px] font-medium" style={{ color }}>{ENTITY_TYPE_LABELS[entity.entityType] || entity.entityType}</div>
+          </div>
+          <div className="rounded-full border border-white/10 px-2 py-1 text-[9px] text-zinc-400">{Math.round(entity.confidence * 100)}%</div>
+        </div>
+        <p className="mt-3 text-[11px] leading-5 text-zinc-300">{entity.description || "当前来源只识别到实体名称，尚未提供明确概念解释。"}</p>
+        {entity.aliases.length > 0 && <p className="mt-2 text-[10px] text-zinc-500">别名：{entity.aliases.join("、")}</p>}
+        <div className="mt-3 border-t border-white/10 pt-2 text-[10px] text-violet-200">{neighborCount} 个直接关系 · {entity.citations.length} 条原文引用</div>
+        {entity.citations[0] && <p className="mt-2 line-clamp-3 text-[10px] leading-4 text-zinc-400">[{entity.citations[0].index}] {entity.citations[0].locator || "原文"}：{entity.citations[0].quote}</p>}
+      </div>
+      <Handle type="source" position={Position.Bottom} className="!h-1.5 !w-1.5 !border-0 !bg-transparent" />
+    </div>
+  );
+}
+
+const nodeTypes = { mindGrowNode: MindGrowNode, entityNode: EntityNode };
+
+function entityForcePositions(entityIds: string[], relations: EntityGraph["relations"]) {
+  const positions = new Map<string, { x: number; y: number }>();
+  const count = Math.max(1, entityIds.length);
+  const radius = Math.max(220, Math.min(620, count * 24));
+  entityIds.forEach((id, index) => {
+    const angle = (index / count) * Math.PI * 2 - Math.PI / 2;
+    positions.set(id, { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
+  });
+  for (let iteration = 0; iteration < 110; iteration += 1) {
+    const movement = new Map(entityIds.map((id) => [id, { x: 0, y: 0 }]));
+    for (let leftIndex = 0; leftIndex < entityIds.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < entityIds.length; rightIndex += 1) {
+        const leftId = entityIds[leftIndex];
+        const rightId = entityIds[rightIndex];
+        const left = positions.get(leftId)!;
+        const right = positions.get(rightId)!;
+        const dx = left.x - right.x || 0.1;
+        const dy = left.y - right.y || 0.1;
+        const distanceSquared = Math.max(2500, dx * dx + dy * dy);
+        const force = 14500 / distanceSquared;
+        const distance = Math.sqrt(distanceSquared);
+        movement.get(leftId)!.x += (dx / distance) * force;
+        movement.get(leftId)!.y += (dy / distance) * force;
+        movement.get(rightId)!.x -= (dx / distance) * force;
+        movement.get(rightId)!.y -= (dy / distance) * force;
+      }
+    }
+    relations.forEach((relation) => {
+      const source = positions.get(relation.sourceId);
+      const target = positions.get(relation.targetId);
+      if (!source || !target) return;
+      const dx = target.x - source.x;
+      const dy = target.y - source.y;
+      const distance = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+      const force = (distance - 210) * 0.0028;
+      movement.get(relation.sourceId)!.x += (dx / distance) * force;
+      movement.get(relation.sourceId)!.y += (dy / distance) * force;
+      movement.get(relation.targetId)!.x -= (dx / distance) * force;
+      movement.get(relation.targetId)!.y -= (dy / distance) * force;
+    });
+    entityIds.forEach((id) => {
+      const position = positions.get(id)!;
+      const delta = movement.get(id)!;
+      position.x = (position.x + delta.x) * 0.994;
+      position.y = (position.y + delta.y) * 0.994;
+    });
+  }
+  return positions;
+}
+
+function strongEntityRelations(relations: EntityGraph["relations"], limit = 3) {
+  const degree = new Map<string, number>();
+  return [...relations]
+    .filter((relation) => relation.confidence >= 0.68 && relation.citations.length > 0)
+    .sort((left, right) => right.confidence - left.confidence)
+    .filter((relation) => {
+      const sourceDegree = degree.get(relation.sourceId) || 0;
+      const targetDegree = degree.get(relation.targetId) || 0;
+      if (sourceDegree >= limit || targetDegree >= limit) return false;
+      degree.set(relation.sourceId, sourceDegree + 1);
+      degree.set(relation.targetId, targetDegree + 1);
+      return true;
+    });
+}
+
+function buildEntityNetworkGraph(
+  entityGraph: EntityGraph,
+  mode: "global" | "local" | "evidence",
+  selectedEntityId: string | null,
+  hoveredEntityId: string | null,
+  hoveredRelationId: string | null,
+): { nodes: Node[]; edges: Edge[]; branchMap: Map<string, number> } {
+  const selectedRawId = entityGraph.entities.find((entity) => entityViewNodeId(entity.id) === selectedEntityId)?.id || null;
+  let relations = mode === "evidence"
+    ? entityGraph.relations.filter((relation) => relation.citations.length > 0 && relation.confidence >= 0.55)
+    : strongEntityRelations(entityGraph.relations);
+  let entities = entityGraph.entities;
+  if (mode === "local" && selectedRawId) {
+    relations = entityGraph.relations.filter((relation) => relation.sourceId === selectedRawId || relation.targetId === selectedRawId);
+    const ids = new Set([selectedRawId]);
+    relations.forEach((relation) => { ids.add(relation.sourceId); ids.add(relation.targetId); });
+    entities = entityGraph.entities.filter((entity) => ids.has(entity.id));
+  }
+  const visibleIds = new Set(entities.map((entity) => entity.id));
+  relations = relations.filter((relation) => visibleIds.has(relation.sourceId) && visibleIds.has(relation.targetId));
+  const positions = entityForcePositions(entities.map((entity) => entity.id), relations);
+  if (mode === "local" && selectedRawId && positions.has(selectedRawId)) positions.set(selectedRawId, { x: 0, y: 0 });
+  const neighbors = new Map<string, Set<string>>();
+  relations.forEach((relation) => {
+    const source = neighbors.get(relation.sourceId) || new Set<string>(); source.add(relation.targetId); neighbors.set(relation.sourceId, source);
+    const target = neighbors.get(relation.targetId) || new Set<string>(); target.add(relation.sourceId); neighbors.set(relation.targetId, target);
+  });
+  const hoveredRawId = entityGraph.entities.find((entity) => entityViewNodeId(entity.id) === hoveredEntityId)?.id || null;
+  const highlightedIds = hoveredRawId ? new Set<string>([hoveredRawId]) : null;
+  if (hoveredRawId && highlightedIds) neighbors.get(hoveredRawId)?.forEach((id) => highlightedIds.add(id));
+  const nodes: Node[] = entities.map((entity) => {
+    const position = positions.get(entity.id) || { x: 0, y: 0 };
+    return {
+      id: entityViewNodeId(entity.id),
+      type: "entityNode",
+      position: { x: position.x - 43, y: position.y - 43 },
+      selected: entityViewNodeId(entity.id) === selectedEntityId,
+      data: {
+        entity,
+        neighborCount: neighbors.get(entity.id)?.size || 0,
+        dimmed: Boolean(highlightedIds && !highlightedIds.has(entity.id)),
+      },
+    };
+  });
+  const edges: Edge[] = relations.map((relation) => {
+    const edgeId = entityViewNodeId(relation.id);
+    const active = hoveredRelationId === edgeId || selectedEntityId === entityViewNodeId(relation.sourceId) || selectedEntityId === entityViewNodeId(relation.targetId) || hoveredRawId === relation.sourceId || hoveredRawId === relation.targetId;
+    const dimmed = Boolean(hoveredRawId && hoveredRawId !== relation.sourceId && hoveredRawId !== relation.targetId);
+    return {
+      id: edgeId,
+      source: entityViewNodeId(relation.sourceId),
+      target: entityViewNodeId(relation.targetId),
+      type: "default",
+      label: active ? relation.label : undefined,
+      labelStyle: active ? { fill: "#ddd6fe", fontSize: 9, fontWeight: 600 } : undefined,
+      labelBgStyle: active ? { fill: "#111116", fillOpacity: 0.94 } : undefined,
+      labelBgPadding: active ? [5, 3] as [number, number] : undefined,
+      labelBgBorderRadius: active ? 6 : undefined,
+      markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12, color: relation.status === "negated" ? "#ef4444" : "#a78bfa" },
+      style: {
+        stroke: relation.status === "negated" ? "#ef4444" : active ? "#c4b5fd" : "#8b5cf6",
+        strokeWidth: active ? 1.8 : 0.9,
+        strokeDasharray: relation.status === "proposed" ? "5 5" : undefined,
+        opacity: dimmed ? 0.06 : active ? 0.95 : 0.32,
+      },
+    };
+  });
+  return { nodes, edges, branchMap: new Map<string, number>() };
+}
 
 function getOutlineCollapsedNodes(dbNodes: KnowledgeNode[], dbEdges: KnowledgeEdge[]) {
   const childrenOf = new Map<string, string[]>();
@@ -646,6 +835,10 @@ export function MindMapPanel() {
   const [isMobile, setIsMobile] = useState(false);
   const [viewMode, setViewMode] = useState<"outline" | "all" | "custom">("all");
   const [graphLayer, setGraphLayer] = useState<"concept" | "entity">("concept");
+  const [entityViewMode, setEntityViewMode] = useState<"global" | "local" | "evidence">("global");
+  const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
+  const [hoveredEntityId, setHoveredEntityId] = useState<string | null>(null);
+  const [hoveredRelationId, setHoveredRelationId] = useState<string | null>(null);
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
   const [selectedRelationId, setSelectedRelationId] = useState<string | null>(null);
   const [autoShowNodeDetails, setAutoShowNodeDetails] = useState(true);
@@ -686,6 +879,9 @@ export function MindMapPanel() {
     if (graphLayer === "entity" && entityDisplayGraph.nodes.length === 0) setGraphLayer("concept");
     if (graphLayer === "concept" && storeNodes.length === 0 && entityDisplayGraph.nodes.length > 0) setGraphLayer("entity");
     setSelectedRelationId(null);
+    setSelectedEntityId(null);
+    setHoveredEntityId(null);
+    setHoveredRelationId(null);
   }, [currentMapId, entityDisplayGraph.nodes.length, graphLayer, storeNodes.length]);
 
   // Search handler
@@ -788,13 +984,15 @@ export function MindMapPanel() {
   }, [currentMapId, activeNodes, activeEdges, displayHierarchy, isMobile, showingEntityGraph, graphLayer, setCollapsedNodes, refitGraph]);
 
   const graph = useMemo(
-    () => buildGraph(
-      displayHierarchy.nodes, displayHierarchy.edges, highlightedNodeId, searchResults, direction, sv,
-      collapsedNodes, focusedNodeId,
-      detailMode === "card" || (detailMode === "auto" && autoShowNodeDetails),
-      isMobile, handleToggleBranch, handleFocusBranch,
-    ),
-    [displayHierarchy, highlightedNodeId, searchResults, direction, sv, collapsedNodes, focusedNodeId, detailMode, autoShowNodeDetails, isMobile, handleToggleBranch, handleFocusBranch],
+    () => showingEntityGraph
+      ? buildEntityNetworkGraph(entityGraph, entityViewMode, selectedEntityId, hoveredEntityId, hoveredRelationId)
+      : buildGraph(
+        displayHierarchy.nodes, displayHierarchy.edges, highlightedNodeId, searchResults, direction, sv,
+        collapsedNodes, focusedNodeId,
+        detailMode === "card" || (detailMode === "auto" && autoShowNodeDetails),
+        isMobile, handleToggleBranch, handleFocusBranch,
+      ),
+    [showingEntityGraph, entityGraph, entityViewMode, selectedEntityId, hoveredEntityId, hoveredRelationId, displayHierarchy, highlightedNodeId, searchResults, direction, sv, collapsedNodes, focusedNodeId, detailMode, autoShowNodeDetails, isMobile, handleToggleBranch, handleFocusBranch],
   );
 
   const visibleStoredNodeCount = Math.max(0, graph.nodes.length - displayHierarchy.syntheticNodeCount);
@@ -806,6 +1004,11 @@ export function MindMapPanel() {
   const relationCount = activeEdges.filter((edge) => edge.relation !== "contains").length;
   const citedNodeCount = activeNodes.filter((node) => (node.citations || []).length > 0).length;
   const selectedRelation = selectedRelationId ? activeEdges.find((edge) => edge.id === selectedRelationId) || null : null;
+  const hoveredRelation = hoveredRelationId ? activeEdges.find((edge) => edge.id === hoveredRelationId) || null : null;
+  const explainedRelation = selectedRelation || hoveredRelation;
+  const selectedEntity = selectedEntityId
+    ? entityGraph.entities.find((entity) => entityViewNodeId(entity.id) === selectedEntityId) || null
+    : null;
 
   const [flowNodes, setFlowNodes, onNodesChange] = useNodesState(graph.nodes);
   const [flowEdges, setFlowEdges, onEdgesChange] = useEdgesState(graph.edges);
@@ -1118,6 +1321,7 @@ export function MindMapPanel() {
                   const useOutline = storeNodes.length >= (isMobile ? 8 : 14);
                   setGraphLayer("concept");
                   setSelectedRelationId(null);
+                  setSelectedEntityId(null);
                   setCollapsedNodes(useOutline ? getOutlineCollapsedNodes(conceptHierarchy.nodes, conceptHierarchy.edges) : new Set<string>());
                   setViewMode(useOutline ? "outline" : "all");
                   refitGraph();
@@ -1127,7 +1331,7 @@ export function MindMapPanel() {
               <button
                 type="button"
                 disabled={entityGraph.entities.length === 0}
-                onClick={() => { setGraphLayer("entity"); setSelectedRelationId(null); setCollapsedNodes(new Set<string>()); setViewMode("all"); refitGraph(); }}
+                onClick={() => { setGraphLayer("entity"); setEntityViewMode("global"); setSelectedEntityId(null); setSelectedRelationId(null); setCollapsedNodes(new Set<string>()); setViewMode("all"); refitGraph(); }}
                 className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-all disabled:cursor-not-allowed disabled:opacity-35 ${graphLayer === "entity" ? "bg-violet-400 text-black" : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"}`}
                 title={entityGraph.entities.length ? "按实体与有向关系查看，可点击关系核对原文" : "当前知识库还没有可溯源实体；重新解析并保存文章或会议后生成"}
               >实体图 {entityGraph.entities.length}</button>
@@ -1135,6 +1339,18 @@ export function MindMapPanel() {
             <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/5 px-3 py-2 text-[10px] font-medium text-emerald-200" title="新增内容会成为节点；层级、关联与冲突关系会持续连接旧知识">
               🌱 生长中 · {activeNodes.length} 节点 · {activeEdges.length} 条连接{relationCount > 0 ? ` · ${relationCount} 条${showingEntityGraph ? "有向" : "语义"}关系` : ""}{citedNodeCount > 0 ? ` · ${citedNodeCount} 个可追溯节点` : ""}
             </div>
+            {showingEntityGraph && <div className="flex gap-0 rounded-xl border border-violet-400/20 bg-[var(--card)] p-1" data-testid="entity-view-modes">
+              {(["global", "local", "evidence"] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  disabled={mode === "local" && !selectedEntityId}
+                  onClick={() => { setEntityViewMode(mode); if (mode === "global") setSelectedEntityId(null); refitGraph(); }}
+                  className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-all disabled:cursor-not-allowed disabled:opacity-35 ${entityViewMode === mode ? "bg-violet-400 text-black" : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"}`}
+                  title={mode === "global" ? "显示高置信度强关系" : mode === "local" ? "只看选中实体的一跳关系" : "只看带原文引用的关系"}
+                >{mode === "global" ? "全局强关系" : mode === "local" ? "一跳关系" : "证据链"}</button>
+              ))}
+            </div>}
             {!showingEntityGraph && <div className="flex gap-0 bg-[var(--card)] border border-[var(--border)] rounded-xl p-1">
               <button
                 onClick={showOutline}
@@ -1372,17 +1588,36 @@ export function MindMapPanel() {
         </div>
       )}
 
-      {selectedRelation && (selectedRelation.citations || []).length > 0 && (
+      {showingEntityGraph && selectedEntity && (
+        <aside className="absolute right-4 top-28 z-[70] w-[min(340px,calc(100%-24px))] rounded-2xl border border-sky-400/25 bg-[var(--card)]/95 p-4 shadow-2xl backdrop-blur" data-testid="entity-detail-panel">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-sky-300">实体概念解释</div>
+              <h3 className="mt-1 text-sm font-semibold text-[var(--foreground)]">{selectedEntity.canonicalName}</h3>
+              <div className="mt-1 text-[10px] text-sky-200">{ENTITY_TYPE_LABELS[selectedEntity.entityType] || selectedEntity.entityType} · 置信度 {Math.round(selectedEntity.confidence * 100)}%</div>
+            </div>
+            <button type="button" onClick={() => { setSelectedEntityId(null); setEntityViewMode("global"); refitGraph(); }} className="rounded-lg border border-[var(--border)] px-2 py-1 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)]" aria-label="关闭实体解释">×</button>
+          </div>
+          <p className="mt-3 text-[11px] leading-5 text-[var(--text-secondary)]">{selectedEntity.description || "当前来源只识别到实体名称，尚未提供明确概念解释。"}</p>
+          {selectedEntity.aliases.length > 0 && <p className="mt-2 text-[10px] text-[var(--text-muted)]">别名：{selectedEntity.aliases.join("、")}</p>}
+          <div className="mt-3 flex items-center justify-between border-t border-white/10 pt-3">
+            <span className="text-[10px] text-[var(--muted-foreground)]">{selectedEntity.citations.length} 条可核验引用</span>
+            <button type="button" onClick={() => { setEntityViewMode("local"); refitGraph(); }} className="rounded-lg bg-violet-400/15 px-2.5 py-1.5 text-[10px] font-semibold text-violet-200 hover:bg-violet-400/25">只看一跳关系</button>
+          </div>
+        </aside>
+      )}
+
+      {explainedRelation && (explainedRelation.citations || []).length > 0 && (
         <aside className="absolute bottom-4 left-3 z-[70] w-[min(440px,calc(100%-24px))] rounded-2xl border border-violet-400/30 bg-[var(--card)]/95 p-4 shadow-2xl backdrop-blur" data-testid="relation-evidence-panel">
           <div className="flex items-start justify-between gap-3">
             <div>
               <div className="text-[10px] font-semibold uppercase tracking-wider text-violet-300">关系原文证据</div>
-              <h3 className="mt-1 text-sm font-semibold text-[var(--foreground)]">{selectedRelation.relationLabel || "实体关系"}</h3>
+              <h3 className="mt-1 text-sm font-semibold text-[var(--foreground)]">{explainedRelation.relationLabel || "实体关系"}</h3>
             </div>
             <button type="button" onClick={() => setSelectedRelationId(null)} className="rounded-lg border border-[var(--border)] px-2 py-1 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)]" aria-label="关闭关系证据">×</button>
           </div>
           <div className="mt-3 max-h-52 space-y-2 overflow-y-auto">
-            {(selectedRelation.citations || []).map((citation) => (
+            {(explainedRelation.citations || []).map((citation) => (
               <div key={`${citation.documentId || "source"}-${citation.index}`} className="rounded-xl border border-white/10 bg-black/20 p-3 text-[11px] leading-5 text-[var(--text-secondary)]">
                 <div className="mb-1 font-semibold text-violet-200">[{citation.index}] {citation.title || "来源文档"} · {citation.locator || "原文"}</div>
                 <p>“{citation.quote}”</p>
@@ -1401,6 +1636,17 @@ export function MindMapPanel() {
         onEdgeClick={(_, edge) => {
           if (showingEntityGraph) setSelectedRelationId(edge.id);
         }}
+        onNodeClick={(_, node) => {
+          if (!showingEntityGraph || !isEntityViewNode(node.id)) return;
+          setSelectedEntityId(node.id);
+          setEntityViewMode("local");
+          setSelectedRelationId(null);
+          refitGraph();
+        }}
+        onNodeMouseEnter={(_, node) => { if (showingEntityGraph && isEntityViewNode(node.id)) setHoveredEntityId(node.id); }}
+        onNodeMouseLeave={() => setHoveredEntityId(null)}
+        onEdgeMouseEnter={(_, edge) => { if (showingEntityGraph) setHoveredRelationId(edge.id); }}
+        onEdgeMouseLeave={() => setHoveredRelationId(null)}
         nodeTypes={nodeTypes}
         onInit={(instance) => { reactFlowInstance.current = instance; }}
         fitView

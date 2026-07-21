@@ -10,6 +10,10 @@ import type {
 
 const ENTITY_PREFIX = "__mindgrow_entity__:";
 
+export function entityViewNodeId(entityId: string) {
+  return `${ENTITY_PREFIX}${entityId}`;
+}
+
 const ENTITY_TYPE_LABELS: Record<string, string> = {
   person: "人物",
   organization: "组织",
@@ -69,7 +73,7 @@ export function entityGraphToKnowledgeGraph(graph: EntityGraph): {
   edges: KnowledgeEdge[];
 } {
   const createdAt = "1970-01-01T00:00:00.000Z";
-  const ids = new Map(graph.entities.map((entity) => [entity.id, `${ENTITY_PREFIX}${entity.id}`]));
+  const ids = new Map(graph.entities.map((entity) => [entity.id, entityViewNodeId(entity.id)]));
   const nodeType = (entityType: string): KnowledgeNode["type"] => {
     if (["person", "organization", "event"].includes(entityType)) return "topic";
     if (["metric", "time"].includes(entityType)) return "detail";

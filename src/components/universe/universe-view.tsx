@@ -5,12 +5,13 @@ import { useRouter } from "next/navigation";
 import { apiFetch } from "@/lib/client-api";
 import { isMapForMode, MODE_LIBRARY_CONFIG } from "@/lib/mode-libraries";
 import { useMindGrowStore, type AppMode } from "@/store/mindgrow-store";
-import type { KnowledgeEdge, KnowledgeNode, MindMap } from "@/types";
+import type { EntityGraph, KnowledgeEdge, KnowledgeNode, MindMap } from "@/types";
 
 interface LibraryGraph {
   map: MindMap;
   nodes: KnowledgeNode[];
   edges: KnowledgeEdge[];
+  entityGraph: EntityGraph;
 }
 
 const UNIVERSE_REQUEST_TIMEOUT_MS = 12000;
@@ -159,6 +160,34 @@ function buildUniverseData(libraries: LibraryGraph[]): { nodes: GraphNode[]; lin
       }
     });
 
+    const entityNodeIds = new Map<string, string>();
+    library.entityGraph.entities.slice(0, 60).forEach((entity, entityIndex) => {
+      const graphId = `${library.map.id}:entity:${entity.id}`;
+      entityNodeIds.set(entity.id, graphId);
+      const seed = hashNumber(graphId);
+      const angle = ((scopedNodes.length + entityIndex) / Math.max(1, scopedNodes.length + library.entityGraph.entities.length)) * Math.PI * 2 + (seed % 31) / 31;
+      const distance = 120 + (seed % 190);
+      const graphNode: GraphNode = {
+        id: graphId, mapId: library.map.id, mapName: library.map.name, label: entity.canonicalName,
+        type: "entity", kind: "knowledge", x: clusterX + Math.cos(angle) * distance,
+        y: clusterY + Math.sin(angle) * distance, vx: 0, vy: 0, radius: 6.5, color: "#a78bfa",
+      };
+      nodes.push(graphNode);
+      topicTerms(`${entity.canonicalName} ${entity.description}`).forEach((term) => terms.add(term));
+      const exact = normalizedLabel(entity.canonicalName);
+      if (exact.length >= 2) {
+        const entries = exactConcepts.get(exact) || [];
+        entries.push(graphNode);
+        exactConcepts.set(exact, entries);
+      }
+    });
+    library.entityGraph.relations.forEach((relation) => {
+      const source = entityNodeIds.get(relation.sourceId);
+      const target = entityNodeIds.get(relation.targetId);
+      if (!source || !target) return;
+      links.push({ source, target, strength: relation.confidence, kind: "relation", label: relation.label });
+    });
+
     library.edges.forEach((edge) => {
       if (!scopedIds.has(edge.sourceId) || !scopedIds.has(edge.targetId)) return;
       links.push({
@@ -274,11 +303,19 @@ export function UniverseView() {
   const [zoom, setZoom] = useState(0.82);
   const [dragging, setDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const [scope, setScope] = useState<"all" | AppMode>(currentMode);
 
   useEffect(() => {
     const requested = new URLSearchParams(window.location.search).get("mode");
-    if (requested === "knowledge" || requested === "meeting" || requested === "article") setCurrentMode(requested as AppMode);
+    if (requested === "knowledge" || requested === "meeting" || requested === "article") {
+      setCurrentMode(requested as AppMode);
+      setScope(requested as AppMode);
+    }
   }, [setCurrentMode]);
+
+  useEffect(() => {
+    setScope(currentMode);
+  }, [currentMode]);
 
   useEffect(() => {
     const requestId = ++loadRequestRef.current;
@@ -291,15 +328,15 @@ export function UniverseView() {
     setZoom(0.82);
     void fetchUniverseJson<{ maps?: MindMap[] }>("/api/knowledge?action=maps")
       .then(async (data) => {
-        const maps = ((data.maps || []) as MindMap[]).filter((map) => isMapForMode(map, currentMode));
+        const maps = ((data.maps || []) as MindMap[]).filter((map) => scope === "all" || isMapForMode(map, scope));
         let failedGraphs = 0;
         const graphs = await Promise.all(maps.map(async (map) => {
           try {
-            const graph = await fetchUniverseJson<{ nodes?: KnowledgeNode[]; edges?: KnowledgeEdge[] }>(`/api/knowledge?mapId=${encodeURIComponent(map.id)}`);
-            return { map, nodes: graph.nodes || [], edges: graph.edges || [] } as LibraryGraph;
+            const graph = await fetchUniverseJson<{ nodes?: KnowledgeNode[]; edges?: KnowledgeEdge[]; entityGraph?: EntityGraph }>(`/api/knowledge?mapId=${encodeURIComponent(map.id)}`);
+            return { map, nodes: graph.nodes || [], edges: graph.edges || [], entityGraph: graph.entityGraph || { entities: [], relations: [] } } as LibraryGraph;
           } catch (_) {
             failedGraphs += 1;
-            return { map, nodes: [], edges: [] } as LibraryGraph;
+            return { map, nodes: [], edges: [], entityGraph: { entities: [], relations: [] } } as LibraryGraph;
           }
         }));
         if (requestId === loadRequestRef.current) {
@@ -313,7 +350,7 @@ export function UniverseView() {
       .finally(() => {
         if (requestId === loadRequestRef.current) setLoading(false);
       });
-  }, [currentMode, reloadToken]);
+  }, [scope, reloadToken]);
 
   const universeData = useMemo(() => buildUniverseData(libraries), [libraries]);
   const positionedNodes = useMemo(
@@ -447,15 +484,20 @@ export function UniverseView() {
   const openHoveredLibrary = useCallback(() => {
     const node = positionedNodes.find((item) => item.id === hoveredNode);
     if (!node) return;
+    const library = libraries.find((item) => item.map.id === node.mapId);
+    if (library) {
+      const mode: AppMode = isMapForMode(library.map, "article") ? "article" : isMapForMode(library.map, "meeting") ? "meeting" : "knowledge";
+      setCurrentMode(mode);
+    }
     setCurrentMapId(node.mapId);
     router.push("/");
-  }, [hoveredNode, positionedNodes, router, setCurrentMapId]);
+  }, [hoveredNode, positionedNodes, libraries, router, setCurrentMapId, setCurrentMode]);
 
   const totalNodes = libraries.reduce((sum, library) => sum + library.nodes.length, 0);
-  const modeConfig = MODE_LIBRARY_CONFIG[currentMode];
+  const modeConfig = scope === "all" ? { label: "统一知识", shortLabel: "全部" } : MODE_LIBRARY_CONFIG[scope];
 
   return (
-    <div className="relative h-full w-full overflow-hidden bg-[#0a0a0f]" data-testid="universe-view" data-universe-mode={currentMode}>
+    <div className="relative h-full w-full overflow-hidden bg-[#0a0a0f]" data-testid="universe-view" data-universe-mode={scope}>
       <canvas
         ref={canvasRef}
         className={`h-full w-full ${dragging ? "cursor-grabbing" : hoveredNode ? "cursor-pointer" : "cursor-grab"}`}
@@ -471,7 +513,7 @@ export function UniverseView() {
         aria-label={`${modeConfig.label}知识宇宙，可拖动和缩放`}
       />
 
-      <div className="pointer-events-none absolute left-4 top-16 z-30 max-w-[min(520px,calc(100%-2rem))] rounded-2xl border border-white/10 bg-black/55 p-4 backdrop-blur-xl">
+      <div className="absolute left-4 top-16 z-30 max-w-[min(620px,calc(100%-2rem))] rounded-2xl border border-white/10 bg-black/55 p-4 backdrop-blur-xl">
         <div className="text-sm font-semibold text-white">🌌 {modeConfig.label}宇宙</div>
         <div className="mt-1 text-xs leading-5 text-zinc-400">{libraries.length} 个知识库 · {totalNodes} 个节点 · <span data-testid="universe-cross-library-count" data-count={universeData.crossLibraryCount}>{universeData.crossLibraryCount}</span> 条跨库关系</div>
         <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-zinc-400">
@@ -480,6 +522,9 @@ export function UniverseView() {
           <span><i className="mr-1 inline-block h-px w-4 border-t border-dashed border-yellow-300/80 align-middle" />跨库生长关系</span>
         </div>
         <div className="mt-2 text-[10px] text-zinc-500">悬停查看关系，点击节点进入所属知识库。</div>
+        <div className="mt-3 flex flex-wrap gap-1" data-testid="universe-scope-switch">
+          {(["all", "knowledge", "article", "meeting"] as const).map((item) => <button key={item} type="button" onClick={() => setScope(item)} className={`rounded-lg px-2.5 py-1.5 text-[10px] font-semibold ${scope === item ? "bg-violet-400 text-black" : "border border-white/10 text-zinc-300 hover:bg-white/10"}`}>{item === "all" ? "全部知识" : item === "knowledge" ? "知识碎片" : item === "article" ? "文章" : "会议"}</button>)}
+        </div>
       </div>
 
       <div className="absolute right-4 top-4 z-40 flex items-center gap-1 rounded-xl border border-white/10 bg-black/60 p-1 shadow-xl backdrop-blur">

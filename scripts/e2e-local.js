@@ -347,6 +347,22 @@ const revealAllStoredNodes = async (page) => {
     await clickByText(page, '[data-testid="graph-layer-switch"] button', "实体图");
     await page.waitForFunction(() => document.body.innerText.includes("实体知识图谱"));
     await page.waitForFunction(() => document.querySelectorAll(".react-flow__node").length >= 2 && document.querySelectorAll(".react-flow__edge").length >= 1);
+    await page.waitForSelector('[data-testid="entity-view-modes"]');
+    const globalNodeCount = await page.$$eval('[data-testid="entity-network-node"]', (nodes) => nodes.length);
+    if (globalNodeCount < 2) throw new Error("Obsidian entity network did not render enough entities");
+    const firstEntity = await page.$('[data-testid="entity-network-node"]');
+    const firstEntityBox = await firstEntity.boundingBox();
+    if (!firstEntityBox) throw new Error("Entity node has no interactive bounds");
+    await page.mouse.move(firstEntityBox.x + firstEntityBox.width / 2, firstEntityBox.y + firstEntityBox.height / 2);
+    await page.waitForSelector('[data-testid="entity-hover-card"]');
+    await firstEntity.click();
+    await page.waitForSelector('[data-testid="entity-detail-panel"]');
+    const localNodeCount = await page.$$eval('[data-testid="entity-network-node"]', (nodes) => nodes.length);
+    if (localNodeCount > globalNodeCount) throw new Error("One-hop entity view expanded beyond the global graph");
+    await page.screenshot({ path: path.join(artifactDir, "desktop-entity-network.png") });
+    await clickByText(page, '[data-testid="entity-view-modes"] button', "证据链");
+    await page.waitForFunction(() => document.querySelectorAll(".react-flow__edge").length >= 1);
+    await new Promise((resolve) => setTimeout(resolve, 150));
     const relationClicked = await page.$eval(".react-flow__edge", (edge) => {
       edge.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       return true;
@@ -410,6 +426,34 @@ const revealAllStoredNodes = async (page) => {
     await page.waitForSelector('[data-testid="knowledge-graph-workspace"][data-graph-mode="article"]');
     const finalMode = await page.$eval('[data-testid="knowledge-graph-workspace"]', (element) => element.getAttribute("data-graph-mode"));
     if (finalMode !== "article") throw new Error(`Rapid tab switch ended in ${finalMode}`);
+  });
+
+  await check("one-click organizer previews, applies, and restores the prior structure", async () => {
+    await clickByText(page, "button", "知识碎片");
+    await page.waitForSelector('[data-testid="knowledge-graph-workspace"][data-graph-mode="knowledge"]');
+    const beforeAssignments = await page.evaluate(() => {
+      const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+      return Object.fromEntries(state.maps.filter((map) => !(map.description || "").includes("[MindGrow:")).map((map) => [map.id, map.categoryId || null]));
+    });
+    await page.click('[data-testid="open-library-organizer"]');
+    await page.waitForSelector('[data-testid="organize-library-dialog"]');
+    await page.click('[data-testid="organize-mode-workflow"]');
+    await page.click('[data-testid="organize-create-preview"]');
+    await page.waitForSelector('[data-testid="organize-preview"]');
+    const previewCategoryCount = await page.$$eval('[data-testid="organize-preview"] input', (inputs) => inputs.length);
+    if (previewCategoryCount < 1) throw new Error("Organizer preview did not create any directory");
+    await page.screenshot({ path: path.join(artifactDir, "desktop-organizer-preview.png") });
+    await page.click('[data-testid="organize-apply"]');
+    await page.waitForFunction(() => document.querySelector('[role="status"]')?.textContent.includes("已整理"));
+    await page.click('[data-testid="organize-undo"]');
+    await page.waitForFunction(() => document.querySelector('[role="status"]')?.textContent.includes("已恢复"));
+    const afterAssignments = await page.evaluate(() => {
+      const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+      return Object.fromEntries(state.maps.filter((map) => !(map.description || "").includes("[MindGrow:")).map((map) => [map.id, map.categoryId || null]));
+    });
+    if (JSON.stringify(beforeAssignments) !== JSON.stringify(afterAssignments)) throw new Error("Undo did not restore knowledge-library categories");
+    await page.click('[data-testid="organize-close"]');
+    await page.waitForFunction(() => !document.querySelector('[data-testid="organize-library-dialog"]'));
   });
 
   await check("all three product boards expose and execute inline library deletion", async () => {
@@ -498,6 +542,12 @@ const revealAllStoredNodes = async (page) => {
     if (headerCount !== 1) throw new Error(`Expected one application header, got ${headerCount}`);
     const hasBackButton = await page.evaluate(() => document.body.innerText.includes("返回当前知识库"));
     if (!hasBackButton) throw new Error("Universe navigation is incomplete");
+    await clickByText(page, '[data-testid="universe-scope-switch"] button', "全部知识");
+    await page.waitForSelector('[data-testid="universe-view"][data-universe-mode="all"]');
+    const allScopeText = await page.$eval('[data-testid="universe-view"]', (element) => element.textContent);
+    if (!allScopeText.includes("文章") || !allScopeText.includes("会议")) throw new Error("Unified universe does not expose article and meeting knowledge");
+    await clickByText(page, '[data-testid="universe-scope-switch"] button', "文章");
+    await page.waitForSelector('[data-testid="universe-view"][data-universe-mode="article"]');
     const beforeZoom = await page.$eval('button[aria-label="重置知识宇宙视图"]', (button) => button.textContent.trim());
     await page.click('button[aria-label="放大知识宇宙"]');
     const afterZoom = await page.$eval('button[aria-label="重置知识宇宙视图"]', (button) => button.textContent.trim());
@@ -514,6 +564,8 @@ const revealAllStoredNodes = async (page) => {
     const title = await page.title();
     if (!h1.includes("可追溯的知识网络")) throw new Error(`Unexpected guide heading: ${h1}`);
     if (!title.includes("AI 知识助手使用指南")) throw new Error(`Unexpected guide title: ${title}`);
+    const timelineSteps = await page.$$eval('[data-testid="guide-timeline"] ol > li', (steps) => steps.length);
+    if (timelineSteps < 4) throw new Error("Visual guide timeline is incomplete");
   });
 
   await check("robots and sitemap endpoints render", async () => {

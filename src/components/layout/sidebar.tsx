@@ -8,6 +8,7 @@ import { Category } from "@/types";
 import { TemplateBrowser } from "@/components/template/template-browser";
 import { MODE_LIBRARY_CONFIG, isMapForMode, modeLibraryDescription } from "@/lib/mode-libraries";
 import Link from "next/link";
+import { OrganizeLibraryDialog } from "@/components/layout/organize-library-dialog";
 
 interface LibrarySearchMatch {
   id: string;
@@ -276,6 +277,7 @@ export function Sidebar() {
   const [newCategoryIcon, setNewCategoryIcon] = useState("📁");
   const [showIconPicker, setShowIconPicker] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
+  const [showOrganizer, setShowOrganizer] = useState(false);
   const [librarySearch, setLibrarySearch] = useState("");
   const [librarySearchResults, setLibrarySearchResults] = useState<LibrarySearchResult[]>([]);
   const [isSearchingLibrary, setIsSearchingLibrary] = useState(false);
@@ -591,6 +593,21 @@ export function Sidebar() {
     setContextMenu(null);
   }, [setCategories]);
 
+  const reloadOrganization = useCallback(async () => {
+    const [mapsRes, catsRes] = await Promise.all([
+      apiFetch("/api/knowledge?action=maps"),
+      apiFetch("/api/knowledge?action=categories"),
+    ]);
+    if (mapsRes.ok) {
+      const { maps: allMaps } = await mapsRes.json();
+      useMindGrowStore.getState().setMaps(allMaps || []);
+    }
+    if (catsRes.ok) {
+      const { categories: allCategories } = await catsRes.json();
+      setCategories(allCategories || []);
+    }
+  }, [setCategories]);
+
   // Each product board only exposes its own libraries. This prevents a click
   // on an article/meeting card from racing the mode switch back to knowledge.
   const visibleMaps = maps.filter((map) => isMapForMode(map, currentMode));
@@ -600,6 +617,7 @@ export function Sidebar() {
     category: cat,
     maps: visibleMaps.filter((m) => m.categoryId === cat.id),
   }));
+  const needsOrganizing = currentMode === "knowledge" && (uncategorizedMaps.length >= 4 || (visibleMaps.length >= 12 && categories.length < 2));
 
   const MAP_COLORS = ["#22d3a7", "#38bdf8", "#818cf8", "#f472b6", "#fb923c", "#a3e635", "#e879f9", "#f87171"];
 
@@ -633,6 +651,16 @@ export function Sidebar() {
               <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
             </svg>
           </button>
+          {currentMode === "knowledge" && <button
+            onClick={() => setShowOrganizer(true)}
+            data-testid="open-library-organizer"
+            className="relative flex h-7 w-7 items-center justify-center rounded-lg text-emerald-300 transition-colors hover:bg-emerald-300/10"
+            title="一键整理知识库"
+            aria-label="一键整理知识库"
+          >
+            ✨
+            {needsOrganizing && <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full border border-[var(--card)] bg-amber-400" />}
+          </button>}
           {/* New Category button */}
           {currentMode === "knowledge" && <button
             onClick={() => setIsCreatingCategory(true)}
@@ -695,6 +723,9 @@ export function Sidebar() {
           <span>🌱 查看{MODE_LIBRARY_CONFIG[currentMode].shortLabel}库之间的生长关系</span>
           <span aria-hidden="true">→</span>
         </Link>
+        {needsOrganizing && <button type="button" onClick={() => setShowOrganizer(true)} className="mt-2 w-full rounded-lg border border-amber-300/20 bg-amber-300/5 px-3 py-2 text-left text-[10px] leading-4 text-amber-200 hover:border-amber-300/35" data-testid="organize-reminder">
+          ✨ {uncategorizedMaps.length} 个知识库尚未归类，可按需一键整理
+        </button>}
       </div>
 
       {/* Map List grouped by category */}
@@ -1019,6 +1050,14 @@ export function Sidebar() {
             } catch (e) { console.error("Failed to create from template:", e); }
           }}
           onClose={() => setShowTemplates(false)}
+        />
+      )}
+      {currentMode === "knowledge" && showOrganizer && (
+        <OrganizeLibraryDialog
+          maps={visibleMaps}
+          categories={categories}
+          onClose={() => setShowOrganizer(false)}
+          onDone={reloadOrganization}
         />
       )}
     </div>
