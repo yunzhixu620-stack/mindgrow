@@ -513,7 +513,12 @@ export function UniverseView() {
   const modeConfig = scope === "all" ? { label: "统一知识", shortLabel: "全部" } : MODE_LIBRARY_CONFIG[scope];
 
   return (
-    <div className="relative h-full w-full overflow-hidden bg-[#0a0a0f]" data-testid="universe-view" data-universe-mode={scope}>
+    <div
+      className="relative h-full w-full overflow-hidden bg-[#0a0a0f]"
+      data-testid="universe-view"
+      data-universe-mode={scope}
+      data-universe-library-ids={visibleLibraries.map((library) => library.map.id).sort().join(",")}
+    >
       <canvas
         ref={canvasRef}
         className={`h-full w-full ${dragging ? "cursor-grabbing" : hoveredNode ? "cursor-pointer" : "cursor-grab"}`}

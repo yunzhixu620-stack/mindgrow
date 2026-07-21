@@ -11,6 +11,7 @@
     "test:unit": "vitest run --reporter=default",
     "test:unit:watch": "vitest",
     "test:e2e:local": "node scripts/e2e-local.js",
+    "test:e2e:multi-tenant": "node scripts/e2e-multi-tenant.js",
     "test:e2e:public": "node scripts/e2e-public.js",
     "test:backend": "npm run test:backend:public",
     "test:backend:local": "node scripts/run-backend-local.js",
