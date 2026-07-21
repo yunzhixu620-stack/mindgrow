@@ -188,12 +188,30 @@ const revealAllStoredNodes = async (page) => {
   await check("large map uses progressive disclosure", async () => {
     const before = await page.$$eval(".react-flow__node", (nodes) => nodes.length);
     await page.screenshot({ path: path.join(artifactDir, "desktop-large-map-outline.png"), fullPage: true });
-    const expand = await page.$('button[aria-label^="展开 "]');
+    const expand = await page.$('button[aria-label^="展开下一层 "]');
     if (!expand) throw new Error("No branch expansion control found");
     await expand.click();
     await page.waitForFunction((previous) => document.querySelectorAll(".react-flow__node").length > previous, {}, before);
+    const afterFirstLevel = await page.$$eval(".react-flow__node", (nodes) => nodes.length);
+    const total = await page.$$eval("button", (buttons) => Number(buttons.find((button) => /^全部 \d+$/.test(button.textContent.trim()))?.textContent.match(/\d+/)?.[0] || 0));
+    const nextLevel = await page.$('button[aria-label^="展开下一层 "]');
+    if (nextLevel && afterFirstLevel >= total) throw new Error("First expansion revealed the full descendant tree instead of one level");
+    if (nextLevel) {
+      await nextLevel.click();
+      await page.waitForFunction((previous) => document.querySelectorAll(".react-flow__node").length > previous, {}, afterFirstLevel);
+    }
 
     await revealAllStoredNodes(page);
+  });
+
+  await check("graph display settings switch between title density and reading cards", async () => {
+    await page.click('button[title="显示与间距"]');
+    await page.waitForSelector('[data-testid="graph-display-settings"]');
+    await clickByText(page, '[data-testid="graph-display-settings"] button', "阅读卡");
+    const readingMode = await page.$eval('[data-testid="graph-display-settings"]', (panel) => panel.textContent.includes("阅读卡"));
+    if (!readingMode) throw new Error("Reading-card density control is missing");
+    await clickByText(page, '[data-testid="graph-display-settings"] button', "仅标题");
+    await page.click('button[title="显示与间距"]');
   });
 
   await check("node title and detailed explanation are editable", async () => {
@@ -439,7 +457,7 @@ const revealAllStoredNodes = async (page) => {
     await clickByText(page, "button", "图谱");
     await page.waitForSelector(".react-flow");
     await page.waitForSelector(".mindgrow-minimap");
-    await page.waitForFunction(() => document.body.innerText.includes("当前显示") && document.body.innerText.includes("点击节点上的 ＋N 展开"));
+    await page.waitForFunction(() => document.body.innerText.includes("当前显示") && document.body.innerText.includes("＋N 逐层展开"));
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
     if (overflow) throw new Error("Mobile layout overflows horizontally");
     const minimap = await page.$(".mindgrow-minimap");

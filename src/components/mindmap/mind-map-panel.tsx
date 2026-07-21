@@ -41,6 +41,33 @@ function isDisplayOverviewNode(nodeId: string) {
 }
 
 /**
+ * Expand exactly one level at a time. Newly revealed children that have their
+ * own children stay collapsed, so opening a large overview never floods the
+ * canvas with the entire descendant tree.
+ */
+function progressiveCollapseState(
+  nodeId: string,
+  current: Set<string>,
+  edges: KnowledgeEdge[],
+) {
+  const next = new Set(current);
+  if (!next.has(nodeId)) {
+    next.add(nodeId);
+    return next;
+  }
+
+  next.delete(nodeId);
+  const parents = new Set(
+    edges.filter((edge) => edge.relation === "contains").map((edge) => edge.sourceId),
+  );
+  for (const edge of edges) {
+    if (edge.relation !== "contains" || edge.sourceId !== nodeId) continue;
+    if (parents.has(edge.targetId)) next.add(edge.targetId);
+  }
+  return next;
+}
+
+/**
  * A knowledge map can accumulate many independent source roots over time. They
  * are valid retrieval entities, so rewriting the stored GraphRAG topology just
  * to improve the canvas would add false semantic relationships. Instead, add a
@@ -109,6 +136,7 @@ function MindGrowNode({ data, selected }: NodeProps) {
   const horizontal = data.direction === "horizontal";
   const branchIndex = data.branchIndex as number || 0;
   const citations = (data.citations || []) as KnowledgeNode["citations"];
+  const isOverview = isDisplayOverviewNode(data.nodeId as string);
   const borderColor = branchIndex > 0
     ? BRANCH_COLORS[branchIndex % BRANCH_COLORS.length]
     : (highlighted ? "#22d3a7" : undefined);
@@ -125,10 +153,10 @@ function MindGrowNode({ data, selected }: NodeProps) {
 
   return (
     <div
-      data-display-overview={isDisplayOverviewNode(data.nodeId as string) ? "true" : undefined}
+      data-display-overview={isOverview ? "true" : undefined}
       className={`
-        relative rounded-xl ${compact ? "min-w-[132px] max-w-[172px] px-2.5 py-2" : "min-w-[150px] max-w-[220px] px-3.5 py-2.5"}
-        text-center transition-all duration-200 cursor-grab active:cursor-grabbing
+        group relative rounded-xl ${compact ? "min-w-[150px] max-w-[190px] px-3 py-2" : "min-w-[170px] max-w-[230px] px-3.5 py-3"}
+        text-left transition-all duration-200 cursor-grab active:cursor-grabbing
         ${selected ? "ring-2 ring-offset-1 ring-offset-[#0a0a0f]" : ""}
         ${highlighted ? "animate-pulse ring-2 ring-[#22d3a7] ring-offset-1 ring-offset-[#0a0a0f]" : ""}
       `}
@@ -144,16 +172,16 @@ function MindGrowNode({ data, selected }: NodeProps) {
         position={horizontal ? Position.Left : Position.Top}
         className="!bg-transparent !w-2 !h-2 !border-2 !border-[#22d3a7]"
       />
-      <div className="line-clamp-3 text-[13px] font-medium leading-snug break-words" title={data.label as string}>
+      <div className="line-clamp-2 text-[13px] font-semibold leading-snug break-words" title={data.label as string}>
         {data.label as string}
       </div>
       {showDetails && desc && (
-        <div className="text-[10px] leading-relaxed mt-0.5 opacity-50 line-clamp-2 break-words">
+        <div className="mt-1 line-clamp-3 break-words text-[10px] leading-relaxed opacity-65">
           {desc}
         </div>
       )}
       {showDetails && citations && citations.length > 0 && (
-        <div className="mt-1 flex flex-wrap justify-center gap-1" aria-label="节点引用">
+        <div className="mt-1.5 flex flex-wrap justify-start gap-1" aria-label="节点引用">
           {citations.slice(0, 4).map((citation) => (
             <span key={`${citation.documentId || "source"}-${citation.index}`} title={`${citation.locator || "原文"}：${citation.quote}`} className="rounded bg-[#22d3a720] px-1.5 py-0.5 text-[9px] font-semibold text-[#7de8c9]">[{citation.index}]</span>
           ))}
@@ -161,20 +189,30 @@ function MindGrowNode({ data, selected }: NodeProps) {
         </div>
       )}
       {(childCount > 0 || source === "ai_generated") && (
-        <div className="flex items-center justify-center gap-1 mt-1">
-          {source === "ai_generated" && (
+        <div className="mt-1.5 flex min-h-5 items-center justify-between gap-1">
+          <div>{source === "ai_generated" && (
             <span className="text-[9px] opacity-40 bg-[#22d3a720] text-[#22d3a7] px-1.5 py-0.5 rounded-full">
               AI
             </span>
-          )}
-          {childCount > 0 && <button
+          )}</div>
+          {childCount > 0 && <div className="flex items-center gap-1">
+            {!isOverview && <button
+              type="button"
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={(event) => { event.stopPropagation(); (data.onFocusBranch as ((id: string) => void) | undefined)?.(data.nodeId as string); }}
+              className="nodrag rounded-full border border-white/10 bg-white/5 px-1.5 py-0.5 text-[9px] text-white/45 transition-colors hover:border-[#22d3a755] hover:text-[#7de8c9]"
+              aria-label={`聚焦分支 ${data.label as string}`}
+              title="只看此分支，减少无关节点干扰"
+            >◎</button>}
+            <button
             type="button"
             onMouseDown={(event) => event.stopPropagation()}
             onClick={(event) => { event.stopPropagation(); (data.onToggleCollapse as ((id: string) => void) | undefined)?.(data.nodeId as string); }}
             className={`nodrag rounded-full border px-2 py-0.5 text-[9px] font-semibold transition-colors ${collapsed ? "border-[#22d3a755] bg-[#22d3a722] text-[#7de8c9]" : "border-white/10 bg-white/5 text-white/50 hover:text-white"}`}
-            aria-label={collapsed ? `展开 ${descendantCount} 个子节点` : `收起 ${descendantCount} 个子节点`}
-            title={collapsed ? `展开 ${descendantCount} 个子节点` : `收起 ${descendantCount} 个子节点`}
-          >{collapsed ? `＋${descendantCount}` : `−${descendantCount}`}</button>}
+            aria-label={collapsed ? `展开下一层 ${childCount} 个直接子节点` : `收起当前分支 ${descendantCount} 个后代节点`}
+            title={collapsed ? `仅展开下一层：${childCount} 个直接子节点；分支共 ${descendantCount} 个后代节点` : `收起当前分支的 ${descendantCount} 个后代节点`}
+          >{collapsed ? `＋${childCount}` : `−${childCount}`}</button>
+          </div>}
         </div>
       )}
       <Handle
@@ -366,6 +404,7 @@ function buildGraph(
   showDetails: boolean,
   compact: boolean,
   onToggleCollapse: (nodeId: string) => void,
+  onFocusBranch: (nodeId: string) => void,
 ): { nodes: Node[]; edges: Edge[]; branchMap: Map<string, number> } {
   const allChildrenOf = new Map<string, string[]>();
   for (const edge of dbEdges) {
@@ -418,7 +457,7 @@ function buildGraph(
   }
 
   const positions = layoutTree(scopedNodes, scopedEdges, {
-    direction, nodeWidth: compact ? 170 : 210, nodeHeight: compact ? 72 : 84, hGap: spacing.h, vGap: spacing.v, tree: spacing.tree,
+    direction, nodeWidth: compact ? 200 : 240, nodeHeight: compact ? 72 : 88, hGap: spacing.h, vGap: spacing.v, tree: spacing.tree,
   }, collapsed);
 
   // Collect all visible IDs (respecting collapse)
@@ -461,6 +500,7 @@ function buildGraph(
         compact,
         nodeId: dbNode.id,
         onToggleCollapse,
+        onFocusBranch,
         citations: dbNode.citations || [],
       },
     };
@@ -546,7 +586,8 @@ function HelpPanel({ onClose }: { onClose: () => void }) {
     { keys: "?", desc: "快捷键帮助" },
     { keys: "双击节点", desc: "编辑内容" },
     { keys: "右键节点", desc: "操作菜单" },
-    { keys: "点击 +N", desc: "折叠/展开" },
+    { keys: "点击 +N", desc: "逐层展开/折叠" },
+    { keys: "点击 ◎", desc: "聚焦单个分支" },
     { keys: "左键拖拽", desc: "平移画布" },
     { keys: "Shift+拖拽", desc: "框选节点" },
     { keys: "滚轮", desc: "缩放" },
@@ -589,7 +630,7 @@ export function MindMapPanel() {
     setSearchResults,
     contextMenu, setContextMenu,
     collapsedNodes,
-    toggleCollapse, setCollapsedNodes,
+    setCollapsedNodes,
     pushHistory, undo, redo,
     showHelp, setShowHelp,
     currentMode,
@@ -607,7 +648,8 @@ export function MindMapPanel() {
   const [graphLayer, setGraphLayer] = useState<"concept" | "entity">("concept");
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
   const [selectedRelationId, setSelectedRelationId] = useState<string | null>(null);
-  const [showNodeDetails, setShowNodeDetails] = useState(true);
+  const [autoShowNodeDetails, setAutoShowNodeDetails] = useState(true);
+  const [detailMode, setDetailMode] = useState<"auto" | "title" | "card">("auto");
   const reactFlowInstance = useRef<ReactFlowInstance | null>(null);
   const editInputRef = useRef<HTMLInputElement>(null);
   const initializedLargeMapRef = useRef<string | null>(null);
@@ -619,7 +661,7 @@ export function MindMapPanel() {
       setIsMobile(mobile);
       if (mobile) {
         setDirection("horizontal");
-        setShowNodeDetails(false);
+        setAutoShowNodeDetails(false);
       }
     };
     check();
@@ -689,16 +731,22 @@ export function MindMapPanel() {
   }, [isMobile]);
 
   const handleToggleBranch = useCallback((nodeId: string) => {
-    if (isDisplayOverviewNode(nodeId)) {
-      setCollapsedNodes(collapsedNodes.has(nodeId) ? new Set<string>() : new Set<string>([nodeId]));
-      setViewMode(collapsedNodes.has(nodeId) ? "all" : "outline");
-      refitGraph();
-      return;
-    }
-    toggleCollapse(nodeId);
+    const expanding = collapsedNodes.has(nodeId);
+    setCollapsedNodes(progressiveCollapseState(nodeId, collapsedNodes, displayHierarchy.edges));
+    setViewMode(isDisplayOverviewNode(nodeId) && !expanding ? "outline" : "custom");
+    refitGraph();
+  }, [collapsedNodes, displayHierarchy.edges, setCollapsedNodes, refitGraph]);
+
+  const handleFocusBranch = useCallback((nodeId: string) => {
+    const nextCollapsed = collapsedNodes.has(nodeId)
+      ? progressiveCollapseState(nodeId, collapsedNodes, displayHierarchy.edges)
+      : new Set(collapsedNodes);
+    setCollapsedNodes(nextCollapsed);
+    setFocusedNodeId(nodeId);
+    setDirection("horizontal");
     setViewMode("custom");
     refitGraph();
-  }, [collapsedNodes, setCollapsedNodes, toggleCollapse, refitGraph]);
+  }, [collapsedNodes, displayHierarchy.edges, setCollapsedNodes, refitGraph]);
 
   const showOutline = useCallback(() => {
     setFocusedNodeId(null);
@@ -742,9 +790,11 @@ export function MindMapPanel() {
   const graph = useMemo(
     () => buildGraph(
       displayHierarchy.nodes, displayHierarchy.edges, highlightedNodeId, searchResults, direction, sv,
-      collapsedNodes, focusedNodeId, showNodeDetails, isMobile, handleToggleBranch,
+      collapsedNodes, focusedNodeId,
+      detailMode === "card" || (detailMode === "auto" && autoShowNodeDetails),
+      isMobile, handleToggleBranch, handleFocusBranch,
     ),
-    [displayHierarchy, highlightedNodeId, searchResults, direction, sv, collapsedNodes, focusedNodeId, showNodeDetails, isMobile, handleToggleBranch],
+    [displayHierarchy, highlightedNodeId, searchResults, direction, sv, collapsedNodes, focusedNodeId, detailMode, autoShowNodeDetails, isMobile, handleToggleBranch, handleFocusBranch],
   );
 
   const visibleStoredNodeCount = Math.max(0, graph.nodes.length - displayHierarchy.syntheticNodeCount);
@@ -922,15 +972,9 @@ export function MindMapPanel() {
   // Context menu: isolate one branch so dense maps can be read without unrelated nodes.
   const handleCtxSubtreeFocus = useCallback(() => {
     if (!contextMenu) return;
-    const nextCollapsed = new Set(collapsedNodes);
-    nextCollapsed.delete(contextMenu.nodeId);
-    setCollapsedNodes(nextCollapsed);
-    setFocusedNodeId(contextMenu.nodeId);
-    setDirection("horizontal");
-    setViewMode("custom");
+    handleFocusBranch(contextMenu.nodeId);
     setContextMenu(null);
-    refitGraph();
-  }, [contextMenu, collapsedNodes, setCollapsedNodes, setContextMenu, refitGraph]);
+  }, [contextMenu, handleFocusBranch, setContextMenu]);
 
   // Context menu: edit
   const handleCtxEdit = useCallback(() => {
@@ -1069,7 +1113,15 @@ export function MindMapPanel() {
             <div className="flex gap-0 rounded-xl border border-[var(--border)] bg-[var(--card)] p-1" data-testid="graph-layer-switch">
               <button
                 type="button"
-                onClick={() => { setGraphLayer("concept"); setSelectedRelationId(null); setCollapsedNodes(new Set<string>()); setViewMode("all"); refitGraph(); }}
+                onClick={() => {
+                  const conceptHierarchy = buildDisplayHierarchy(storeNodes, storeEdges, currentMapId, overviewLabel);
+                  const useOutline = storeNodes.length >= (isMobile ? 8 : 14);
+                  setGraphLayer("concept");
+                  setSelectedRelationId(null);
+                  setCollapsedNodes(useOutline ? getOutlineCollapsedNodes(conceptHierarchy.nodes, conceptHierarchy.edges) : new Set<string>());
+                  setViewMode(useOutline ? "outline" : "all");
+                  refitGraph();
+                }}
                 className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-all ${graphLayer === "concept" ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"}`}
               >概念图 {storeNodes.length}</button>
               <button
@@ -1147,7 +1199,7 @@ export function MindMapPanel() {
                 className={`w-8 h-8 rounded-xl flex items-center justify-center transition-all cursor-pointer border ${
                   showSpacing ? "bg-[var(--primary)] text-[var(--primary-foreground)] border-transparent" : "bg-[var(--card)] text-[var(--muted-foreground)] border-[var(--border)] hover:text-[var(--foreground)]"
                 }`}
-                title="间距调节"
+                title="显示与间距"
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                   <path d="M21 3H3" /><path d="M21 12H3" /><path d="M21 21H3" />
@@ -1178,8 +1230,20 @@ export function MindMapPanel() {
       {/* Spacing control */}
       {showSpacing && (
         <div className={`absolute top-12 z-50 animate-fade-in-up ${isMobile ? "right-3" : "left-3"}`}>
-          <div className="bg-[var(--card)] border border-[var(--border)] rounded-xl p-3 shadow-lg">
-            <div className="text-[10px] text-[var(--muted-foreground)] mb-2">间距调节</div>
+          <div className="min-w-[250px] rounded-xl border border-[var(--border)] bg-[var(--card)] p-3 shadow-lg" data-testid="graph-display-settings">
+            <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">卡片信息</div>
+            <div className="mb-3 flex gap-1">
+              {(["auto", "title", "card"] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => setDetailMode(mode)}
+                  className={`flex-1 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-all ${detailMode === mode ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "text-[var(--muted-foreground)] hover:bg-[var(--bg-hover)] hover:text-[var(--foreground)]"}`}
+                  title={mode === "auto" ? "随缩放自动显示摘要" : mode === "title" ? "只显示标题，提高节点显示率" : "始终显示摘要与引用，提高可读性"}
+                >{mode === "auto" ? "智能" : mode === "title" ? "仅标题" : "阅读卡"}</button>
+              ))}
+            </div>
+            <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">节点间距</div>
             <div className="flex gap-1">
               {(["compact", "normal", "wide"] as const).map((s) => (
                 <button
@@ -1303,8 +1367,8 @@ export function MindMapPanel() {
       {hiddenNodeCount > 0 && (
         <div className="pointer-events-none absolute bottom-4 left-3 z-40 rounded-xl border border-[var(--border)] bg-[var(--card)]/95 px-3 py-2 text-[11px] text-[var(--muted-foreground)] shadow-lg backdrop-blur">
           {isOverviewCollapsed
-            ? `概览模式 · ${activeNodes.length} 个原节点完整保留 · 点击 ＋${activeNodes.length} 展开`
-            : `当前显示 ${visibleStoredNodeCount}/${activeNodes.length} 个节点 · 点击节点上的 ＋N 展开`}
+            ? `概览模式 · ${activeNodes.length} 个原节点完整保留 · 点击 ＋N 仅展开下一层`
+            : `当前显示 ${visibleStoredNodeCount}/${activeNodes.length} 个节点 · ＋N 逐层展开 · ◎ 聚焦分支`}
         </div>
       )}
 
@@ -1343,7 +1407,7 @@ export function MindMapPanel() {
         fitViewOptions={{ padding: isMobile ? 0.14 : 0.24, minZoom: isMobile ? 0.45 : 0.55, maxZoom: 1.05 }}
         minZoom={isMobile ? 0.15 : 0.2}
         maxZoom={2}
-        onMoveEnd={(_, viewport) => setShowNodeDetails(viewport.zoom >= 0.72)}
+        onMoveEnd={(_, viewport) => setAutoShowNodeDetails(viewport.zoom >= 0.72)}
         selectionOnDrag={false}
         panOnDrag={[0, 2]}
         panOnScroll={false}
