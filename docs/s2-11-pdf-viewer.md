@@ -35,6 +35,13 @@
 - 10 页 LayoutLMv3 论文：保留分页/换行与图像页诊断，引用可打开 10 页 Viewer。
 - 三板块切换延迟样本：152ms / 121ms / 73ms；知识宇宙 scope 切换 66ms。
 
+## 生产发布记录（2026-07-23）
+
+- PR #53 压缩合并为 `main@055123d0db64539ae9f46a28e7fe8c8b9a0b9f8b`。
+- GitHub Pages 发布产物为 `gh-pages@7d54b3d729dfb756438b5ae17214a08c669c6276`；首次平台部署任务停在队列，使用内容不变的空提交重试后成功，未重复修改产物。
+- 公网 deployment fact 精确核对前端 `055123d`、API `10.11.0`、后端源码 `5ee87d450af8dc4a75fde169064ef5e2d5c96fd8` 与 `authRequired=true`，workflow `29956156844` 通过。
+- 公网前端 E2E 7/7、后端安全 smoke 7/7 通过；阿里云函数与 Supabase 无需变更。
+
 ## 回滚
 
 1. 移除 `PdfCitationViewer` 及文章解析中的本地 `File` 会话状态。

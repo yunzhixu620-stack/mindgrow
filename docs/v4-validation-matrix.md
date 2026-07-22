@@ -2,7 +2,7 @@
 
 > 执行基线：`docs/codex-tasks-v4.md`
 > 更新规则：每个任务进入下一阶段前更新本表；“已有局部能力”不等于“任务已完成”。
-> 最近核对基线：已发布前端 `main@5dfff96`、后端源码 `5ee87d4`；S2.10 于 2026-07-23 完成生产事实校验。
+> 最近核对基线：已发布前端 `main@055123d`、后端源码 `5ee87d4`；S2.11 于 2026-07-23 完成生产事实校验。
 
 ## 状态定义
 
@@ -55,7 +55,7 @@
 | S2.8 Heptabase 白板底座 | 已合并 | PR #50 / `52a0e15`；同一知识源的思维导图/白板、持久布局与空间分组，以及 80+ 卡视口裁剪、标题/摘要/Citation 渐进展示、键盘与移动端入口均已发布；固定 500 卡 E2E 与真实 107 节点账号通过 |
 | S2.9 阿里云常驻实例 | 已完成 | Owner 已授权；`mindgrow-api` 的 `LATEST` 弹性策略为实际 1 / 目标 1、运行正常；成本、延迟证据和回滚步骤见 `docs/s2-9-aliyun-min-instance.md` |
 | S2.10 观测/on-call | 已合并 | PR #52 / `5dfff96`，后端源码 `5ee87d4`；API `10.11.0`、精确 `gitSha`、生产 fail-closed、on-call 闭环、GitHub Pages 与 production fact 均通过 |
-| S2.11 PDF Viewer + 原文高亮 | 开发中 | `codex/s2-11-pdf-viewer` 已完成页码定位、PDF.js `PDFFindController` 高亮、统一引用跳转与防导航穿透；unit 171/171、lint、build、产品 E2E 37/37 通过，待 PR/生产发布 |
+| S2.11 PDF Viewer + 原文高亮 | 已合并 | PR #53 / `055123d`；页码定位、PDF.js `PDFFindController` 高亮、统一引用跳转与防导航穿透均已发布；unit 171/171、lint、build、产品 E2E 37/37、公网 E2E 7/7 与 production fact 均通过 |
 | S2.12 查询时 GraphRAG 定位 | 待开发 | P2.1 只保证建图质量；仍需 entity linking、混合召回、路径重排、拒答与 Recall@5/MRR |
 | S2.13 一键整理知识库 | 局部已有 | 已有分级展开/展示能力；缺多策略、预览、撤销和默认不整理的完整闭环 |
 | S2.14 统一知识宇宙 | 局部已有 | 三模块已有共享展示基础；缺统一实体与“会议确认后入长期库”门禁 |
