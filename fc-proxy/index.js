@@ -2134,19 +2134,218 @@ const ENTITY_TYPES = new Set([
 ]);
 const RELATION_STATUSES = new Set(['asserted', 'historical', 'negated', 'proposed']);
 
+const ENTITY_DESCRIPTION_STOP_TERMS = new Set([
+  ...GRAPH_STOP_TERMS,
+  '一个', '一种', '这个', '该项', '用于', '通过', '主要', '相关', '进行', '提供', '实现', '包括', '具有',
+  '一种方法', '一种模型', '本文', '文中', '研究中', '系统', '框架', '技术', '概念', '实体',
+  'a', 'an', 'of', 'to', 'in', 'on', 'by', 'as', 'it', 'its', 'using', 'used', 'provides', 'describes',
+  'system', 'framework', 'technique', 'concept', 'entity', 'approach', 'research',
+]);
+
+const RELATION_SHORT_LABELS = {
+  uses: '使用',
+  proposes: '提出',
+  evaluated_on: '评测于',
+  achieves: '达到',
+  depends_on: '依赖于',
+  retrieves_from: '检索自',
+  has_metric: '使用指标',
+  part_of: '属于',
+  contains: '包含',
+  contains_concept: '包含概念',
+  contradicts: '矛盾于',
+  responsible_for: '负责',
+  due_on: '截止于',
+  is: '定义为',
+  related_to: '相关于',
+};
+
+const RELATION_PREDICATE_PATTERNS = {
+  uses: /(?:使用|采用|利用|借助|uses?|using|utili[sz]es?|employs?|adopts?)/i,
+  proposes: /(?:提出|提议|发明|proposes?|proposed|introduces?|introduced|presents?|presented)/i,
+  evaluated_on: /(?:在.{0,24}(?:评测|评估|测试)|基于.{0,24}(?:评测|评估)|evaluat(?:e|ed|es|ing)\s+on|tested\s+on|benchmark(?:ed)?\s+on)/i,
+  achieves: /(?:达到|取得|实现|获得|achieves?|achieved|obtains?|obtained|reaches?|reached)/i,
+  depends_on: /(?:依赖|取决于|depends?\s+on|relies?\s+on|requires?|required)/i,
+  retrieves_from: /(?:从.{0,24}(?:检索|召回|获取)|检索自|retrieves?\s+from|retrieved\s+from|fetches?\s+from)/i,
+  has_metric: /(?:指标|衡量|度量|metric|measured\s+by|evaluated\s+with|reports?)/i,
+  part_of: /(?:属于|组成部分|隶属于|part\s+of|component\s+of|belongs?\s+to)/i,
+  contains: /(?:包含|包括|由.{0,24}组成|contains?|includes?|comprises?)/i,
+  contains_concept: /(?:包含|包括|涵盖|contains?|includes?|covers?)/i,
+  contradicts: /(?:矛盾|冲突|反驳|否定|contradicts?|conflicts?\s+with|refutes?|disagrees?\s+with)/i,
+  responsible_for: /(?:负责|责任|responsible\s+for|assigned\s+to|owned\s+by)/i,
+  due_on: /(?:截止|到期|期限|due\s+(?:on|by)|deadline)/i,
+  is: /(?:是|指|意为|定义为|\bis\b|\bare\b|refers?\s+to|defined\s+as|stands?\s+for)/i,
+  related_to: /(?:相关|关联|联系|related\s+to|associated\s+with|linked\s+to)/i,
+};
+
+const RELATION_PASSIVE_PATTERNS = {
+  uses: /(?:\b(?:is|are|was|were)?\s*(?:used|adopted|employed)\s+by\b|被|由)/i,
+  proposes: /(?:\b(?:is|are|was|were)?\s*(?:proposed|introduced|presented)\s+by\b|由)/i,
+  responsible_for: /(?:\b(?:is|are|was|were)?\s*(?:assigned|owned)\s+by\b|由)/i,
+};
+
+function escapeGraphRegExp(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function graphTextLength(value) {
+  return Array.from(String(value || '').trim()).length;
+}
+
+function graphEvidenceRows(indexes, evidence) {
+  const wanted = new Set(normalizeCitationIndexes(indexes));
+  return (Array.isArray(evidence) ? evidence : []).filter((item) => wanted.has(Number(item && item.index)));
+}
+
+function entityNameVariants(entity) {
+  return [...new Set([
+    String((entity && (entity.name || entity.canonicalName)) || '').trim(),
+    ...(Array.isArray(entity && entity.aliases) ? entity.aliases : []).map((item) => String(item || '').trim()),
+  ].filter(Boolean))];
+}
+
+function normalizedTextMentions(value, candidate) {
+  const text = normalizeForExactMatch(value);
+  const term = normalizeForExactMatch(candidate);
+  if (!text || !term) return false;
+  if (/^[a-z0-9_.+-]+$/i.test(term)) {
+    return new RegExp(`(^|[^a-z0-9])${escapeGraphRegExp(term)}([^a-z0-9]|$)`, 'i').test(text);
+  }
+  return text.includes(term);
+}
+
+function evidenceMentionsEntity(rows, entity) {
+  const variants = entityNameVariants(entity);
+  return (Array.isArray(rows) ? rows : []).some((row) => variants.some((variant) => (
+    normalizedTextMentions((row && (row.quote || row.content)) || '', variant)
+  )));
+}
+
+function graphGroundingAnchors(value) {
+  return tokenize(value).filter((term) => (
+    term.length >= 2
+    && !ENTITY_DESCRIPTION_STOP_TERMS.has(term)
+    && !/^\d+$/.test(term)
+  ));
+}
+
+function graphNumericFacts(value) {
+  const matches = normalizeForExactMatch(value).match(/(?:v?\d+(?:\.\d+)+|\d+(?:\.\d+)?%?)/gi) || [];
+  return [...new Set(matches)];
+}
+
+function graphTextIsNegated(value) {
+  return /(?:没有|并未|未能|不是|并非|不能|不会|不得|否决|拒绝|不予|\bno\b|\bnot\b|\bnever\b|\bwithout\b|cannot|can't|won't|rejected|denied)/i
+    .test(normalizeForExactMatch(value));
+}
+
+function entityDescriptionGroundingStats(description, rows) {
+  const anchors = graphGroundingAnchors(description);
+  const evidenceText = (Array.isArray(rows) ? rows : [])
+    .map((row) => String((row && (row.quote || row.content)) || ''))
+    .join(' ');
+  const normalizedEvidence = normalizeForExactMatch(evidenceText);
+  const matchedAnchors = anchors.filter((anchor) => normalizedEvidence.includes(normalizeForExactMatch(anchor)));
+  const numericFacts = graphNumericFacts(description);
+  const missingNumericFacts = numericFacts.filter((fact) => !normalizedEvidence.includes(normalizeForExactMatch(fact)));
+  const descriptionNegated = graphTextIsNegated(description);
+  const evidenceNegated = graphTextIsNegated(evidenceText);
+  return {
+    anchors,
+    matchedAnchors,
+    coverage: anchors.length ? matchedAnchors.length / anchors.length : 0,
+    numericFacts,
+    missingNumericFacts,
+    supportedByMinimumAnchors: matchedAnchors.length >= 2,
+    numbersSupported: missingNumericFacts.length === 0,
+    descriptionNegated,
+    evidenceNegated,
+    polaritySupported: descriptionNegated === evidenceNegated,
+  };
+}
+
+function validRelationShortLabel(value, sourceEntity, targetEntity) {
+  const label = String(value || '').trim();
+  if (!label || /[()（）\[\]【】]|(?:asserted|historical|negated|proposed|历史|否定|拟议|待确认)|(?:证据|evidence|citations?)/i.test(label)) return false;
+  if ([...entityNameVariants(sourceEntity), ...entityNameVariants(targetEntity)]
+    .some((name) => normalizeForExactMatch(name) === normalizeForExactMatch(label))) return false;
+  const length = graphTextLength(label);
+  return /[\u4e00-\u9fff]/.test(label) ? length >= 2 && length <= 10 : length >= 2 && length <= 20;
+}
+
+function boundedRelationExplanation(value) {
+  const text = normalizeSpaces(value);
+  const length = graphTextLength(text);
+  if (length < 20) return '';
+  if (length <= 60) return text;
+  const sentences = text.match(/[^。！？.!?]+[。！？.!?]+/g) || [];
+  let output = '';
+  for (const sentence of sentences) {
+    if (graphTextLength(output + sentence) > 60) break;
+    output += sentence;
+  }
+  return graphTextLength(output) >= 20 ? output.trim() : '';
+}
+
+function relationEvidenceSupports(type, rows, sourceEntity, targetEntity) {
+  const predicate = RELATION_PREDICATE_PATTERNS[type] || RELATION_PREDICATE_PATTERNS.related_to;
+  const passive = RELATION_PASSIVE_PATTERNS[type];
+  const symmetric = type === 'contradicts' || type === 'related_to';
+  const sourceVariants = entityNameVariants(sourceEntity);
+  const targetVariants = entityNameVariants(targetEntity);
+  return (Array.isArray(rows) ? rows : []).some((row) => {
+    const text = String((row && (row.quote || row.content)) || '');
+    const sentences = text.match(/[^。！？!?;\n]+[。！？!?;]?/g) || [text];
+    return sentences.some((sentence) => {
+      const sourceMatches = sourceVariants.filter((variant) => normalizedTextMentions(sentence, variant));
+      const targetMatches = targetVariants.filter((variant) => normalizedTextMentions(sentence, variant));
+      if (!sourceMatches.length || !targetMatches.length || !predicate.test(sentence)) return false;
+      if (symmetric) return true;
+      return sourceMatches.some((sourceName) => targetMatches.some((targetName) => {
+        const normalized = normalizeForExactMatch(sentence);
+        const sourceIndex = normalized.indexOf(normalizeForExactMatch(sourceName));
+        const targetIndex = normalized.indexOf(normalizeForExactMatch(targetName));
+        if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return false;
+        if (sourceIndex < targetIndex) {
+          const between = normalized.slice(sourceIndex, targetIndex + normalizeForExactMatch(targetName).length);
+          return predicate.test(between) && !(passive && passive.test(between));
+        }
+        const between = normalized.slice(targetIndex, sourceIndex + normalizeForExactMatch(sourceName).length);
+        return Boolean(passive && passive.test(between) && predicate.test(normalized));
+      }));
+    });
+  });
+}
+
 function normalizedEntityGraph(value, allowedIndexes, citations) {
   const input = value && typeof value === 'object' ? value : {};
   const evidence = Array.isArray(citations) ? citations : [];
   const entities = (Array.isArray(input.entities) ? input.entities : []).slice(0, 40).map((item, index) => {
     const name = String((item && (item.name || item.canonicalName)) || '').trim().slice(0, 300);
-    const description = String((item && item.description) || '').trim().slice(0, 1200);
+    const rawDescription = String((item && item.description) || '').trim().slice(0, 1200);
     const typeValue = String((item && (item.type || item.entityType)) || 'other').trim().toLowerCase();
     const type = ENTITY_TYPES.has(typeValue) ? typeValue : 'other';
     const citationIndexes = verifiedIndexes(
-      item && item.citationIndexes, allowedIndexes, `${name} ${description}`, evidence, evidence,
+      item && item.citationIndexes, allowedIndexes, name, evidence, evidence,
     );
     const aliases = [...new Set((Array.isArray(item && item.aliases) ? item.aliases : [])
       .map((alias) => String(alias || '').trim().slice(0, 200)).filter((alias) => alias && alias !== name))].slice(0, 12);
+    // descriptionEvidence is intentionally read only from the model field. It
+    // must never be copied, intersected or otherwise derived from citationIndexes.
+    const descriptionEvidence = verifiedIndexes(
+      item && item.descriptionEvidence, allowedIndexes, rawDescription, evidence, evidence,
+    );
+    const descriptionRows = graphEvidenceRows(descriptionEvidence, evidence);
+    const entityCandidate = { name, aliases };
+    const grounding = entityDescriptionGroundingStats(rawDescription, descriptionRows);
+    const descriptionLength = graphTextLength(rawDescription);
+    const description = descriptionLength >= 30 && descriptionLength <= 80
+      && descriptionEvidence.length > 0
+      && evidenceMentionsEntity(descriptionRows, entityCandidate)
+      && grounding.supportedByMinimumAnchors
+      && grounding.numbersSupported
+      && grounding.polaritySupported
+      ? rawDescription : '';
     const confidence = Math.min(1, Math.max(0, Number(item && item.confidence) || 0.75));
     return {
       tempId: String((item && (item.tempId || item.id)) || `E${index + 1}`).trim().slice(0, 80),
@@ -2154,26 +2353,53 @@ function normalizedEntityGraph(value, allowedIndexes, citations) {
       type,
       aliases,
       description,
+      descriptionEvidence,
       citationIndexes,
       confidence,
     };
-  }).filter((item) => item.tempId && item.name && item.citationIndexes.length > 0 && item.confidence >= 0.45);
+  }).filter((item) => item.tempId && item.name && item.description && item.descriptionEvidence.length > 0
+    && item.citationIndexes.length > 0 && item.confidence >= 0.45);
+  const entityById = new Map(entities.map((item) => [item.tempId, item]));
   const entityIds = new Set(entities.map((item) => item.tempId));
   const relations = (Array.isArray(input.relations) ? input.relations : []).slice(0, 80).map((item) => {
     const source = String((item && (item.source || item.sourceId)) || '').trim().slice(0, 80);
     const target = String((item && (item.target || item.targetId)) || '').trim().slice(0, 80);
     const rawType = String((item && (item.type || item.relationType)) || 'related_to').trim().toLowerCase();
     const type = rawType.replace(/[^a-z0-9_:-]/g, '_').replace(/_+/g, '_').slice(0, 80) || 'related_to';
-    const label = String((item && item.label) || type).trim().slice(0, 120);
+    const sourceEntity = entityById.get(source);
+    const targetEntity = entityById.get(target);
+    const legacyLabel = String((item && item.label) || '').trim().slice(0, 120);
+    const shortLabel = validRelationShortLabel(item && item.shortLabel, sourceEntity, targetEntity)
+      ? String(item.shortLabel).trim()
+      : (RELATION_SHORT_LABELS[type] || RELATION_SHORT_LABELS.related_to);
+    const explanation = boundedRelationExplanation(item && item.explanation);
     const rawStatus = String((item && item.status) || 'asserted').trim().toLowerCase();
     const status = RELATION_STATUSES.has(rawStatus) ? rawStatus : 'asserted';
     const citationIndexes = verifiedIndexes(
-      item && item.citationIndexes, allowedIndexes, `${source} ${label} ${target}`, evidence, evidence,
+      item && item.citationIndexes, allowedIndexes, `${source} ${shortLabel} ${target}`, evidence, evidence,
     );
+    const relationRows = graphEvidenceRows(citationIndexes, evidence);
+    const explanationGrounding = entityDescriptionGroundingStats(explanation, relationRows);
+    const supported = sourceEntity && targetEntity
+      && relationEvidenceSupports(type, relationRows, sourceEntity, targetEntity)
+      && explanation
+      && explanationGrounding.supportedByMinimumAnchors
+      && explanationGrounding.numbersSupported
+      && explanationGrounding.polaritySupported;
     const confidence = Math.min(1, Math.max(0, Number(item && item.confidence) || 0.7));
-    return { source, target, type, label, status, citationIndexes, confidence };
+    return {
+      source,
+      target,
+      type,
+      shortLabel,
+      explanation: supported ? explanation : '',
+      label: legacyLabel,
+      status,
+      citationIndexes,
+      confidence,
+    };
   }).filter((item) => entityIds.has(item.source) && entityIds.has(item.target) && item.source !== item.target
-    && item.citationIndexes.length > 0 && item.confidence >= 0.5);
+    && item.explanation && item.citationIndexes.length > 0 && item.confidence >= 0.5);
   return { entities, relations };
 }
 
@@ -3480,21 +3706,28 @@ async function loadEntityGraph(workspaceId, mapId) {
     });
     return {
       status: 'ready',
-      entities: entities.map((item) => ({
-        id: item.id,
-        canonicalName: item.canonical_name,
-        entityType: item.entity_type,
-        aliases: Array.isArray(item.aliases) ? item.aliases : [],
-        description: item.description || '',
-        confidence: Number(item.confidence || 0),
-        citations: evidenceBySubject.get(`entity:${item.id}`) || [],
-      })),
+      entities: entities.map((item) => {
+        const entityEvidence = evidenceBySubject.get(`entity:${item.id}`) || [];
+        const descriptionIndexes = new Set(normalizeCitationIndexes(item.description_citation_indexes));
+        return {
+          id: item.id,
+          canonicalName: item.canonical_name,
+          entityType: item.entity_type,
+          aliases: Array.isArray(item.aliases) ? item.aliases : [],
+          description: item.description || '',
+          confidence: Number(item.confidence || 0),
+          citations: entityEvidence,
+          descriptionCitations: entityEvidence.filter((citation) => descriptionIndexes.has(citation.index)),
+        };
+      }),
       relations: relations.map((item) => ({
         id: item.id,
         sourceId: item.source_entity_id,
         targetId: item.target_entity_id,
         relationType: item.relation_type,
-        label: item.label || item.relation_type,
+        shortLabel: item.label || RELATION_SHORT_LABELS[item.relation_type] || RELATION_SHORT_LABELS.related_to,
+        label: item.label || RELATION_SHORT_LABELS[item.relation_type] || RELATION_SHORT_LABELS.related_to,
+        explanation: item.explanation || '',
         status: item.status || 'asserted',
         confidence: Number(item.confidence || 0),
         citations: evidenceBySubject.get(`relation:${item.id}`) || [],
@@ -3537,8 +3770,8 @@ async function createEntityGraphRows(workspaceId, mapId, documentId, entityGraph
       normalized_name: normalized,
       entity_type: item.type,
       aliases,
-      description: previous && String(previous.description || '').length >= String(item.description || '').length
-        ? String(previous.description || '') : String(item.description || ''),
+      description: String(item.description || ''),
+      description_citation_indexes: normalizeCitationIndexes(item.descriptionEvidence).slice(0, 12),
       confidence: Math.max(Number((previous && previous.confidence) || 0), Number(item.confidence || 0.5)),
       created_at: (previous && previous.created_at) || now,
       updated_at: now,
@@ -3559,7 +3792,8 @@ async function createEntityGraphRows(workspaceId, mapId, documentId, entityGraph
       source_entity_id: sourceId,
       target_entity_id: targetId,
       relation_type: item.type,
-      label: String(item.label || item.type).slice(0, 120),
+      label: String(item.shortLabel || item.label || RELATION_SHORT_LABELS[item.type] || RELATION_SHORT_LABELS.related_to).slice(0, 120),
+      explanation: String(item.explanation || '').slice(0, 240),
       status: item.status,
       confidence: Number(item.confidence || 0.5),
       created_at: now,
@@ -3597,7 +3831,10 @@ async function createEntityGraphRows(workspaceId, mapId, documentId, entityGraph
   };
   inputEntities.forEach((item) => {
     const id = tempToEntityId.get(item.tempId);
-    if (id) addEvidence('entity', id, item.citationIndexes);
+    // Official v4 entities persist only the dedicated, already-verified
+    // description evidence. It also proves entity occurrence because the
+    // normalizer requires the canonical name or an alias in the quote.
+    if (id) addEvidence('entity', id, item.descriptionEvidence);
   });
   relationRows.forEach((item) => addEvidence('relation', item.id, item.citationIndexes));
   if (evidenceRows.length) {
@@ -3845,8 +4082,8 @@ async function handleKnowledge(req, context) {
         supabaseRequest('GET', `maps?workspace_id=eq.${workspace}&select=*&order=is_default.desc,updated_at.desc&limit=500`),
         supabaseRequest('GET', `nodes?workspace_id=eq.${workspace}&status=eq.active&select=id,map_id,content,desc,type,status,source,confidence,created_at,updated_at&limit=12000`),
         supabaseRequest('GET', `edges?workspace_id=eq.${workspace}&select=id,map_id,source_id,target_id,relation,weight,created_at&limit=24000`),
-        supabaseRequest('GET', `graph_entities?workspace_id=eq.${workspace}&select=id,map_id,canonical_name,entity_type,aliases,description,confidence&order=confidence.desc&limit=12000`),
-        supabaseRequest('GET', `graph_relations?workspace_id=eq.${workspace}&select=id,map_id,source_entity_id,target_entity_id,relation_type,label,status,confidence&order=confidence.desc&limit=24000`),
+        supabaseRequest('GET', `graph_entities?workspace_id=eq.${workspace}&select=id,map_id,canonical_name,entity_type,aliases,description,description_citation_indexes,confidence&order=confidence.desc&limit=12000`),
+        supabaseRequest('GET', `graph_relations?workspace_id=eq.${workspace}&select=id,map_id,source_entity_id,target_entity_id,relation_type,label,explanation,status,confidence&order=confidence.desc&limit=24000`),
       ]);
       if (![mapRows, nodeRows, edgeRows, entityRows, relationRows].every(Array.isArray)) throw dependencyError('knowledge_store');
       const graphByMap = new Map(mapRows.map((row) => [row.id, {
@@ -3871,6 +4108,7 @@ async function handleKnowledge(req, context) {
           description: row.description || '',
           confidence: Number(row.confidence || 0),
           citations: [],
+          descriptionCitations: [],
         });
       });
       relationRows.forEach((row) => {
@@ -3881,7 +4119,9 @@ async function handleKnowledge(req, context) {
           sourceId: row.source_entity_id,
           targetId: row.target_entity_id,
           relationType: row.relation_type,
-          label: row.label || row.relation_type,
+          shortLabel: row.label || RELATION_SHORT_LABELS[row.relation_type] || RELATION_SHORT_LABELS.related_to,
+          label: row.label || RELATION_SHORT_LABELS[row.relation_type] || RELATION_SHORT_LABELS.related_to,
+          explanation: row.explanation || '',
           status: row.status || 'asserted',
           confidence: Number(row.confidence || 0),
           citations: [],
@@ -4274,6 +4514,8 @@ module.exports = {
   citationAudit,
   normalizedMindMap,
   normalizedEntityGraph,
+  entityDescriptionGroundingStats,
+  relationEvidenceSupports,
   deterministicEvidenceEntityGraph,
   normalizeCitationIndexes,
   normalizeDocumentLayout,

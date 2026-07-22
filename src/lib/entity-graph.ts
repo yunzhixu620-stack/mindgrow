@@ -30,6 +30,24 @@ const ENTITY_TYPE_LABELS: Record<string, string> = {
   other: "实体",
 };
 
+const RELATION_TYPE_LABELS: Record<string, string> = {
+  uses: "使用",
+  proposes: "提出",
+  evaluated_on: "评测于",
+  achieves: "达到",
+  depends_on: "依赖于",
+  retrieves_from: "检索自",
+  has_metric: "使用指标",
+  part_of: "属于",
+  contains: "包含",
+  contains_concept: "包含概念",
+  contradicts: "矛盾于",
+  responsible_for: "负责",
+  due_on: "截止于",
+  is: "定义为",
+  related_to: "相关于",
+};
+
 function citationsFor(indexes: number[] | undefined, citations: Citation[]) {
   const indexSet = new Set(indexes || []);
   return citations.filter((citation) => indexSet.has(citation.index));
@@ -48,22 +66,29 @@ export function aiEntityGraphToEntityGraph(
     description: entity.description || "",
     confidence: entity.confidence ?? 0.75,
     citations: citationsFor(entity.citationIndexes, citations),
+    descriptionCitations: citationsFor(entity.descriptionEvidence, citations),
   })).filter((entity) => entity.canonicalName && entity.citations.length > 0);
   const byTempId = new Map((graph?.entities || []).map((entity, index) => [
     entity.tempId || `E${index + 1}`,
     `${scope}:${entity.tempId || `E${index + 1}`}`,
   ]));
   const entityIds = new Set(entities.map((entity) => entity.id));
-  const relations: GraphRelation[] = (graph?.relations || []).map((relation, index) => ({
-    id: `${scope}:R${index + 1}`,
-    sourceId: byTempId.get(relation.source) || "",
-    targetId: byTempId.get(relation.target) || "",
-    relationType: relation.type || "related_to",
-    label: relation.label || relation.type || "关联",
-    status: relation.status || "asserted",
-    confidence: relation.confidence ?? 0.7,
-    citations: citationsFor(relation.citationIndexes, citations),
-  })).filter((relation) => entityIds.has(relation.sourceId) && entityIds.has(relation.targetId)
+  const relations: GraphRelation[] = (graph?.relations || []).map((relation, index) => {
+    const relationType = relation.type || "related_to";
+    const shortLabel = relation.shortLabel || relation.label || RELATION_TYPE_LABELS[relationType] || RELATION_TYPE_LABELS.related_to;
+    return {
+      id: `${scope}:R${index + 1}`,
+      sourceId: byTempId.get(relation.source) || "",
+      targetId: byTempId.get(relation.target) || "",
+      relationType,
+      shortLabel,
+      label: shortLabel,
+      explanation: relation.explanation || "",
+      status: relation.status || "asserted",
+      confidence: relation.confidence ?? 0.7,
+      citations: citationsFor(relation.citationIndexes, citations),
+    };
+  }).filter((relation) => entityIds.has(relation.sourceId) && entityIds.has(relation.targetId)
     && relation.sourceId !== relation.targetId && relation.citations.length > 0);
   return { entities, relations };
 }
@@ -98,6 +123,9 @@ export function entityGraphToKnowledgeGraph(graph: EntityGraph): {
     targetId: ids.get(relation.targetId) || `${ENTITY_PREFIX}${relation.targetId}`,
     relation: (relation.status === "negated" ? "contradicts" : "relates_to") as KnowledgeEdge["relation"],
     relationLabel: `${relation.label}${relation.status === "historical" ? "（历史）" : relation.status === "proposed" ? "（待确认）" : relation.status === "negated" ? "（否定）" : ""} · ${relation.citations.length} 证据`,
+    relationId: relation.id,
+    relationStatus: relation.status,
+    relationExplanation: relation.explanation,
     citations: relation.citations,
     weight: relation.confidence,
     createdAt,

@@ -17,6 +17,9 @@ export interface KnowledgeEdge {
   targetId: string;
   relation: "contains" | "relates_to" | "contradicts";
   relationLabel?: string;
+  relationId?: string;
+  relationStatus?: "asserted" | "historical" | "negated" | "proposed";
+  relationExplanation?: string;
   citations?: Citation[];
   weight: number;
   createdAt: string;
@@ -30,6 +33,7 @@ export interface GraphEntity {
   description: string;
   confidence: number;
   citations: Citation[];
+  descriptionCitations: Citation[];
 }
 
 export interface GraphRelation {
@@ -37,7 +41,9 @@ export interface GraphRelation {
   sourceId: string;
   targetId: string;
   relationType: string;
+  shortLabel: string;
   label: string;
+  explanation: string;
   status: "asserted" | "historical" | "negated" | "proposed";
   confidence: number;
   citations: Citation[];

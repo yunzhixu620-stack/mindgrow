@@ -550,6 +550,7 @@ function buildLocalEntityGraph(mindMap: AIMindMap): AIEntityGraph {
     type: "concept",
     aliases: [],
     description: mindMap.rootDesc || "",
+    descriptionEvidence: mindMap.rootCitationIndexes || [],
     citationIndexes: mindMap.rootCitationIndexes || [],
     confidence: 0.9,
   }];
@@ -562,6 +563,7 @@ function buildLocalEntityGraph(mindMap: AIMindMap): AIEntityGraph {
       type: "concept",
       aliases: [],
       description: child.desc || "",
+      descriptionEvidence: child.citationIndexes || [],
       citationIndexes: child.citationIndexes || [],
       confidence: 0.8,
     });
@@ -569,7 +571,8 @@ function buildLocalEntityGraph(mindMap: AIMindMap): AIEntityGraph {
       source: "E1",
       target: tempId,
       type: "contains_concept",
-      label: "包含概念",
+      shortLabel: "包含概念",
+      explanation: `${mindMap.root} 的知识结构包含 ${child.topic} 这一直接子主题。`,
       status: "asserted",
       citationIndexes: child.citationIndexes || [],
       confidence: 0.75,

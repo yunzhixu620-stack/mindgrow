@@ -10,6 +10,7 @@ const {
   citationAudit,
   normalizeCitationIndexes,
   normalizedEntityGraph,
+  entityDescriptionGroundingStats,
   deterministicEvidenceEntityGraph,
   sourcePages,
   classifyInput,
@@ -86,24 +87,140 @@ check("Supabase new API keys are not sent as invalid Bearer JWTs", () => {
 check("LLM Wiki entities and relations require direct source evidence", () => {
   const citations = [
     { index: 1, quote: "RAG combines parametric memory with a non-parametric Wikipedia index.", content: "RAG combines parametric memory with a non-parametric Wikipedia index.", locator: "page 1", sourceType: "pdf" },
-    { index: 2, quote: "DPR is used as the dense retriever for RAG.", content: "DPR is used as the dense retriever for RAG.", locator: "page 2", sourceType: "pdf" },
+    { index: 2, quote: "DPR is used by RAG as the dense retriever in the documented architecture.", content: "DPR is used by RAG as the dense retriever in the documented architecture.", locator: "page 2", sourceType: "pdf" },
   ];
   const graph = normalizedEntityGraph({
     entities: [
-      { tempId: "E1", name: "RAG", type: "model", citationIndexes: [1], confidence: 0.95 },
-      { tempId: "E2", name: "DPR", type: "method", citationIndexes: [2], confidence: 0.9 },
-      { tempId: "E3", name: "Unsupported Entity", type: "model", citationIndexes: [99], confidence: 0.9 },
+      {
+        tempId: "E1", name: "RAG", type: "model",
+        description: "RAG combines parametric memory with a non-parametric Wikipedia index.",
+        descriptionEvidence: [1], citationIndexes: [1], confidence: 0.95,
+      },
+      {
+        tempId: "E2", name: "DPR", type: "method",
+        description: "DPR is used by RAG as the dense retriever in the documented architecture.",
+        descriptionEvidence: [2], citationIndexes: [2], confidence: 0.9,
+      },
+      {
+        tempId: "E3", name: "Unsupported Entity", type: "model",
+        description: "Unsupported Entity is mentioned but has no dedicated description evidence here.",
+        citationIndexes: [1], confidence: 0.9,
+      },
     ],
     relations: [
-      { source: "E1", target: "E2", type: "uses", label: "使用", citationIndexes: [2], confidence: 0.9 },
-      { source: "E2", target: "E3", type: "related_to", citationIndexes: [2], confidence: 0.9 },
-      { source: "E2", target: "E1", type: "related_to", citationIndexes: [], confidence: 0.9 },
+      {
+        source: "E1", target: "E2", type: "uses", shortLabel: "使用",
+        explanation: "RAG uses DPR as the dense retriever for document retrieval.",
+        citationIndexes: [2], confidence: 0.9,
+      },
+      {
+        source: "E2", target: "E1", type: "uses", shortLabel: "使用",
+        explanation: "DPR uses RAG as its generator for document retrieval.",
+        citationIndexes: [2], confidence: 0.9,
+      },
+      { source: "E2", target: "E3", type: "related_to", explanation: "DPR is related to the unsupported entity in this source passage.", citationIndexes: [2], confidence: 0.9 },
     ],
   }, new Set([1, 2]), citations);
   assert.deepStrictEqual(graph.entities.map((item) => item.tempId), ["E1", "E2"]);
   assert.strictEqual(graph.relations.length, 1);
   assert.strictEqual(graph.relations[0].type, "uses");
+  assert.strictEqual(graph.relations[0].shortLabel, "使用");
+  assert.match(graph.relations[0].explanation, /^RAG uses DPR/);
+  assert.deepStrictEqual(graph.entities[0].descriptionEvidence, [1]);
   assert.deepStrictEqual(graph.relations[0].citationIndexes, [2]);
+});
+
+check("entity descriptions reject copied ids, weak anchors and fabricated numbers", () => {
+  const citations = [{
+    index: 1,
+    quote: "LayoutLMv3 uses Word-Patch Alignment to improve document understanding accuracy by 5%.",
+    content: "LayoutLMv3 uses Word-Patch Alignment to improve document understanding accuracy by 5%.",
+    locator: "page 3",
+    sourceType: "pdf",
+  }];
+  const base = {
+    tempId: "E1",
+    name: "LayoutLMv3",
+    type: "model",
+    citationIndexes: [1],
+    confidence: 0.95,
+  };
+  const missingDedicatedEvidence = normalizedEntityGraph({
+    entities: [{ ...base, description: "LayoutLMv3 uses Word-Patch Alignment to improve document understanding accuracy by 5%." }],
+    relations: [],
+  }, new Set([1]), citations);
+  assert.strictEqual(missingDedicatedEvidence.entities.length, 0);
+
+  const fabricatedNumber = normalizedEntityGraph({
+    entities: [{
+      ...base,
+      description: "LayoutLMv3 uses Word-Patch Alignment to improve document understanding accuracy by 50%.",
+      descriptionEvidence: [1],
+    }],
+    relations: [],
+  }, new Set([1]), citations);
+  assert.strictEqual(fabricatedNumber.entities.length, 0);
+
+  const stats = entityDescriptionGroundingStats(
+    "LayoutLMv3 is a completely unrelated cooking assistant for home kitchens.",
+    citations,
+  );
+  assert(stats.matchedAnchors.length < 2);
+});
+
+check("relations require predicate direction and use safe labels and complete explanations", () => {
+  const citations = [
+    {
+      index: 1,
+      quote: "RAG combines retrieved evidence with generation for knowledge-intensive tasks.",
+      content: "RAG combines retrieved evidence with generation for knowledge-intensive tasks.",
+      locator: "page 1",
+      sourceType: "pdf",
+    },
+    {
+      index: 2,
+      quote: "BART is a sequence-to-sequence model, and RAG is discussed in the same section.",
+      content: "BART is a sequence-to-sequence model, and RAG is discussed in the same section.",
+      locator: "page 2",
+      sourceType: "pdf",
+    },
+    {
+      index: 3,
+      quote: "RAG uses BART as the generator for knowledge-intensive tasks.",
+      content: "RAG uses BART as the generator for knowledge-intensive tasks.",
+      locator: "page 3",
+      sourceType: "pdf",
+    },
+  ];
+  const graph = normalizedEntityGraph({
+    entities: [
+      {
+        tempId: "E1", name: "RAG", type: "model",
+        description: "RAG combines retrieved evidence with generation for knowledge-intensive tasks.",
+        descriptionEvidence: [1], citationIndexes: [1, 2, 3], confidence: 0.95,
+      },
+      {
+        tempId: "E2", name: "BART", type: "model",
+        description: "BART is a sequence-to-sequence model used as a generator in this document.",
+        descriptionEvidence: [2, 3], citationIndexes: [2, 3], confidence: 0.9,
+      },
+    ],
+    relations: [
+      {
+        source: "E1", target: "E2", type: "uses", shortLabel: "使用（asserted）· 1 证据",
+        explanation: "RAG and BART merely appear together in this section without a stated usage relation.",
+        citationIndexes: [2], confidence: 0.9,
+      },
+      {
+        source: "E1", target: "E2", type: "uses", shortLabel: "使用（asserted）· 1 证据",
+        explanation: "RAG uses BART as its generator for knowledge tasks. This unsupported second sentence must be removed.",
+        citationIndexes: [3], confidence: 0.9,
+      },
+    ],
+  }, new Set([1, 2, 3]), citations);
+  assert.strictEqual(graph.relations.length, 1);
+  assert.strictEqual(graph.relations[0].shortLabel, "使用");
+  assert.strictEqual(graph.relations[0].explanation, "RAG uses BART as its generator for knowledge tasks.");
 });
 
 check("entity extraction prompt requires explainable descriptions and concise relations", () => {
@@ -305,11 +422,18 @@ check("grounded answer sources prioritize direct graph evidence and stay within 
 
 check("entity graph migration is tenant-scoped and service-role only", () => {
   const migration = fs.readFileSync(path.join(__dirname, "..", "supabase-v10-entity-graph-migration.sql"), "utf8");
+  const groundingMigration = fs.readFileSync(path.join(__dirname, "..", "supabase-v11-entity-grounding-migration.sql"), "utf8");
   ["graph_entities", "graph_relations", "graph_evidence"].forEach((table) => {
     assert(migration.includes(`CREATE TABLE IF NOT EXISTS ${table}`));
     assert(migration.includes(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`));
   });
   assert(migration.includes("REVOKE ALL ON TABLE graph_entities, graph_relations, graph_evidence FROM PUBLIC, anon, authenticated"));
+  assert(migration.includes("description_citation_indexes JSONB NOT NULL DEFAULT '[]'::jsonb"));
+  assert(migration.includes("explanation TEXT NOT NULL DEFAULT ''"));
+  assert(groundingMigration.includes("ADD COLUMN IF NOT EXISTS description_citation_indexes JSONB NOT NULL DEFAULT '[]'::jsonb"));
+  assert(groundingMigration.includes("ADD COLUMN IF NOT EXISTS explanation TEXT NOT NULL DEFAULT ''"));
+  assert(groundingMigration.includes("DROP COLUMN IF EXISTS description_citation_indexes"));
+  assert(groundingMigration.includes("DROP COLUMN IF EXISTS explanation"));
 });
 
 const all = fixtures.map((fixture) => {
@@ -654,7 +778,7 @@ check("deterministic Chinese fallback keeps parsing available when localization 
   assert.strictEqual(fallback.mindMap.children.length, 1);
 });
 
-check("handler-boundary article recovery returns a usable Chinese graph with verbatim citations", () => {
+check("handler-boundary article recovery stays usable without admitting ungrounded fallback entities", () => {
   const content = "[PAGE 1]\nRetrieval-Augmented Generation for Knowledge-Intensive NLP Tasks\nAbstract\nLarge language models have limited access to explicit knowledge. Retrieval-augmented generation combines parametric and non-parametric memory. RAG uses DPR. DPR uses Wikipedia.\n1 Introduction\nThe retriever accesses Wikipedia passages.";
   const response = recoveredChineseArticleResponse({ content, sourceType: "pdf", fileName: "rag.pdf" }, { content, sourceType: "pdf", fileName: "rag.pdf" });
   assert.strictEqual(response.status, 200);
@@ -664,9 +788,8 @@ check("handler-boundary article recovery returns a usable Chinese graph with ver
   assert(response.data.citations.length > 0);
   assert(content.replace(/\s+/g, " ").includes(response.data.citations[0].quote.replace(/\s+/g, " ")));
   assert(response.data.mindMap.children.every((child) => child.citationIndexes.length > 0));
-  assert(response.data.entityGraph.entities.length >= 3);
-  assert(response.data.entityGraph.relations.length >= 2);
-  assert(response.data.entityGraph.relations.every((relation) => relation.citationIndexes.length > 0));
+  assert.strictEqual(response.data.entityGraph.entities.length, 0);
+  assert.strictEqual(response.data.entityGraph.relations.length, 0);
 });
 
 check("conversation context is used only for real follow-up references", () => {
