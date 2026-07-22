@@ -52,4 +52,6 @@
 - GraphRAG 冻结评测：Recall@5/MRR/实体 Hit@5/实体 Top-1/歧义/路由均为 100%。
 - RAG 回归 64/64、单元测试 171/171、本地后端 9/9、产品 E2E 37/37；lint、生产构建、API 版本和部署身份门禁通过。
 - 改动差异的密钥格式扫描为 0 命中；构建生成的 `out/` 没有进入提交。
-- 阿里云 10.12.0、前端 GitHub Pages 和公网门禁必须等 PR/CI 合并后执行，尚未在本节冒充已发布。
+- PR #54 已压缩合并为 `main@025cce2379af04c06d4be2e310e49c90cf62e1b1`；阿里云 API `10.12.0` 与 GitHub Pages 已发布。
+- 公网 `/health` 返回 `status=ok`、`gitSha=025cce2379af04c06d4be2e310e49c90cf62e1b1`、`authRequired=true`、`deploymentIdentity=ready`、`graphRagRanking=ready`。
+- 公网 backend smoke 7/7、公网 E2E 7/7 与 production fact workflow `29961416163` 全部通过；`gh-pages@f08d9f3` 已清除部署中转文件。

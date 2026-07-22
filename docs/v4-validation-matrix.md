@@ -2,7 +2,7 @@
 
 > 执行基线：`docs/codex-tasks-v4.md`
 > 更新规则：每个任务进入下一阶段前更新本表；“已有局部能力”不等于“任务已完成”。
-> 最近核对基线：已发布前端 `main@055123d`、后端源码 `5ee87d4`；S2.11 于 2026-07-23 完成生产事实校验。
+> 最近核对基线：已发布前后端 `main@025cce2`、API `10.12.0`；S2.12 于 2026-07-23 完成生产事实校验。
 
 ## 状态定义
 
@@ -56,7 +56,7 @@
 | S2.9 阿里云常驻实例 | 已完成 | Owner 已授权；`mindgrow-api` 的 `LATEST` 弹性策略为实际 1 / 目标 1、运行正常；成本、延迟证据和回滚步骤见 `docs/s2-9-aliyun-min-instance.md` |
 | S2.10 观测/on-call | 已合并 | PR #52 / `5dfff96`，后端源码 `5ee87d4`；API `10.11.0`、精确 `gitSha`、生产 fail-closed、on-call 闭环、GitHub Pages 与 production fact 均通过 |
 | S2.11 PDF Viewer + 原文高亮 | 已合并 | PR #53 / `055123d`；页码定位、PDF.js `PDFFindController` 高亮、统一引用跳转与防导航穿透均已发布；unit 171/171、lint、build、产品 E2E 37/37、公网 E2E 7/7 与 production fact 均通过 |
-| S2.12 查询时 GraphRAG 定位 | 开发中 | Supabase v15 已执行；本地实现 API 10.12.0、entity linking、混合召回、1–2 跳路径重排、拒答和可见路由；冻结集全部指标 100%，RAG 64/64、unit 171/171、后端 9/9、产品 E2E 37/37；待 PR/CI、阿里云与前端生产发布验证 |
+| S2.12 查询时 GraphRAG 定位 | 已合并 | PR #54 / `025cce2`；Supabase V15、阿里云 API `10.12.0` 与 GitHub Pages 均已发布；entity linking、混合召回、1–2 跳路径重排、拒答和可见路由已上线，冻结集全部指标 100%，公网 backend smoke 7/7、公网 E2E 7/7 与 production fact 均通过 |
 | S2.13 一键整理知识库 | 局部已有 | 已有分级展开/展示能力；缺多策略、预览、撤销和默认不整理的完整闭环 |
 | S2.14 统一知识宇宙 | 局部已有 | 三模块已有共享展示基础；缺统一实体与“会议确认后入长期库”门禁 |
 | S2.15 多源文章 + Audio Overview | 局部已有 | 已支持部分 URL/PDF/正文与 citation；缺完整拒答、可靠多源覆盖及 Audio Overview |
@@ -120,3 +120,13 @@
 5. [x] 公网 backend smoke 7/7 通过；匿名 bootstrap、知识库、PATCH、workspace 与 Audio Overview 均返回应用层 `401`。
 6. [x] PR #52 以 merge commit `5dfff96` 合并；`gh-pages@cf341ca` 发布成功，production fact workflow `29953237638` 精确核对前端 `5dfff9632a76136b69c7c667d0318121319d69dc` 与后端 `5ee87d450af8dc4a75fde169064ef5e2d5c96fd8` 并通过。
 7. [x] 公网前端 E2E 7/7 通过；重新部署后阿里云 `LATEST` 弹性策略仍为实际 1 / 目标 1、运行正常。
+
+## S2.12 发布检查点
+
+1. [x] PR #54 压缩合并为 `main@025cce2379af04c06d4be2e310e49c90cf62e1b1`；合并前 Vercel 预览、CI 与部署事实门禁全部通过。
+2. [x] Supabase production project 已执行 V15 migration；`hybrid_search_document_chunks_v2` 上线且不改写现有表或用户数据，原 v1 RPC 保留作为回退。
+3. [x] 阿里云环境变量 `MINDGROW_GIT_SHA` 与实际后端源码均更新到合并提交；API `10.12.0` 发布成功，`/health` 返回 `status=ok`、`authRequired=true`、`deploymentIdentity=ready`、`graphRagRanking=ready`。
+4. [x] 公网 backend smoke 7/7 通过；匿名 bootstrap、知识库、PATCH、workspace 与 Audio Overview 均由应用层拒绝。
+5. [x] `gh-pages@f08d9f3` 发布成功并清除部署中转文件；公网 E2E 7/7 通过。
+6. [x] production fact workflow `29961416163` 精确核对前端与后端均为 `025cce2379af04c06d4be2e310e49c90cf62e1b1`、API `10.12.0` 与 `authRequired=true` 并通过。
+7. [x] 冻结评测 Recall@5、MRR、实体 Hit@5、实体 Top-1、歧义与路由全部为 100%；RAG 64/64、unit 171/171、本地后端 9/9、产品 E2E 37/37 均通过。
