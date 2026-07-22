@@ -1,0 +1,150 @@
+[
+  {
+    "id": "en-rag-definition",
+    "group": "english-paper",
+    "expectedSupported": true,
+    "description": "RAG combines parametric memory with a non-parametric Wikipedia index.",
+    "quote": "RAG combines parametric memory with a non-parametric Wikipedia index."
+  },
+  {
+    "id": "en-dpr-role",
+    "group": "english-paper",
+    "expectedSupported": true,
+    "description": "DPR serves as the dense retriever that supplies passages to the RAG generator.",
+    "quote": "RAG uses DPR as its dense retriever before sending retrieved passages to the generator."
+  },
+  {
+    "id": "en-layoutlmv3-number",
+    "group": "english-paper",
+    "expectedSupported": true,
+    "description": "LayoutLMv3 improves document understanding accuracy by 5% with Word-Patch Alignment.",
+    "quote": "LayoutLMv3 uses Word-Patch Alignment and improves document understanding accuracy by 5%."
+  },
+  {
+    "id": "en-acronym-alias",
+    "group": "alias",
+    "expectedSupported": true,
+    "description": "Retrieval-Augmented Generation, abbreviated RAG, retrieves evidence before generation.",
+    "quote": "Retrieval-Augmented Generation (RAG) first retrieves supporting evidence and then generates an answer."
+  },
+  {
+    "id": "zh-rag-definition",
+    "group": "chinese-paper",
+    "expectedSupported": true,
+    "description": "RAG 是一种先检索外部证据，再基于检索结果生成答案的知识增强方法。",
+    "quote": "RAG 是一种知识增强方法，它先检索外部证据，再根据检索结果生成最终答案。"
+  },
+  {
+    "id": "zh-graph-role",
+    "group": "chinese-paper",
+    "expectedSupported": true,
+    "description": "知识图谱用于保存实体关系，并为跨段落检索提供结构化路径。",
+    "quote": "系统把实体和关系写入知识图谱，检索时沿结构化路径找到跨段落证据。"
+  },
+  {
+    "id": "zh-metric-number",
+    "group": "chinese-paper",
+    "expectedSupported": true,
+    "description": "Recall@5 是前五个检索结果中命中正确证据的召回指标，本实验达到 85%。",
+    "quote": "实验以 Recall@5 衡量前五个检索结果的证据召回率，最终结果为 85%。"
+  },
+  {
+    "id": "meeting-owner",
+    "group": "meeting",
+    "expectedSupported": true,
+    "description": "张三是本次检索评测任务的负责人，需要在周五前提交结果。",
+    "quote": "会议确认由张三负责检索评测，并要求他在周五前提交评测结果。"
+  },
+  {
+    "id": "meeting-decision",
+    "group": "meeting",
+    "expectedSupported": true,
+    "description": "私有化部署方案已被会议明确否决，当前不会进入实施阶段。",
+    "quote": "与会者明确否决了私有化部署方案，因此现阶段不实施该方案。"
+  },
+  {
+    "id": "cross-language-terms",
+    "group": "cross-language",
+    "expectedSupported": true,
+    "description": "DPR 通过 dual encoder 编码问题与段落，是 RAG 的 dense retriever。",
+    "quote": "DPR is a dual encoder that encodes questions and passages and acts as the dense retriever for RAG."
+  },
+  {
+    "id": "zh-definition-paraphrase",
+    "group": "chinese-paper",
+    "expectedSupported": true,
+    "description": "Word-Patch Alignment 通过对齐文本词元和图像块学习跨模态表示。",
+    "quote": "Word-Patch Alignment 学习文本与图像块之间的跨模态对齐表示。"
+  },
+  {
+    "id": "meeting-risk",
+    "group": "meeting",
+    "expectedSupported": true,
+    "description": "邮件发送额度不足被记录为上线风险，需要在发布前完成扩容。",
+    "quote": "上线风险是邮件额度不足，团队需要在正式发布前扩容发送配额。"
+  },
+  {
+    "id": "unsupported-entity-mention-only",
+    "group": "negative",
+    "expectedSupported": false,
+    "name": "RAG",
+    "description": "RAG 是一种用于医学影像分割并自动生成三维标注的视觉模型。",
+    "quote": "本文比较 RAG 与 DPR 的文本检索性能。"
+  },
+  {
+    "id": "unsupported-fabricated-number",
+    "group": "negative",
+    "expectedSupported": false,
+    "name": "LayoutLMv3",
+    "description": "LayoutLMv3 使用 Word-Patch Alignment 后将准确率提升了 50%。",
+    "quote": "LayoutLMv3 使用 Word-Patch Alignment 后将准确率提升了 5%。"
+  },
+  {
+    "id": "unsupported-generic-overlap",
+    "group": "negative",
+    "expectedSupported": false,
+    "name": "RAG",
+    "description": "RAG 通过检索证据完全消除了所有事实错误，并保证答案始终正确。",
+    "quote": "RAG 通过检索证据降低部分事实错误，但不能保证所有答案正确。"
+  },
+  {
+    "id": "unsupported-cooccurrence",
+    "group": "negative",
+    "expectedSupported": false,
+    "name": "BM25",
+    "description": "BM25 是 DPR 内部使用的神经网络编码器，负责生成稠密向量。",
+    "quote": "实验分别比较 BM25 和 DPR；DPR 使用神经网络编码器生成稠密向量。"
+  },
+  {
+    "id": "unsupported-wrong-owner",
+    "group": "negative",
+    "expectedSupported": false,
+    "name": "李四",
+    "description": "李四负责检索评测，并需要在周五前提交最终结果。",
+    "quote": "会议确认由张三负责检索评测，并要求张三在周五前提交结果。"
+  },
+  {
+    "id": "unsupported-wrong-domain",
+    "group": "negative",
+    "expectedSupported": false,
+    "name": "DPR",
+    "description": "DPR 是一个财务预测模型，用于计算下一季度的股票价格。",
+    "quote": "DPR is a dense passage retriever used to find relevant text passages."
+  },
+  {
+    "id": "unsupported-negation-flip",
+    "group": "negative",
+    "expectedSupported": false,
+    "name": "私有化部署方案",
+    "description": "会议已经批准私有化部署方案，并决定下周立即开始实施。",
+    "quote": "会议没有批准私有化部署方案，下周也不会开始实施。"
+  },
+  {
+    "id": "unsupported-empty-overlap",
+    "group": "negative",
+    "expectedSupported": false,
+    "name": "Atlas",
+    "description": "Atlas 是一家负责硬件供应链管理和仓储调度的商业机构。",
+    "quote": "RAG retrieves Wikipedia passages with a dense retriever."
+  }
+]
