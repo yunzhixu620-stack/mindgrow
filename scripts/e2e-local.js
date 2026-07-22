@@ -109,6 +109,9 @@ const expandOneVisibleLevel = async (page, previousCount) => {
   });
 
   await check("whiteboard view persists card positions and returns to the mind map", async () => {
+    // Reproduce the real race: the mind-map "show all" action schedules a
+    // viewport refit immediately before the user switches to whiteboard.
+    await revealAllStoredNodes(page);
     await page.waitForSelector('[data-testid="canvas-view-whiteboard"]', { timeout: 30000 });
     const activeMapId = await page.$eval('[data-testid="knowledge-workspace"]', (element) => element.getAttribute("data-current-map-id"));
     if (!activeMapId) throw new Error("Active map id is missing");
@@ -309,6 +312,119 @@ const expandOneVisibleLevel = async (page, previousCount) => {
         && state.maps.find((map) => map.id === mapId)?.canvasView === "mindmap";
     }, {}, activeMapId);
     await revealAllStoredNodes(page);
+  });
+
+  await check("500-card whiteboard keeps pan zoom keyboard and mobile controls usable", async () => {
+    const primaryStorageBefore = await page.evaluate(() => localStorage.getItem("mindgrow.local.v2"));
+    const largeContext = await browser.createBrowserContext();
+    const largePage = await largeContext.newPage();
+    const createdAt = new Date().toISOString();
+    const largeMapId = "map_whiteboard_500";
+    const largeNodes = Array.from({ length: 500 }, (_, index) => ({
+      id: `scale_node_${index}`,
+      content: `规模测试知识点 ${index + 1}`,
+      desc: `用于验证五百张阅读卡在平移、缩放与渐进展示下仍可交互，原始摘要 ${index + 1} 保持完整。`,
+      type: index % 20 === 0 ? "topic" : index % 4 === 0 ? "concept" : "detail",
+      status: "active",
+      source: "ai_generated",
+      confidence: 1,
+      citations: [{ index: 1, title: "规模测试固定样本", locator: `段落 ${index + 1}`, quote: `规模测试证据 ${index + 1}` }],
+      createdAt,
+      updatedAt: createdAt,
+    }));
+    const largeState = {
+      version: 2,
+      maps: [{
+        id: largeMapId,
+        name: "500 卡白板性能样本",
+        description: "固定大图交互样本",
+        mode: "knowledge",
+        canvasView: "whiteboard",
+        color: "#22d3a7",
+        isDefault: true,
+        categoryId: null,
+        nodeCount: 500,
+        createdAt,
+        updatedAt: createdAt,
+      }],
+      categories: [],
+      nodes: { [largeMapId]: largeNodes },
+      edges: { [largeMapId]: [] },
+      entityGraphs: { [largeMapId]: { entities: [], relations: [] } },
+      layouts: {},
+      whiteboardGroups: { [largeMapId]: [] },
+    };
+    for (let index = 0; index < largeNodes.length; index += 1) {
+      const node = largeNodes[index];
+      largeState.layouts[node.id] = {
+        nodeId: node.id,
+        mapId: largeMapId,
+        positionX: 80 + (index % 20) * 344,
+        positionY: 96 + Math.floor(index / 20) * 232,
+        zoomLevel: 1,
+        groupId: null,
+        cardWidth: 280,
+        cardHeight: 168,
+        updatedAt: createdAt,
+      };
+    }
+    await largePage.evaluateOnNewDocument((state) => {
+      localStorage.setItem("mindgrow.local.v2", JSON.stringify(state));
+      sessionStorage.setItem("mindgrow.e2e.initialized", "true");
+    }, largeState);
+    try {
+      await largePage.setViewport({ width: 1440, height: 900 });
+      const startedAt = Date.now();
+      await largePage.goto(BASE_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
+      try {
+        await largePage.waitForSelector('[data-testid="knowledge-graph-workspace"][data-canvas-view="whiteboard"][data-whiteboard-viewport-culling="true"]', { timeout: 30000 });
+      } catch (error) {
+        const diagnostics = await largePage.evaluate(() => ({
+          body: document.body.innerText.slice(0, 600),
+          storedMaps: JSON.parse(localStorage.getItem("mindgrow.local.v2") || "null")?.maps?.map((map) => ({ id: map.id, canvasView: map.canvasView, nodeCount: map.nodeCount })),
+          workspace: document.querySelector('[data-testid="knowledge-graph-workspace"]')?.outerHTML.slice(0, 500) || null,
+        }));
+        throw new Error(`Large whiteboard did not initialize: ${JSON.stringify(diagnostics)} (${error.message})`);
+      }
+      await largePage.waitForFunction(() => document.querySelector('[data-testid="knowledge-graph-workspace"]')?.getAttribute("data-whiteboard-detail-level") === "summary");
+      const renderedCardCount = await largePage.$$eval('[data-whiteboard-card="true"]', (cards) => cards.length);
+      if (renderedCardCount <= 0 || renderedCardCount >= 150) throw new Error(`Viewport culling rendered ${renderedCardCount}/500 cards`);
+      if (Date.now() - startedAt > 10000) throw new Error("500-card whiteboard took over 10 seconds to become interactive");
+
+      await largePage.keyboard.press("g");
+      await largePage.waitForSelector('[data-testid="whiteboard-group-editor"]');
+      await largePage.keyboard.press("Escape");
+      await largePage.waitForFunction(() => !document.querySelector('[data-testid="whiteboard-group-editor"]'));
+      const beforeTransform = await largePage.$eval(".react-flow__viewport", (element) => element.style.transform);
+      const interactionStartedAt = Date.now();
+      await largePage.mouse.move(720, 450);
+      await largePage.mouse.wheel({ deltaY: -520 });
+      await largePage.waitForFunction((previous) => document.querySelector(".react-flow__viewport")?.style.transform !== previous, { timeout: 2000 }, beforeTransform);
+      if (Date.now() - interactionStartedAt > 2000) throw new Error("500-card whiteboard zoom exceeded the 2 second interaction budget");
+      await largePage.waitForFunction(() => document.querySelector('[data-testid="knowledge-graph-workspace"]')?.getAttribute("data-whiteboard-detail-level") === "full");
+      await largePage.waitForSelector('[data-whiteboard-card="true"] [aria-label="节点引用"]');
+      await largePage.keyboard.press("0");
+
+      await largePage.setViewport({ width: 375, height: 667, isMobile: true, hasTouch: true });
+      await largePage.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
+      await largePage.waitForSelector('[data-testid="mobile-view-toolbar"] button[aria-label="查看知识图谱"]');
+      await largePage.click('[data-testid="mobile-view-toolbar"] button[aria-label="查看知识图谱"]');
+      await largePage.waitForSelector('[data-testid="knowledge-graph-workspace"][data-whiteboard-viewport-culling="true"]');
+      await largePage.waitForSelector('[data-testid="mobile-create-whiteboard-group"]');
+      await largePage.waitForFunction(() => document.querySelector('[data-testid="knowledge-graph-workspace"]')?.getAttribute("data-whiteboard-detail-level") === "title");
+      await largePage.click('[data-whiteboard-card="true"]');
+      await largePage.waitForSelector('[data-whiteboard-card="true"][data-whiteboard-detail-level="full"] [aria-label="节点引用"]');
+      await largePage.click('[data-testid="mobile-create-whiteboard-group"]');
+      await largePage.waitForSelector('[data-testid="whiteboard-group-editor"]');
+      await largePage.keyboard.press("Escape");
+      const mobileOverflow = await largePage.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+      if (mobileOverflow) throw new Error("Large whiteboard overflows the mobile viewport");
+      await largePage.screenshot({ path: path.join(artifactDir, "whiteboard-500-mobile.png"), fullPage: true });
+    } finally {
+      await largeContext.close();
+    }
+    const primaryStorageAfter = await page.evaluate(() => localStorage.getItem("mindgrow.local.v2"));
+    if (primaryStorageBefore && primaryStorageAfter !== primaryStorageBefore) throw new Error("500-card fixture leaked into the primary test workspace");
   });
 
   await check("theme toggle persists and updates the graph palette without a wrong-theme flash", async () => {
@@ -1293,6 +1409,9 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     }
   });
 
+  await page.setViewport({ width: 1440, height: 900, isMobile: false, hasTouch: false });
+  await page.goto(`${BASE_URL}/guide`, { waitUntil: "domcontentloaded", timeout: 60000 });
+  await page.waitForFunction(() => document.documentElement.scrollWidth > 0 && document.documentElement.scrollHeight > 0);
   await page.screenshot({ path: path.join(artifactDir, "seo-guide.png"), fullPage: true });
   await Promise.race([
     browser.close(),

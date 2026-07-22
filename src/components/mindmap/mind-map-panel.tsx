@@ -38,12 +38,14 @@ import { searchEntityNetwork, selectEntityNetwork, type EntityNetworkMode } from
 import {
   buildWhiteboardCardGeometry,
   isWhiteboardGroupNode,
+  whiteboardDetailLevel,
   whiteboardDropGeometry,
   whiteboardGroupHeight,
   whiteboardGroupIdFromNodeId,
   whiteboardGroupNodeId,
   WHITEBOARD_CARD_HEIGHT,
   WHITEBOARD_CARD_WIDTH,
+  WHITEBOARD_LARGE_MAP_THRESHOLD,
 } from "@/components/mindmap/whiteboard-layout";
 import { WhiteboardGroupNode, type WhiteboardGroupNodeData } from "@/components/mindmap/whiteboard-group-node";
 
@@ -195,6 +197,11 @@ function MindGrowNode({ data, selected }: NodeProps) {
   const citations = (data.citations || []) as KnowledgeNode["citations"];
   const whiteboard = data.whiteboard as boolean;
   const whiteboardGroupId = String(data.whiteboardGroupId || "");
+  const whiteboardDetail = selected
+    ? "full"
+    : String(data.whiteboardDetailLevel || "full");
+  const showDescription = showDetails && (!whiteboard || whiteboardDetail !== "title");
+  const showCitations = showDetails && (!whiteboard || whiteboardDetail === "full");
   const isOverview = isDisplayOverviewNode(data.nodeId as string);
   const borderColor = branchIndex > 0
     ? BRANCH_COLORS[branchIndex % BRANCH_COLORS.length]
@@ -215,6 +222,7 @@ function MindGrowNode({ data, selected }: NodeProps) {
       data-display-overview={isOverview ? "true" : undefined}
       data-whiteboard-card={whiteboard ? "true" : undefined}
       data-whiteboard-persisted={whiteboard ? String(Boolean(data.whiteboardPersisted)) : undefined}
+      data-whiteboard-detail-level={whiteboard ? whiteboardDetail : undefined}
       className={`
         group relative rounded-xl ${whiteboard ? "h-full w-full min-w-0 max-w-none overflow-hidden px-4 py-3" : compact ? "min-w-[150px] max-w-[190px] px-3 py-2" : "min-w-[170px] max-w-[230px] px-3.5 py-3"}
         text-left transition-all duration-200 cursor-grab active:cursor-grabbing
@@ -250,12 +258,12 @@ function MindGrowNode({ data, selected }: NodeProps) {
       <div className="line-clamp-2 text-[13px] font-semibold leading-snug break-words" title={data.label as string}>
         {data.label as string}
       </div>
-      {showDetails && desc && (
+      {showDescription && desc && (
         <div className="mt-1 line-clamp-3 break-words text-[10px] leading-relaxed opacity-65">
           {desc}
         </div>
       )}
-      {showDetails && citations && citations.length > 0 && (
+      {showCitations && citations && citations.length > 0 && (
         <div className="mt-1.5 flex flex-wrap justify-start gap-1" aria-label="节点引用">
           {citations.slice(0, 4).map((citation) => (
             <span key={`${citation.documentId || "source"}-${citation.index}`} title={`${citation.locator || "原文"}：${citation.quote}`} className="rounded bg-[#22d3a720] px-1.5 py-0.5 text-[9px] font-semibold text-[#7de8c9]">[{citation.index}]</span>
@@ -819,6 +827,8 @@ function HelpPanel({ onClose }: { onClose: () => void }) {
     { keys: "右键节点", desc: "操作菜单" },
     { keys: "点击 +N", desc: "逐层展开/折叠" },
     { keys: "点击 ◎", desc: "聚焦单个分支" },
+    { keys: "G", desc: "白板新建空间分组" },
+    { keys: "0", desc: "白板适配全部内容" },
     { keys: "左键拖拽", desc: "平移画布" },
     { keys: "Shift+拖拽", desc: "框选节点" },
     { keys: "滚轮", desc: "缩放" },
@@ -900,6 +910,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
   const [selectedRelationId, setSelectedRelationId] = useState<string | null>(null);
   const [autoShowNodeDetails, setAutoShowNodeDetails] = useState(true);
+  const [canvasZoom, setCanvasZoom] = useState(1);
   const [detailMode, setDetailMode] = useState<"auto" | "title" | "card">("auto");
   const [contextNode, setContextNode] = useState<KnowledgeNode | null>(null);
   const [nodeContext, setNodeContext] = useState<NodeContext | null>(null);
@@ -915,6 +926,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
   const selectedEntityIdRef = useRef<string | null>(null);
   const whiteboardFocusKeyRef = useRef("");
   const whiteboardGroupDragRef = useRef<WhiteboardGroupDragSnapshot | null>(null);
+  const refitTimerRef = useRef<number | null>(null);
   selectedEntityIdRef.current = selectedEntityId;
 
   // Detect mobile
@@ -969,6 +981,8 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
   );
   const activeNodes = showingEntityGraph ? entityDisplayGraph.nodes : storeNodes;
   const activeEdges = showingEntityGraph ? entityDisplayGraph.edges : storeEdges;
+  const largeWhiteboard = isWhiteboard && activeNodes.length >= WHITEBOARD_LARGE_MAP_THRESHOLD;
+  const whiteboardDisclosure = whiteboardDetailLevel(activeNodes.length, canvasZoom, isMobile);
 
   useEffect(() => {
     const handleCommandEntityFocus = (event: Event) => {
@@ -1029,7 +1043,9 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
   );
 
   const refitGraph = useCallback(() => {
-    window.setTimeout(() => {
+    if (refitTimerRef.current !== null) window.clearTimeout(refitTimerRef.current);
+    refitTimerRef.current = window.setTimeout(() => {
+      refitTimerRef.current = null;
       reactFlowInstance.current?.fitView({
         padding: isMobile ? 0.14 : 0.24,
         minZoom: isMobile ? 0.45 : 0.55,
@@ -1038,6 +1054,10 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
       });
     }, 80);
   }, [isMobile]);
+
+  useEffect(() => () => {
+    if (refitTimerRef.current !== null) window.clearTimeout(refitTimerRef.current);
+  }, []);
 
   const focusEntityFromSearch = useCallback((entityId: string) => {
     setGraphLayer("entity");
@@ -1347,6 +1367,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
     const cardNodes = conceptGraph.nodes.map((node) => {
       const card = geometry.get(node.id);
       if (!card) return node;
+      const detailLevel = node.data.highlighted ? "full" : whiteboardDisclosure;
       return {
         ...node,
         position: card.position,
@@ -1360,6 +1381,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
           direction: "horizontal",
           showDetails: true,
           whiteboard: true,
+          whiteboardDetailLevel: detailLevel,
           whiteboardGroupId: card.groupId,
           whiteboardPersisted: card.persisted,
           onLeaveWhiteboardGroup: leaveWhiteboardGroup,
@@ -1393,7 +1415,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
       nodes: [...groupNodes, ...cardNodes],
       edges: conceptGraph.edges.filter((edge) => visibleCardIds.has(edge.source) && visibleCardIds.has(edge.target)),
     };
-  }, [activeWhiteboardGroups, currentMapId, groupBusyId, handleFocusBranch, handleToggleBranch, highlightedNodeId, isMobile, layouts, leaveWhiteboardGroup, openRenameWhiteboardGroup, resizeWhiteboardGroup, searchResults, storeEdges, storeNodes, sv, toggleWhiteboardGroup]);
+  }, [activeWhiteboardGroups, currentMapId, groupBusyId, handleFocusBranch, handleToggleBranch, highlightedNodeId, isMobile, layouts, leaveWhiteboardGroup, openRenameWhiteboardGroup, resizeWhiteboardGroup, searchResults, storeEdges, storeNodes, sv, toggleWhiteboardGroup, whiteboardDisclosure]);
 
   const baseGraph = useMemo(
     () => showingEntityGraph
@@ -1488,6 +1510,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
     if (!firstCard) return;
     const timeout = window.setTimeout(() => {
       const zoom = isMobile ? 0.72 : 0.88;
+      setCanvasZoom(zoom);
       reactFlowInstance.current?.setViewport({
         x: (isMobile ? 24 : 40) - firstCard.position.x * zoom,
         y: (isMobile ? 118 : 150) - firstCard.position.y * zoom,
@@ -1525,6 +1548,10 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
   const switchCanvasView = useCallback(async (nextView: "mindmap" | "whiteboard") => {
     if (!currentMapId || showingEntityGraph || nextView === canvasView) return;
     const previousView = canvasView;
+    if (nextView === "whiteboard" && refitTimerRef.current !== null) {
+      window.clearTimeout(refitTimerRef.current);
+      refitTimerRef.current = null;
+    }
     setCanvasViewError("");
     setMaps(maps.map((map) => map.id === currentMapId ? { ...map, canvasView: nextView } : map));
     try {
@@ -1651,9 +1678,15 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      const active = document.activeElement as HTMLElement | null;
+      const editingText = Boolean(active && (
+        active.tagName === "INPUT"
+        || active.tagName === "TEXTAREA"
+        || active.tagName === "SELECT"
+        || active.isContentEditable
+      ));
       if (e.key === "Delete" || e.key === "Backspace") {
-        const active = document.activeElement;
-        if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA")) return;
+        if (editingText) return;
         const selected = flowNodes.filter((n) => n.selected && !isDisplayOverviewNode(n.id) && !isEntityViewNode(n.id) && !isWhiteboardGroupNode(n.id));
         if (selected.length === 0) return;
         e.preventDefault();
@@ -1680,7 +1713,17 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
       if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) { e.preventDefault(); undo(); }
       if ((e.ctrlKey || e.metaKey) && (e.key === "y" || (e.shiftKey && e.key === "Z"))) { e.preventDefault(); redo(); }
       if (e.key === "?") { e.preventDefault(); setShowHelp(true); }
+      if (!editingText && isWhiteboard && !e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "g") {
+        e.preventDefault();
+        openCreateWhiteboardGroup();
+      }
+      if (!editingText && isWhiteboard && !e.ctrlKey && !e.metaKey && !e.altKey && e.key === "0") {
+        e.preventDefault();
+        reactFlowInstance.current?.fitView({ padding: isMobile ? 0.12 : 0.18, duration: 320 });
+      }
       if (e.key === "Escape") {
+        if (groupEditor) { setGroupEditor(null); return; }
+        if (groupDeleteId) { setGroupDeleteId(null); return; }
         if (contextNode) { setContextNode(null); setNodeContext(null); return; }
         if (selectedRelationId) { setSelectedRelationId(null); return; }
         if (selectedEntityIdRef.current) { closeEntityDetail(); return; }
@@ -1700,7 +1743,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [flowNodes, removeNode, currentMapId, setStoreNodes, setStoreEdges, setSearchResults, editingNode, focusedNodeId, selectedRelationId, contextNode, closeEntityDetail, refitGraph, pushHistory, undo, redo, setContextMenu, setShowHelp]);
+  }, [flowNodes, removeNode, currentMapId, setStoreNodes, setStoreEdges, setSearchResults, editingNode, focusedNodeId, selectedRelationId, contextNode, closeEntityDetail, refitGraph, pushHistory, undo, redo, setContextMenu, setShowHelp, groupDeleteId, groupEditor, isMobile, isWhiteboard, openCreateWhiteboardGroup]);
 
   // Reload after edit/delete from context menu
   const reloadMap = useCallback(() => {
@@ -1963,6 +2006,8 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
       data-canvas-view={canvasView}
       data-visible-node-count={visibleStoredNodeCount}
       data-whiteboard-group-count={activeWhiteboardGroups.length}
+      data-whiteboard-detail-level={isWhiteboard ? whiteboardDisclosure : undefined}
+      data-whiteboard-viewport-culling={largeWhiteboard ? "true" : "false"}
     >
       {/* Top toolbar */}
       <div className={`absolute z-50 flex gap-1.5 ${isMobile ? 'right-3 flex-col items-end' : 'left-3 right-3 flex-wrap'}`} style={{ top: isMobile ? "max(calc(env(safe-area-inset-top) + 12px), 32px)" : "12px" }}>
@@ -2442,8 +2487,19 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
 
       {isWhiteboard && (
         <div className="pointer-events-none absolute bottom-4 left-3 z-40 rounded-xl border border-[var(--primary-border)] bg-[var(--card)]/95 px-3 py-2 text-[11px] text-[var(--primary-hover)] shadow-lg backdrop-blur" data-testid="whiteboard-status">
-          白板模式 · {activeWhiteboardGroups.length} 个空间分组 · 卡片拖入/拖出自动归组 · 内容与引用保持完整
+          白板模式 · {activeWhiteboardGroups.length} 个空间分组 · {largeWhiteboard ? `大图性能模式 · ${whiteboardDisclosure === "title" ? "标题层" : whiteboardDisclosure === "summary" ? "摘要层" : "引用层"}` : "完整阅读卡"} · 内容与引用保持完整
         </div>
+      )}
+
+      {isWhiteboard && isMobile && !showToolbar && (
+        <button
+          type="button"
+          onClick={openCreateWhiteboardGroup}
+          className="absolute left-3 z-40 rounded-xl border border-[var(--primary-border)] bg-[var(--card)]/95 px-3 py-2 text-xs font-semibold text-[var(--primary-hover)] shadow-lg backdrop-blur"
+          style={{ top: "max(calc(env(safe-area-inset-top) + 12px), 32px)" }}
+          data-testid="mobile-create-whiteboard-group"
+          aria-label="白板新建空间分组"
+        >＋ 分组</button>
       )}
 
       {canvasViewError && (
@@ -2522,6 +2578,13 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
           setSelectedRelationId(edge.id);
         }}
         onNodeClick={(_, node) => {
+          if (isWhiteboard && !isWhiteboardGroupNode(node.id)) {
+            setFlowNodes((current) => current.map((candidate) => ({
+              ...candidate,
+              selected: candidate.id === node.id,
+            })));
+            return;
+          }
           if (!showingEntityGraph || !isEntityViewNode(node.id)) return;
           setSelectedEntityId(node.id);
           setEntityViewMode("local");
@@ -2534,11 +2597,15 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
         onEdgeMouseLeave={() => setHoveredRelationId(null)}
         nodeTypes={nodeTypes}
         onInit={(instance) => { reactFlowInstance.current = instance; }}
+        onlyRenderVisibleElements={largeWhiteboard}
         fitView={!isWhiteboard}
         fitViewOptions={{ padding: isMobile ? 0.14 : 0.24, minZoom: isMobile ? 0.45 : 0.55, maxZoom: 1.05 }}
         minZoom={isMobile ? 0.15 : 0.2}
         maxZoom={2}
-        onMoveEnd={(_, viewport) => setAutoShowNodeDetails(viewport.zoom >= 0.72)}
+        onMoveEnd={(_, viewport) => {
+          setAutoShowNodeDetails(viewport.zoom >= 0.72);
+          setCanvasZoom(viewport.zoom);
+        }}
         selectionOnDrag={false}
         panOnDrag={[0, 2]}
         panOnScroll={false}

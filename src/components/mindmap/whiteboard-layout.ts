@@ -4,6 +4,9 @@ export const WHITEBOARD_CARD_WIDTH = 280;
 export const WHITEBOARD_CARD_HEIGHT = 168;
 export const WHITEBOARD_GROUP_COLLAPSED_HEIGHT = 76;
 export const WHITEBOARD_GROUP_NODE_PREFIX = "__mindgrow_whiteboard_group__";
+export const WHITEBOARD_LARGE_MAP_THRESHOLD = 80;
+
+export type WhiteboardDetailLevel = "title" | "summary" | "full";
 
 export interface WhiteboardCardGeometry {
   position: { x: number; y: number };
@@ -17,6 +20,23 @@ export interface WhiteboardDropGeometry {
   positionX: number;
   positionY: number;
   groupId: string | null;
+}
+
+/**
+ * Large whiteboards disclose content as the user zooms in. The underlying
+ * card content and citations are never rewritten or discarded; this only
+ * controls how much of each card is painted at the current zoom level.
+ */
+export function whiteboardDetailLevel(
+  cardCount: number,
+  zoom: number,
+  isMobile = false,
+): WhiteboardDetailLevel {
+  if (cardCount < WHITEBOARD_LARGE_MAP_THRESHOLD) return "full";
+  const safeZoom = Number.isFinite(zoom) ? zoom : 1;
+  if (safeZoom < (isMobile ? 0.9 : 0.78)) return "title";
+  if (safeZoom < (isMobile ? 1.18 : 1.05)) return "summary";
+  return "full";
 }
 
 export function whiteboardGroupNodeId(groupId: string) {
