@@ -2,6 +2,7 @@ import { API_BASE_URL } from "@/lib/config";
 import { supabase } from "@/lib/supabase-browser";
 import { aiEntityGraphToEntityGraph } from "@/lib/entity-graph";
 import { migrateLegacyMapMode, normalizeMapMode } from "@/lib/mode-libraries";
+import { buildLocalArticleCitations } from "@/lib/pdf-citation";
 import type { TenantScope } from "@/lib/tenant-cache";
 import { useMindGrowStore, type WriteRequestToken } from "@/store/mindgrow-store";
 import type { AIEntityGraph, AIMindMap, Category, Citation, EntityGraph, KnowledgeEdge, KnowledgeNode, MindMap, NodeLayout, WhiteboardGroup } from "@/types";
@@ -788,8 +789,7 @@ function handleLocalTool(path: string, init?: RequestInit): Response {
     const content = String(body.content || "").trim();
     if (content.length < 50) return json({ error: "本地模式请粘贴至少 50 个字的文章正文" }, 400);
     const mindMap = generateLocalMindMap(content);
-    const excerpts = content.split(/\n+|(?<=[。！？!?])\s*/).map((item) => item.trim()).filter((item) => item.length >= 12).slice(0, 8);
-    const citations: Citation[] = excerpts.map((quote, index) => ({ index: index + 1, quote: quote.slice(0, 180), locator: `原文片段 ${index + 1}`, sourceType: body.sourceType || "text", fileName: body.fileName }));
+    const citations = buildLocalArticleCitations(content, body.sourceType || "text", body.fileName, 8);
     const cited = (index: number) => citations.length ? [citations[index % citations.length].index] : [];
     mindMap.rootCitationIndexes = cited(0);
     mindMap.children = mindMap.children.map((child, index) => ({ ...child, citationIndexes: cited(index), itemCitationIndexes: child.items.map((_, itemIndex) => cited(index + itemIndex)) }));

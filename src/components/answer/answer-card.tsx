@@ -18,6 +18,7 @@ interface AnswerCardProps {
   citations: Citation[];
   audit?: CitationAudit;
   sourceType?: Citation["sourceType"];
+  onCitationOpen?: (citation: Citation) => void;
 }
 
 function normalizedText(value: string) {
@@ -52,6 +53,7 @@ export function AnswerCard({
   citations,
   audit,
   sourceType,
+  onCitationOpen,
 }: AnswerCardProps) {
   const instanceId = useId().replace(/:/g, "");
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -87,11 +89,12 @@ export function AnswerCard({
     if (!citation) return null;
     const label = sourceLabel(citation, sourceType);
     const locator = citation.locator || "位置未标注";
+    const isPdf = (citation.sourceType || sourceType) === "pdf";
     return (
       <span className="group relative inline-flex align-middle">
         <button
           type="button"
-          onClick={() => focusCitation(index)}
+          onClick={() => { focusCitation(index); if (isPdf) onCitationOpen?.(citation); }}
           data-testid="citation-chip"
           data-citation-index={index}
           className="inline-flex max-w-full items-center gap-1 rounded-full border border-[var(--primary-border)] bg-[var(--primary-subtle)] px-2 py-1 text-[10px] font-medium text-[var(--primary-hover)] transition hover:border-[var(--primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]"
@@ -195,7 +198,8 @@ export function AnswerCard({
                     <span className="text-[10px] text-[var(--text-tertiary)]">{citation.locator || "位置未标注"}</span>
                   </div>
                   <blockquote className="border-l-2 border-[var(--primary)] pl-2 leading-relaxed text-[var(--text-secondary)]">“{citation.quote}”</blockquote>
-                  {isPdf && <p className="mt-2 text-[10px] text-[var(--text-tertiary)]">PDF 本轮仅提供页码/段落 locator，不代表已在 PDF Viewer 中定位或高亮。</p>}
+                  {isPdf && onCitationOpen && <button type="button" onClick={() => onCitationOpen(citation)} className="mt-2 rounded-lg border border-[var(--primary-border)] bg-[var(--primary-subtle)] px-2.5 py-1.5 text-[10px] font-semibold text-[var(--primary-hover)] hover:border-[var(--primary)]" aria-label={`在 PDF 中定位引用 ${index}`}>在 PDF 中定位并高亮</button>}
+                  {isPdf && !onCitationOpen && <p className="mt-2 text-[10px] text-[var(--text-tertiary)]">当前会话未提供可打开的 PDF 原文件。</p>}
                   {!isPdf && citation.sourceUrl && <a className="mt-2 inline-block text-[10px] text-[var(--primary-hover)] underline" href={citation.sourceUrl} target="_blank" rel="noreferrer">打开原网页核对</a>}
                 </div>
               );

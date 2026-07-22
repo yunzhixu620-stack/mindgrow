@@ -8,6 +8,7 @@ import { useMindGrowStore } from "@/store/mindgrow-store";
 import { mindMapToPreviewGraph } from "@/lib/mindmap-preview";
 import { aiEntityGraphToEntityGraph } from "@/lib/entity-graph";
 import { AnswerCard } from "@/components/answer/answer-card";
+import { PdfCitationViewer } from "@/components/article/pdf-citation-viewer";
 import type { AIEntityGraph, AIMindMap, Citation, CitationAudit } from "@/types";
 
 interface CitedText { text: string; citationIndexes: number[] }
@@ -296,6 +297,8 @@ export function ArticleParser() {
   const [url, setUrl] = useState("");
   const [content, setContent] = useState("");
   const [pdf, setPdf] = useState<(PdfExtraction & { name: string; pages: number }) | null>(null);
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [pdfViewerCitation, setPdfViewerCitation] = useState<Citation | null>(null);
   const [result, setResult] = useState<ArticleResult | null>(null);
   const [audio, setAudio] = useState<AudioOverview | null>(null);
   const [selectedCitation, setSelectedCitation] = useState<Citation | null>(null);
@@ -322,15 +325,17 @@ export function ArticleParser() {
 
   async function choosePdf(file?: File) {
     if (!file) return;
-    setPdfBusy(true); setNotice(""); setResult(null); setAudio(null); speech.stop();
+    setPdfBusy(true); setNotice(""); setResult(null); setAudio(null); setPdfViewerCitation(null); speech.stop();
     try {
       const extracted = await extractPdfText(file);
       setContent(extracted.text);
       setUrl("");
+      setPdfFile(file);
       setPdf({ name: file.name, pages: extracted.pageCount, pageCount: extracted.pageCount, truncated: extracted.truncated, tablePages: extracted.tablePages, imagePages: extracted.imagePages, scannedPages: extracted.scannedPages, warnings: extracted.warnings });
       setNotice(`已读取 ${extracted.pageCount} 页${extracted.warnings.length ? `；${extracted.warnings.join("；")}` : ""}`);
     } catch (error) {
       setPdf(null);
+      setPdfFile(null);
       setNotice(error instanceof Error ? error.message : "PDF 读取失败");
     } finally { setPdfBusy(false); }
   }
@@ -338,7 +343,7 @@ export function ArticleParser() {
   async function parse() {
     if (!url.trim() && content.trim().length < 50) { setNotice("请输入文章网址、选择 PDF，或粘贴至少 50 个字的正文"); return; }
     const requestMapId = currentMapId;
-    setBusy(true); setNotice(""); setResult(null); setAudio(null); setSelectedCitation(null); setEntityGraph({ entities: [], relations: [] }); speech.stop();
+    setBusy(true); setNotice(""); setResult(null); setAudio(null); setSelectedCitation(null); setPdfViewerCitation(null); setEntityGraph({ entities: [], relations: [] }); speech.stop();
     try {
       const response = await apiFetch(`/api/tools/article?client=10.3.2&request=${Date.now()}`, {
         method: "POST",
@@ -467,11 +472,22 @@ export function ArticleParser() {
     }
   }
 
+  function openCitation(citation: Citation) {
+    setSelectedCitation(citation);
+    const isPdf = (citation.sourceType || result?.sourceType) === "pdf";
+    if (!isPdf) return;
+    if (!pdfFile) {
+      setNotice("原 PDF 未保留在当前浏览器会话中；请重新选择同一文件后再定位原文");
+      return;
+    }
+    setPdfViewerCitation(citation);
+  }
+
   const citationByIndex = new Map((result?.citations || []).map((item) => [item.index, item]));
   const answerRefused = result?.citationAudit?.refusalReason === "ALL_KEY_CLAIMS_UNSUPPORTED";
   const showCitations = (indexes: number[] = []) => (
     <span className="ml-1 inline-flex flex-wrap gap-1 align-middle">
-      {indexes.map((index) => <button key={index} type="button" onClick={() => setSelectedCitation(citationByIndex.get(index) || null)} className="rounded bg-[var(--primary-subtle)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--primary-hover)] hover:ring-1 hover:ring-[var(--primary)]" aria-label={`查看引用 ${index}`}>[{index}]</button>)}
+      {indexes.map((index) => <button key={index} type="button" onClick={() => { const citation = citationByIndex.get(index); if (citation) openCitation(citation); }} className="rounded bg-[var(--primary-subtle)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--primary-hover)] hover:ring-1 hover:ring-[var(--primary)]" aria-label={`查看引用 ${index}`}>[{index}]</button>)}
     </span>
   );
 
@@ -481,12 +497,12 @@ export function ArticleParser() {
       <div className="mb-6 flex flex-col gap-3 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4 md:flex-row md:items-center md:justify-between"><div><h2 className="text-lg font-semibold">📄 文章解析</h2><p className="mt-1 text-xs text-[var(--text-tertiary)]">支持公开网页、粘贴正文和 PDF；要点、导图节点与音频脚本均可回到原文引用，内容只进入文章板块。</p></div><div className="rounded-xl border border-violet-400/30 bg-violet-400/10 px-3 py-2 text-xs text-violet-200"><span className="font-semibold">独立文章知识库</span><span className="mx-2 opacity-40">·</span>{currentMap?.name || "文章知识库"}<span className="mx-2 opacity-40">·</span>{nodeCount} 节点</div></div>
       <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4">
       <div className="space-y-3">
-        <input type="url" value={url} onChange={(event) => { setUrl(event.target.value); if (event.target.value) { setPdf(null); setContent(""); } }} placeholder="https://… 公开文章网址" className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2.5 text-sm outline-none focus:border-[var(--primary)]" />
+        <input type="url" value={url} onChange={(event) => { setUrl(event.target.value); if (event.target.value) { setPdf(null); setPdfFile(null); setPdfViewerCitation(null); setContent(""); } }} placeholder="https://… 公开文章网址" className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2.5 text-sm outline-none focus:border-[var(--primary)]" />
         <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 text-[10px] text-[var(--text-muted)]"><span className="h-px bg-[var(--border)]" />或<span className="h-px bg-[var(--border)]" /></div>
         <input ref={fileInputRef} type="file" accept="application/pdf,.pdf" className="hidden" onChange={(event) => void choosePdf(event.target.files?.[0])} />
         <button type="button" onClick={() => fileInputRef.current?.click()} disabled={pdfBusy} className="w-full rounded-xl border border-dashed border-[var(--primary-border)] bg-[var(--primary-subtle)] px-3 py-2.5 text-xs text-[var(--primary-hover)] disabled:opacity-40">{pdfBusy ? "正在读取 PDF…" : pdf ? `PDF：${pdf.name}（${pdf.pages} 页）` : "选择 PDF 文件（最大 15MB）"}</button>
         <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 text-[10px] text-[var(--text-muted)]"><span className="h-px bg-[var(--border)]" />或粘贴正文<span className="h-px bg-[var(--border)]" /></div>
-        <textarea value={content} onChange={(event) => { setContent(event.target.value); setPdf(null); }} rows={9} placeholder="粘贴文章正文。PDF 文字也会显示在这里，便于解析前核对。" className="w-full resize-y rounded-xl border border-[var(--border)] bg-[var(--background)] p-3 text-sm leading-relaxed outline-none focus:border-[var(--primary)]" />
+        <textarea value={content} onChange={(event) => { setContent(event.target.value); setPdf(null); setPdfFile(null); setPdfViewerCitation(null); }} rows={9} placeholder="粘贴文章正文。PDF 文字也会显示在这里，便于解析前核对。" className="w-full resize-y rounded-xl border border-[var(--border)] bg-[var(--background)] p-3 text-sm leading-relaxed outline-none focus:border-[var(--primary)]" />
         {notice && <div role="status" className="rounded-lg bg-[var(--bg-elevated)] px-3 py-2 text-xs text-[var(--text-secondary)]">{notice}</div>}
         <button onClick={() => void parse()} disabled={busy || pdfBusy || (!url.trim() && content.trim().length < 50)} className="w-full rounded-xl bg-[var(--primary)] py-2.5 text-sm font-semibold text-[var(--primary-foreground)] disabled:opacity-40">{busy ? "正在阅读、定位引用并核对原文…" : "解析文章"}</button>
       </div>
@@ -510,6 +526,7 @@ export function ArticleParser() {
           citations={result.citations}
           audit={result.citationAudit}
           sourceType={result.sourceType}
+          onCitationOpen={openCitation}
         />
         {selectedCitation && <ArticleBlock title={`引用 [${selectedCitation.index}] · ${selectedCitation.locator || "原文"}`}><blockquote className="border-l-2 border-[var(--primary)] pl-2 text-[var(--text-secondary)]">“{selectedCitation.quote}”</blockquote>{result.sourceUrl && <a className="mt-2 inline-block text-[var(--primary-hover)] underline" href={result.sourceUrl} target="_blank" rel="noreferrer">打开原网页核对</a>}</ArticleBlock>}
         <button onClick={() => void createAudioOverview()} disabled={audioBusy || answerRefused} className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] py-2.5 text-sm font-medium disabled:opacity-40">{audioBusy ? "正在生成引用型播客脚本与音频…" : answerRefused ? "证据不足，暂不生成音频" : "🎧 生成音频概览"}</button>
@@ -553,6 +570,7 @@ export function ArticleParser() {
         <p className="mt-2 text-[10px] text-[var(--text-muted)]">长论文全文翻译会先请你指定摘要、章节或页码，避免单次输出截断；原文引用保持原语言。</p>
       </div>
       </div>
+      {pdfFile && pdfViewerCitation && <PdfCitationViewer file={pdfFile} citation={pdfViewerCitation} onClose={() => setPdfViewerCitation(null)} />}
     </section>
   );
 }

@@ -890,9 +890,42 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     const citationIndex = await page.$eval('[data-testid="answer-card"] [data-testid="citation-chip"]', (chip) => chip.getAttribute("data-citation-index"));
     await page.click('[data-testid="answer-card"] [data-testid="citation-chip"]');
     await page.waitForFunction((index) => document.querySelector(`[data-testid="citation-evidence"][data-citation-index="${index}"]`)?.getAttribute("data-highlighted") === "true", {}, citationIndex);
-    await page.waitForFunction((index) => document.querySelector(`[data-testid="citation-evidence"][data-citation-index="${index}"]`)?.getAttribute("data-highlighted") === "false", { timeout: 5000 }, citationIndex);
-    if (!await page.evaluate(() => document.querySelector('[data-testid="answer-card"]')?.textContent.includes("PDF 本轮仅提供页码/段落 locator"))) throw new Error("PDF locator limitation is not disclosed");
-    await page.waitForFunction(() => document.body.innerText.includes("图谱增强检索（GraphRAG）论文结构预览"));
+    await page.waitForSelector('[data-testid="pdf-viewer"]');
+    await page.waitForFunction(() => document.querySelector('[data-testid="pdf-viewer-page"]')?.textContent?.includes("/ 2"));
+    const pdfViewerPage = await page.$eval('[data-testid="pdf-viewer"]', (viewer) => viewer.getAttribute("data-pdf-page"));
+    if (pdfViewerPage !== "1") throw new Error(`PDF citation opened on page ${pdfViewerPage} instead of page 1`);
+    try {
+      await page.waitForSelector('.mindgrow-pdf-container .textLayer .highlight', { timeout: 15000 });
+    } catch {
+      const diagnostics = await page.evaluate(() => ({
+        status: document.querySelector('[data-testid="pdf-viewer-status"]')?.textContent,
+        query: document.querySelector('input[aria-label="PDF 原文搜索"]')?.value,
+        page: document.querySelector('[data-testid="pdf-viewer"]')?.getAttribute("data-pdf-page"),
+        renderedPages: document.querySelectorAll('.mindgrow-pdf-container .page').length,
+        textLayers: document.querySelectorAll('.mindgrow-pdf-container .textLayer').length,
+        text: Array.from(document.querySelectorAll('.mindgrow-pdf-container .textLayer')).map((layer) => layer.textContent).join(" ").slice(0, 600),
+      }));
+      await page.screenshot({ path: path.join(artifactDir, "pdf-viewer-highlight-failure.png"), fullPage: true });
+      throw new Error(`PDF findController did not render a highlight: ${JSON.stringify(diagnostics)}`);
+    }
+    if (!await page.$('button[aria-label^="在 PDF 中定位引用"]')) throw new Error("PDF citation evidence has no explicit source-viewer action");
+    const urlBeforePdfClose = page.url();
+    if (urlBeforePdfClose.includes("/universe")) throw new Error(`PDF viewer navigated away before close: ${urlBeforePdfClose}`);
+    await page.click('button[aria-label="关闭 PDF 原文查看"]');
+    await page.waitForSelector('[data-testid="pdf-viewer"]', { hidden: true });
+    try {
+      await page.waitForFunction(() => document.body.innerText.includes("图谱增强检索（GraphRAG）论文结构预览"), { timeout: 5000 });
+    } catch {
+      const diagnostics = await page.evaluate(() => ({
+        url: location.href,
+        workspace: Boolean(document.querySelector('[data-testid="article-workspace"]')),
+        answer: Boolean(document.querySelector('[data-testid="answer-card"]')),
+        titleMatches: document.body.innerText.includes("图谱增强检索（GraphRAG）论文结构预览"),
+        articleText: document.querySelector('[data-testid="article-content-workspace"]')?.textContent?.slice(0, 1000),
+        bodyText: document.body.innerText.slice(0, 1000),
+      }));
+      throw new Error(`Article result disappeared after closing the PDF viewer: ${JSON.stringify(diagnostics)}`);
+    }
     await page.waitForFunction(() => document.querySelectorAll(".react-flow__node").length >= 3);
     if (!await page.$('input[aria-label="搜索论文链路"]')) throw new Error("Paper link navigator search is missing");
     if (!await page.$('textarea[aria-label="与文章知识库对话"]')) throw new Error("Article-library conversation input is missing");
@@ -1041,7 +1074,12 @@ const expandOneVisibleLevel = async (page, previousCount) => {
       });
       await page.waitForSelector('[data-testid="relation-evidence-panel"]');
       const evidence = await page.$eval('[data-testid="relation-evidence-panel"]', (panel) => panel.textContent);
-      if (!evidence.includes("关系原文证据") || !evidence.includes("原文片段")) throw new Error("Relation evidence is not traceable to the original text");
+      if (!evidence.includes("关系原文证据")) throw new Error("Relation evidence panel has no traceability heading");
+      const evidenceSource = await page.$eval('[data-testid="relation-evidence-citation"]', (card) => ({
+        locator: card.querySelector('[data-testid="relation-evidence-locator"]')?.textContent?.trim(),
+        quote: card.querySelector("blockquote")?.textContent?.trim(),
+      }));
+      if (!evidenceSource.locator || !evidenceSource.quote) throw new Error(`Relation evidence has no source locator or quote: ${JSON.stringify(evidenceSource)}`);
     });
     await clickByText(page, '[data-testid="graph-layer-switch"] button', "概念图");
     await page.waitForFunction(() => !document.body.innerText.includes("实体知识图谱"));
@@ -1170,7 +1208,13 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     const coverageText = await page.evaluate(() => document.body.innerText);
     if (!coverageText.includes("图片页：")) throw new Error("Image-page diagnostics are missing");
     if (!coverageText.includes("关键结论支持")) throw new Error("Per-claim citation support audit is missing");
-    if (!coverageText.includes("PDF 本轮仅提供页码/段落 locator")) throw new Error("PDF locator limitation is missing");
+    const sourceAction = await page.$('button[aria-label^="在 PDF 中定位引用"]');
+    if (!sourceAction) throw new Error("Real PDF citations have no source-viewer action");
+    await sourceAction.click();
+    await page.waitForSelector('[data-testid="pdf-viewer"]');
+    await page.waitForFunction(() => document.querySelector('[data-testid="pdf-viewer-page"]')?.textContent?.includes("/ 10"));
+    await page.click('button[aria-label="关闭 PDF 原文查看"]');
+    await page.waitForSelector('[data-testid="pdf-viewer"]', { hidden: true });
     await page.screenshot({ path: path.join(artifactDir, "layoutlmv3-document-coverage.png"), fullPage: true });
   });
 

@@ -2542,9 +2542,9 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
           <p className="mt-3 text-[11px] leading-5 text-[var(--text-secondary)]">{selectedRelation.explanation || "原文仅确认该关系，暂无补充解释。"}</p>
           <div className="mt-3 max-h-52 space-y-2 overflow-y-auto">
             {(selectedRelation.citations || []).map((citation) => (
-              <div key={`${citation.documentId || "source"}-${citation.index}`} className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-base)] p-3 text-[11px] leading-5 text-[var(--text-secondary)]">
-                <div className="mb-1 font-semibold text-[var(--canvas-label-accent)]">[{citation.index}] {citation.title || "来源文档"} · {citation.locator || "原文"}</div>
-                <p>“{citation.quote}”</p>
+              <div key={`${citation.documentId || "source"}-${citation.index}`} className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-base)] p-3 text-[11px] leading-5 text-[var(--text-secondary)]" data-testid="relation-evidence-citation">
+                <div className="mb-1 font-semibold text-[var(--canvas-label-accent)]" data-testid="relation-evidence-locator">[{citation.index}] {citation.title || "来源文档"} · {citation.locator || "原文"}</div>
+                <blockquote>“{citation.quote}”</blockquote>
               </div>
             ))}
           </div>
