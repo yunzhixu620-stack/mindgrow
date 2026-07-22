@@ -516,6 +516,12 @@ check("entity graph migration is tenant-scoped and service-role only", () => {
   assert(groundingMigration.includes("DROP COLUMN IF EXISTS explanation"));
 });
 
+check("health readiness verifies required entity-grounding columns", () => {
+  const healthSource = fs.readFileSync(path.join(__dirname, "..", "fc-proxy", "index.js"), "utf8");
+  assert(healthSource.includes("graph_entities?select=id,description_citation_indexes&limit=1"));
+  assert(healthSource.includes("graph_relations?select=id,explanation&limit=1"));
+});
+
 check("canonical entity ids are stable inside one library and isolated across libraries", () => {
   const first = canonicalGraphEntityIdentity("workspace-a", "article-library", "model", "Graph RAG");
   const same = canonicalGraphEntityIdentity("workspace-a", "article-library", "model", "graph rag");

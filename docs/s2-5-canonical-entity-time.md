@@ -4,7 +4,7 @@
 
 - canonical 实体身份限定在同一 `workspace + map + entityType + normalizedName`；同一文章知识库连续导入多篇文章时，同名同类型实体复用同一个稳定 ID，并合并可靠别名与证据。
 - 不跨 map 自动合并实体。跨文章库/会议库/碎片库的统一实体归并属于 S2.14，避免本任务引入不可撤销的跨库语义污染。
-- 数据库 V10 已有 `created_at` / `updated_at` 和唯一约束，本任务不新增迁移；回滚只需回退 API 与前端提交。
+- 数据库 V10 已有 `created_at` / `updated_at` 和唯一约束；P2.1 的 V11 字段迁移必须已应用。本任务不新增迁移文件，但生产验收会核对 `description_citation_indexes` 与 `explanation`，避免“表存在、字段缺失”的半迁移状态。
 
 ## 用户可见行为
 
@@ -14,8 +14,9 @@
 
 ## API 与兼容性
 
-- API `10.9.1` 在 `entityGraph.entities[]` 与 `entityGraph.relations[]` 中增量返回 `createdAt`、`updatedAt`。
+- API `10.9.2` 在 `entityGraph.entities[]` 与 `entityGraph.relations[]` 中增量返回 `createdAt`、`updatedAt`。
 - 保存阶段若模型实体没有通过正式门槛，只会从服务端已逐字验证的 Citation 重建确定性实体；不会信任客户端声明的兜底状态，也不会出现“预览有实体、保存为 0”的二次过滤。
+- `/health` 会实际读取实体说明证据与关系解释字段；缺少 V11 必需字段时 `entityGraph` 不再误报 `ready`。
 - 旧前端会忽略新增字段；新前端在滚动发布期间仍兼容缺失时间的历史 payload，但正式持久化实体必须返回数据库时间。
 - canonical ID 算法保持稳定，没有修改已有实体主键或唯一约束。
 
@@ -23,5 +24,5 @@
 
 1. 固定测试证明同一 map 中规范化等价名称得到同一 ID，不同 map 或类型不会误合并。
 2. 单测证明实体节点和关系边使用传入时间且不再出现 1970 占位。
-3. 生产发布顺序：阿里云 API `10.9.1` → GitHub Pages → 真实文章库实体详情与刷新验证。
+3. 生产发布顺序：Supabase V11 字段核对/补齐 → 阿里云 API `10.9.2` → GitHub Pages → 真实文章库实体详情与刷新验证。
 4. 回滚：先回退前端，再回退 API `10.8.0`；没有数据库回滚步骤，也不会删除实体、关系或证据。
