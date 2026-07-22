@@ -17,6 +17,7 @@ const {
   selectArticleDocument,
   selectAbstractTranslationChunks,
   articleTaskSystemPrompt,
+  resolveUsedEvidenceIds,
   articleOutputNeedsChinese,
   articleTranslationTargets,
   applyArticleFieldTranslations,
@@ -492,6 +493,57 @@ check("translation prompt executes translation instead of falling back to citati
   assert(prompt.includes("简体中文"));
   assert(prompt.includes("完整翻译全部证据块"));
   assert(prompt.includes("## 翻译结果"));
+});
+
+const translationEvidenceIds = [
+  { id: "chunk:chunk_a" },
+  { id: "chunk:chunk_b" },
+  { id: "chunk:chunk_c" },
+];
+
+check("partial translation keeps only explicitly reported string evidence ids", () => {
+  const resolved = resolveUsedEvidenceIds(
+    ["chunk:chunk_b", "chunk:forged", "chunk:chunk_b"],
+    translationEvidenceIds,
+    "partial",
+    { requireAllForComplete: true },
+  );
+  assert.deepStrictEqual(resolved.usedIds, ["chunk:chunk_b"]);
+  assert.strictEqual(resolved.coverage, "partial");
+  assert.deepStrictEqual(resolved.missingInformation, []);
+});
+
+check("numeric citation indexes never enter the string evidence id namespace", () => {
+  const resolved = resolveUsedEvidenceIds([1, 2], translationEvidenceIds, "partial", { requireAllForComplete: true });
+  assert.deepStrictEqual(resolved.usedIds, []);
+  assert.strictEqual(resolved.coverage, "partial");
+});
+
+check("complete translation downgrades when an evidence id is missing", () => {
+  const resolved = resolveUsedEvidenceIds(
+    ["chunk:chunk_a", "chunk:chunk_c"], translationEvidenceIds, "complete", { requireAllForComplete: true },
+  );
+  assert.deepStrictEqual(resolved.usedIds, ["chunk:chunk_a", "chunk:chunk_c"]);
+  assert.strictEqual(resolved.coverage, "partial");
+  assert(resolved.missingInformation.some((item) => item.includes("来源声明不完整")));
+});
+
+check("complete translation remains complete only for the full evidence id set", () => {
+  const resolved = resolveUsedEvidenceIds(
+    ["chunk:chunk_c", "chunk:chunk_a", "chunk:chunk_b", "chunk:chunk_a"],
+    translationEvidenceIds,
+    "complete",
+    { requireAllForComplete: true },
+  );
+  assert.deepStrictEqual(resolved.usedIds, ["chunk:chunk_c", "chunk:chunk_a", "chunk:chunk_b"]);
+  assert.strictEqual(resolved.coverage, "complete");
+  assert.deepStrictEqual(resolved.missingInformation, []);
+});
+
+check("forged string evidence ids are removed by the allowed id set", () => {
+  const resolved = resolveUsedEvidenceIds(["chunk:not-allowed"], translationEvidenceIds, "complete", { requireAllForComplete: true });
+  assert.deepStrictEqual(resolved.usedIds, []);
+  assert.strictEqual(resolved.coverage, "partial");
 });
 
 check("article answer prompts put the conclusion first and use readable structures", () => {
