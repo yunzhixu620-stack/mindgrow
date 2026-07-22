@@ -9,6 +9,7 @@ import { tenantCache, tenantScopeKey, type TenantScope } from "@/lib/tenant-cach
 import { useMindGrowStore, type AppMode } from "@/store/mindgrow-store";
 import { EntityDetailPanel } from "@/components/entity/entity-detail-panel";
 import type { Citation } from "@/types";
+import { graphEdgeFocusOpacity, graphNodeFocusOpacity, oneHopNodeIds } from "@/lib/graph-hover";
 import {
   fetchUniverseLibraries,
   universeFallbackWarning,
@@ -323,6 +324,9 @@ export function UniverseView() {
   const setCurrentMode = useMindGrowStore((state) => state.setCurrentMode);
   const setCurrentMapId = useMindGrowStore((state) => state.setCurrentMapId);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const focusAnimationFrameRef = useRef<number | null>(null);
+  const focusNodeRef = useRef<string | null>(null);
+  const focusProgressRef = useRef(0);
   const loadRequestRef = useRef(0);
   const loadAbortRef = useRef<AbortController | null>(null);
   const activeTenantScopeKeyRef = useRef<string | null>(activeTenantScopeKey);
@@ -422,6 +426,11 @@ export function UniverseView() {
     () => simulateForceLayout(universeData.nodes.map((node) => ({ ...node })), universeData.links),
     [universeData],
   );
+  const activeFocusNodeId = hoveredNode || selectedEntityNodeId;
+  const activeFocusNeighbors = useMemo(
+    () => oneHopNodeIds(activeFocusNodeId, universeData.links),
+    [activeFocusNodeId, universeData.links],
+  );
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -430,8 +439,12 @@ export function UniverseView() {
     if (!context) return;
     const ratio = window.devicePixelRatio || 1;
     const rect = canvas.getBoundingClientRect();
-    canvas.width = Math.max(1, Math.round(rect.width * ratio));
-    canvas.height = Math.max(1, Math.round(rect.height * ratio));
+    const pixelWidth = Math.max(1, Math.round(rect.width * ratio));
+    const pixelHeight = Math.max(1, Math.round(rect.height * ratio));
+    if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+      canvas.width = pixelWidth;
+      canvas.height = pixelHeight;
+    }
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
     context.fillStyle = "#0a0a0f";
     context.fillRect(0, 0, rect.width, rect.height);
@@ -444,6 +457,9 @@ export function UniverseView() {
     const centerX = rect.width / 2 + offset.x;
     const centerY = rect.height / 2 + offset.y;
     const nodeById = new Map(positionedNodes.map((node) => [node.id, node]));
+    const focusNodeId = focusNodeRef.current;
+    const focusNeighbors = oneHopNodeIds(focusNodeId, universeData.links);
+    const focusProgress = focusProgressRef.current;
     universeData.links.forEach((link) => {
       const source = nodeById.get(link.source);
       const target = nodeById.get(link.target);
@@ -453,6 +469,8 @@ export function UniverseView() {
       const sourceY = centerY + source.y * zoom;
       const targetX = centerX + target.x * zoom;
       const targetY = centerY + target.y * zoom;
+      context.save();
+      context.globalAlpha = graphEdgeFocusOpacity(link, focusNodeId, focusProgress);
       context.beginPath();
       context.moveTo(sourceX, sourceY);
       context.lineTo(targetX, targetY);
@@ -468,12 +486,15 @@ export function UniverseView() {
         const linkLabel = link.label.length > 34 ? `${link.label.slice(0, 33)}…` : link.label;
         context.fillText(linkLabel, (sourceX + targetX) / 2, (sourceY + targetY) / 2 - 7);
       }
+      context.restore();
     });
     positionedNodes.forEach((node) => {
       const isHovered = node.id === hoveredNode;
       const x = centerX + node.x * zoom;
       const y = centerY + node.y * zoom;
       const radius = Math.max(3, node.radius * Math.sqrt(zoom)) * (isHovered ? 1.3 : 1);
+      context.save();
+      context.globalAlpha = graphNodeFocusOpacity(node.id, focusNeighbors, focusProgress);
       if (isHovered || node.refKind === "library") {
         const glow = context.createRadialGradient(x, y, 0, x, y, radius * 3);
         glow.addColorStop(0, `${node.color}45`);
@@ -502,8 +523,35 @@ export function UniverseView() {
           context.fillText(node.mapName, x, y + radius + 29);
         }
       }
+      context.restore();
     });
   }, [hoveredLinkId, hoveredNode, offset, positionedNodes, universeData.links, zoom]);
+
+  useEffect(() => {
+    if (activeFocusNodeId) focusNodeRef.current = activeFocusNodeId;
+    const target = activeFocusNodeId ? 1 : 0;
+    const initial = focusProgressRef.current;
+    const startedAt = performance.now();
+    if (focusAnimationFrameRef.current !== null) cancelAnimationFrame(focusAnimationFrameRef.current);
+
+    const animateFocus = (timestamp: number) => {
+      const elapsed = Math.min(1, (timestamp - startedAt) / 200);
+      const eased = 1 - Math.pow(1 - elapsed, 3);
+      focusProgressRef.current = initial + (target - initial) * eased;
+      draw();
+      if (elapsed < 1) {
+        focusAnimationFrameRef.current = requestAnimationFrame(animateFocus);
+      } else {
+        focusAnimationFrameRef.current = null;
+        if (!activeFocusNodeId) focusNodeRef.current = null;
+      }
+    };
+    focusAnimationFrameRef.current = requestAnimationFrame(animateFocus);
+    return () => {
+      if (focusAnimationFrameRef.current !== null) cancelAnimationFrame(focusAnimationFrameRef.current);
+      focusAnimationFrameRef.current = null;
+    };
+  }, [activeFocusNodeId, draw]);
 
   useEffect(() => {
     draw();
@@ -640,6 +688,8 @@ export function UniverseView() {
         onMouseLeave={() => { setDragging(false); setHoveredNode(null); setHoveredLinkId(null); }}
         onWheel={(event) => { event.preventDefault(); changeZoom(zoom * (event.deltaY < 0 ? 1.12 : 0.89), event.clientX, event.clientY); }}
         aria-label={`${modeConfig.label}知识宇宙，可拖动和缩放`}
+        data-focus-node-id={activeFocusNodeId || ""}
+        data-focus-neighbor-count={activeFocusNeighbors?.size || 0}
       />
 
       <div className="absolute left-4 top-16 z-30 max-w-[min(620px,calc(100%-2rem))] rounded-2xl border border-white/10 bg-black/55 p-4 backdrop-blur-xl">
@@ -650,7 +700,7 @@ export function UniverseView() {
           <span><i className="mr-1 inline-block h-px w-4 border-t border-dashed border-pink-300/70 align-middle" />概念关联</span>
           <span><i className="mr-1 inline-block h-px w-4 border-t border-dashed border-yellow-300/80 align-middle" />跨库生长关系</span>
         </div>
-        <div className="mt-2 text-[10px] text-zinc-500">悬停连线查看关系；点击实体看解释，点击库或普通节点进入所属知识库。</div>
+        <div className="mt-2 text-[10px] text-zinc-500">悬停节点突出一跳关系；悬停连线查看证据；点击实体保留一跳焦点并查看解释。</div>
         <div className="mt-3 flex flex-wrap gap-1" data-testid="universe-scope-switch">
           {(["all", "knowledge", "article", "meeting"] as const).map((item) => <button key={item} type="button" onClick={() => setScope(item)} className={`rounded-lg px-2.5 py-1.5 text-[10px] font-semibold ${scope === item ? "bg-violet-400 text-black" : "border border-white/10 text-zinc-300 hover:bg-white/10"}`}>{item === "all" ? "全部知识" : item === "knowledge" ? "知识碎片" : item === "article" ? "文章" : "会议"}</button>)}
         </div>

@@ -29,6 +29,7 @@ import { MODE_LIBRARY_CONFIG } from "@/lib/mode-libraries";
 import { entityGraphToKnowledgeGraph, entityViewNodeId, formalEntityGraph, isEntityViewNode } from "@/lib/entity-graph";
 import { MindMapSkeleton } from "@/components/mindmap/mind-map-skeleton";
 import { EntityDetailPanel } from "@/components/entity/entity-detail-panel";
+import { graphEdgeFocusOpacity, graphNodeFocusOpacity, oneHopNodeIds } from "@/lib/graph-hover";
 
 // ============================================================
 // Branch color palette
@@ -252,7 +253,6 @@ function MindGrowNode({ data, selected }: NodeProps) {
 function EntityNode({ data, selected }: NodeProps) {
   const entity = data.entity as GraphEntity;
   const color = ENTITY_TYPE_COLORS[entity.entityType] || ENTITY_TYPE_COLORS.other;
-  const dimmed = data.dimmed as boolean;
   const neighborCount = data.neighborCount as number;
   const descriptionCitation = (entity.descriptionCitations || [])[0];
   return (
@@ -263,7 +263,6 @@ function EntityNode({ data, selected }: NodeProps) {
         borderColor: selected ? color : `${color}aa`,
         background: `radial-gradient(circle at 35% 30%, ${color}38, #0b1220 72%)`,
         boxShadow: selected ? `0 0 28px ${color}55` : `0 0 12px ${color}18`,
-        opacity: dimmed ? 0.18 : 1,
       }}
       data-testid="entity-network-node"
     >
@@ -386,8 +385,6 @@ function buildEntityNetworkGraph(
     const target = neighbors.get(relation.targetId) || new Set<string>(); target.add(relation.sourceId); neighbors.set(relation.targetId, target);
   });
   const hoveredRawId = entityGraph.entities.find((entity) => entityViewNodeId(entity.id) === hoveredEntityId)?.id || null;
-  const highlightedIds = hoveredRawId ? new Set<string>([hoveredRawId]) : null;
-  if (hoveredRawId && highlightedIds) neighbors.get(hoveredRawId)?.forEach((id) => highlightedIds.add(id));
   const nodes: Node[] = entities.map((entity) => {
     const position = positions.get(entity.id) || { x: 0, y: 0 };
     return {
@@ -398,14 +395,12 @@ function buildEntityNetworkGraph(
       data: {
         entity,
         neighborCount: neighbors.get(entity.id)?.size || 0,
-        dimmed: Boolean(highlightedIds && !highlightedIds.has(entity.id)),
       },
     };
   });
   const edges: Edge[] = relations.map((relation) => {
     const edgeId = entityViewNodeId(relation.id);
     const active = hoveredRelationId === edgeId || selectedEntityId === entityViewNodeId(relation.sourceId) || selectedEntityId === entityViewNodeId(relation.targetId) || hoveredRawId === relation.sourceId || hoveredRawId === relation.targetId;
-    const dimmed = Boolean(hoveredRawId && hoveredRawId !== relation.sourceId && hoveredRawId !== relation.targetId);
     return {
       id: edgeId,
       source: entityViewNodeId(relation.sourceId),
@@ -421,7 +416,7 @@ function buildEntityNetworkGraph(
         stroke: relation.status === "negated" ? "#ef4444" : active ? "#c4b5fd" : "#8b5cf6",
         strokeWidth: active ? 1.8 : 0.9,
         strokeDasharray: relation.status === "proposed" ? "5 5" : undefined,
-        opacity: dimmed ? 0.06 : active ? 0.95 : 0.32,
+        opacity: active ? 0.95 : 0.32,
       },
     };
   });
@@ -1006,7 +1001,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
     refitGraph();
   }, [currentMapId, activeNodes, activeEdges, displayHierarchy, isMobile, showingEntityGraph, graphLayer, setCollapsedNodes, refitGraph]);
 
-  const graph = useMemo(
+  const baseGraph = useMemo(
     () => showingEntityGraph
       ? buildEntityNetworkGraph(officialEntityGraph, entityViewMode, selectedEntityId, hoveredEntityId, hoveredRelationId)
       : buildGraph(
@@ -1017,6 +1012,29 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
       ),
     [showingEntityGraph, officialEntityGraph, entityViewMode, selectedEntityId, hoveredEntityId, hoveredRelationId, displayHierarchy, highlightedNodeId, searchResults, direction, sv, collapsedNodes, focusedNodeId, detailMode, autoShowNodeDetails, isMobile, handleToggleBranch, handleFocusBranch],
   );
+
+  const graph = useMemo(() => {
+    const neighbors = oneHopNodeIds(hoveredEntityId, baseGraph.edges);
+    return {
+      ...baseGraph,
+      nodes: baseGraph.nodes.map((node) => ({
+        ...node,
+        style: {
+          ...node.style,
+          opacity: hoveredEntityId ? graphNodeFocusOpacity(node.id, neighbors) : node.style?.opacity,
+          transition: "opacity 200ms ease",
+        },
+      })),
+      edges: baseGraph.edges.map((edge) => ({
+        ...edge,
+        style: {
+          ...edge.style,
+          opacity: hoveredEntityId ? graphEdgeFocusOpacity(edge, hoveredEntityId) : edge.style?.opacity,
+          transition: "opacity 200ms ease",
+        },
+      })),
+    };
+  }, [baseGraph, hoveredEntityId]);
 
   const visibleStoredNodeCount = Math.max(0, graph.nodes.length - displayHierarchy.syntheticNodeCount);
   const hiddenNodeCount = Math.max(0, activeNodes.length - visibleStoredNodeCount);
@@ -1722,7 +1740,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
           setSelectedRelationId(null);
           refitGraph();
         }}
-        onNodeMouseEnter={(_, node) => { if (showingEntityGraph && isEntityViewNode(node.id)) setHoveredEntityId(node.id); }}
+        onNodeMouseEnter={(_, node) => setHoveredEntityId(node.id)}
         onNodeMouseLeave={() => setHoveredEntityId(null)}
         onEdgeMouseEnter={(_, edge) => { if (showingEntityGraph) setHoveredRelationId(edge.id); }}
         onEdgeMouseLeave={() => setHoveredRelationId(null)}
