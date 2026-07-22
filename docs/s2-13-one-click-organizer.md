@@ -30,3 +30,10 @@
 2. 合并后将阿里云 `MINDGROW_GIT_SHA` 更新为实际合并提交，部署 API `10.13.0`，再发布 GitHub Pages。
 3. 用公网 health、backend smoke、前端 E2E 和 production fact 核对前后端身份。
 4. 回滚时先恢复 API `10.12.0` 对应代码，再恢复上一版前端；本任务无数据库变更。已有撤销快照仍按工作区隔离，前端回滚不改写用户数据。
+
+## 生产验证（2026-07-23）
+
+- PR #55 已合并为 `7366d9666e707b88c93b526034d51d5ac8754e5a`；CI 与 Vercel Preview 通过。
+- 阿里云 API `10.13.0` 已发布，公网 health 的版本、源码提交、鉴权和部署身份全部匹配；backend smoke 7/7 通过。
+- GitHub Pages 已发布为 `gh-pages@c7d2cf2`，公网前端 E2E 7/7 通过，临时部署中转文件已删除并确认返回 404。
+- production fact workflow `29966566936` 已精确核对前端 SHA、后端 SHA、API 版本与鉴权状态并通过。

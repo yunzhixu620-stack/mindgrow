@@ -57,7 +57,7 @@
 | S2.10 观测/on-call | 已合并 | PR #52 / `5dfff96`，后端源码 `5ee87d4`；API `10.11.0`、精确 `gitSha`、生产 fail-closed、on-call 闭环、GitHub Pages 与 production fact 均通过 |
 | S2.11 PDF Viewer + 原文高亮 | 已合并 | PR #53 / `055123d`；页码定位、PDF.js `PDFFindController` 高亮、统一引用跳转与防导航穿透均已发布；unit 171/171、lint、build、产品 E2E 37/37、公网 E2E 7/7 与 production fact 均通过 |
 | S2.12 查询时 GraphRAG 定位 | 已合并 | PR #54 / `025cce2`；Supabase V15、阿里云 API `10.12.0` 与 GitHub Pages 均已发布；entity linking、混合召回、1–2 跳路径重排、拒答和可见路由已上线，冻结集全部指标 100%，公网 backend smoke 7/7、公网 E2E 7/7 与 production fact 均通过 |
-| S2.13 一键整理知识库 | 开发完成，待发布 | 四策略、AI 失败显式降级、预览/逐项调整、默认不写入、工作区隔离撤销与部分失败自动回滚已完成；本地 unit 176/176、RAG 64/64、backend 9/9、产品 E2E 37/37 通过，待 PR/生产验证 |
+| S2.13 一键整理知识库 | 已合并 | PR #55 / `7366d96`；四策略、AI 失败显式降级、预览/逐项调整、默认不写入、工作区隔离撤销与部分失败自动回滚已发布；API `10.13.0` 与 GitHub Pages 已上线，公网 backend 7/7、前端 E2E 7/7 与 production fact 均通过 |
 | S2.14 统一知识宇宙 | 局部已有 | 三模块已有共享展示基础；缺统一实体与“会议确认后入长期库”门禁 |
 | S2.15 多源文章 + Audio Overview | 局部已有 | 已支持部分 URL/PDF/正文与 citation；缺完整拒答、可靠多源覆盖及 Audio Overview |
 | S2.16 跨库全局搜索 | 局部已有 | U5 仅本地命令搜索；缺后端索引、权限过滤和命中解释 |
@@ -130,3 +130,13 @@
 5. [x] `gh-pages@f08d9f3` 发布成功并清除部署中转文件；公网 E2E 7/7 通过。
 6. [x] production fact workflow `29961416163` 精确核对前端与后端均为 `025cce2379af04c06d4be2e310e49c90cf62e1b1`、API `10.12.0` 与 `authRequired=true` 并通过。
 7. [x] 冻结评测 Recall@5、MRR、实体 Hit@5、实体 Top-1、歧义与路由全部为 100%；RAG 64/64、unit 171/171、本地后端 9/9、产品 E2E 37/37 均通过。
+
+## S2.13 发布检查点
+
+1. [x] PR #55 压缩合并为 `main@7366d9666e707b88c93b526034d51d5ac8754e5a`；合并前 CI、Vercel Preview 与部署事实门禁全部通过。
+2. [x] 本任务无数据库迁移；阿里云环境变量 `MINDGROW_GIT_SHA` 与实际后端源码均更新为该合并提交，API `10.13.0` 发布成功。
+3. [x] 公网 `/health` 返回 `status=ok`、`version=10.13.0`、精确 `gitSha`、`authRequired=true`、`deploymentIdentity=ready`，知识存储、混合检索、实体图与 GraphRAG 排序均为 ready。
+4. [x] 公网 backend smoke 7/7 通过；匿名 bootstrap、知识库、PATCH、workspace 与 Audio Overview 均由应用层拒绝。
+5. [x] `gh-pages@c7d2cf2` 发布成功；部署中转文件已删除且公网返回 404，公网前端 E2E 7/7 通过。
+6. [x] production fact workflow `29966566936` 精确核对前端与后端均为 `7366d9666e707b88c93b526034d51d5ac8754e5a`、API `10.13.0` 与 `authRequired=true` 并通过。
+7. [x] 本地 unit 176/176、RAG 64/64、backend 9/9、产品 E2E 37/37 均通过，覆盖默认不整理、预览、逐项调整、应用、撤销与部分失败回滚。
