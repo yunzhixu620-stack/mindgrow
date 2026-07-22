@@ -49,7 +49,7 @@
 | S2.2 `/api/bootstrap` 首屏聚合 | 已合并 | PR #37 / `eac8102`；阿里云 API `10.7.0`、GitHub Pages 已发布；匿名拒绝公网 smoke 6/6、带认证本地聚合 smoke 7/7；真实登录首屏一次恢复工作区、5 个知识库与默认图 107 节点，三板块往返无缓存残留，页面无 warning/error |
 | S2.3 CI 部署事实校验 | 已合并 | PR #38 / `4653d25`；GitHub Pages 静态清单的完整 SHA、API `10.7.0` 与 `authRequired=true` 生产校验通过；后端 `git_sha` 按 Owner 决定留到 S2.10 |
 | S2.4 Backlinks + 时间轴 | 已合并 | PR #39 / `04f4cab`；Supabase V13、阿里云 API `10.8.0` 与 GitHub Pages 已发布；补齐触发器 PATCH 后，公网 smoke、真实账号 created/updated 时间轴与刷新持久化全部通过 |
-| S2.5 canonical ID + 真 createdAt | 开发中 | 复用现有 map 内 canonical upsert；API `10.9.0` 返回实体/关系真实 `createdAt`、`updatedAt`，前端不再伪造 1970 时间 |
+| S2.5 canonical ID + 真 createdAt | 已合并 | PR #41 / `e68b455` 与 PR #42；Supabase V11 字段、API `10.9.2` 与公网 smoke 已验证；真实文章重复导入、canonical ID/时间、刷新持久化和临时数据清理全部通过 |
 | S2.6 React Flow 可复现 bug | 局部已有 | 已修复若干跳转/展开问题；尚未形成只按复现步骤验收的清单 |
 | S2.7 Obsidian 式实体网状图 | 局部已有 | 已有实体图、一跳聚焦和详情；缺完整强关系默认、过滤、搜索验收 |
 | S2.8 Heptabase 白板底座 | 待开发 | 需要卡片、空间分组和可视化编排模型 |
@@ -84,3 +84,11 @@
 4. [x] PR #39 压缩合并为 `main@04f4cab`，GitHub Pages 发布完成；production fact 通过，前端完整 SHA、API `10.8.0` 与 `authRequired=true` 一致。
 5. [x] 使用真实账号创建隔离 map、生成 14 个节点、编辑根节点；时间轴展示 created / updated 共 2 条，刷新后标题、说明和两条事件仍存在；随后删除临时 map，状态恢复“已同步”。
 6. [x] 真实验收发现阿里云 HTTP 触发器漏配 PATCH（平台层 `403 AccessDenied`）；已将触发器方法补为 `GET, POST, DELETE, PUT, OPTIONS, PATCH`，匿名 PATCH 现进入应用鉴权并返回 `401 AUTH_REQUIRED`，同时加入公网 smoke 防回归。
+
+## S2.5 发布检查点
+
+1. [x] 2026-07-22 在 Supabase SQL Editor 补齐 V11 字段：`graph_entities.description_citation_indexes` 与 `graph_relations.explanation`；API `10.9.2` 的 health 会真实探测这两个字段，避免部分迁移被误报为 ready。
+2. [x] 阿里云 WebIDE 原子写入前校验源码：`255553` 字节，SHA-256 `bdecce275af7e3c8a77fbdb8d99fee88a84fab10309720f3bbfce0d5c14c3612`，版本 `10.9.2`，必需实体字段探针存在；控制台部署成功。
+3. [x] 公网 `/health` 返回 `status=ok`、`version=10.9.2`、`authRequired=true`、`knowledgeStore=ok`、`hybridRetrieval=ready`、`entityGraph=ready`、`nodeTimeline=ready`；公开后端 smoke 7/7 通过。
+4. [x] 真实文章首次保存得到 5 个实体、1 条关系；第二篇得到 3 个实体、2 条关系，跨文章去重后共 6 个实体。`GraphRAG` canonical ID 固定为 `entity_ac6ac5a82bced63768762f78`，首次时间 `2026-07-22 11:59 UTC`、最近更新 `2026-07-22 12:01 UTC`，刷新后仍保留两条专属证据。
+5. [x] 删除临时文章知识库 `QA-S2.5-实体时间-20260722`；生产账号恢复到原有知识库集合。

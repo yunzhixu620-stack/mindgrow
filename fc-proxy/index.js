@@ -21,7 +21,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.9.0';
+const API_VERSION = '10.9.2';
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
 const DASHSCOPE_AUDIO_ENDPOINT = process.env.DASHSCOPE_AUDIO_ENDPOINT || 'https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer';
 const ALLOWED_ORIGINS = new Set(
@@ -3294,6 +3294,17 @@ async function ensureEvidenceEntityGraph(value, allowedIndexes, citations, sourc
   return primary;
 }
 
+function normalizedEntityGraphForWrite(value, allowedIndexes, citations) {
+  const primary = normalizedEntityGraph(value, allowedIndexes, citations);
+  const deterministic = normalizedEntityGraph(
+    deterministicEvidenceEntityGraph(citations, allowedIndexes), allowedIndexes, citations,
+    { trustedDeterministic: true },
+  );
+  if (deterministic.relations.length > primary.relations.length
+    || (primary.entities.length === 0 && deterministic.entities.length > 0)) return deterministic;
+  return primary;
+}
+
 async function handleMeetingTool(body) {
   const transcript = String(body.transcript || '').trim();
   if (transcript.length < 10) return { status: 400, data: { error: '请至少输入 10 个字的会议内容', code: 'INVALID_INPUT' } };
@@ -4258,7 +4269,13 @@ async function createGraph(workspaceId, mapId, mindMap, source, document, source
       ? String(document.sourceType).toLowerCase() : 'text';
     const verifiedPayload = verifiedCitationPayload(sourceCitations, sourceChunksForWrite, documentType);
     verifiedSourceCitations = verifiedPayload.citations;
-    verifiedEntityGraph = normalizedEntityGraph(entityGraph, verifiedPayload.allowedIndexes, verifiedSourceCitations);
+    // Analysis may return the evidence-only deterministic fallback, whose
+    // verbatim descriptions can be shorter than the model-output contract.
+    // Rebuild that fallback from server-verified citations instead of trusting
+    // a client flag, so the analysis result remains safe and idempotent on save.
+    verifiedEntityGraph = normalizedEntityGraphForWrite(
+      entityGraph, verifiedPayload.allowedIndexes, verifiedSourceCitations,
+    );
     const contentHash = canonicalDocumentHash(sourceChunksForWrite);
     const existingDocuments = await supabaseRequest('GET', `source_documents?workspace_id=eq.${workspace}&map_id=eq.${map}&content_hash=eq.${contentHash}&select=id&limit=1`);
     const existingDocument = Array.isArray(existingDocuments) ? existingDocuments[0] : null;
@@ -4781,8 +4798,11 @@ const server = http.createServer(async (req, res) => {
           checks.knowledgeStore = 'ok';
           await supabaseRequest('GET', 'document_chunks?select=id&limit=1');
           checks.hybridRetrieval = 'ready';
-          await supabaseRequest('GET', 'graph_entities?select=id&limit=1');
-          await supabaseRequest('GET', 'graph_relations?select=id&limit=1');
+          // Read the P2.1 grounding fields as part of readiness. Checking only
+          // table IDs hides a partially applied v11 migration: graph writes then
+          // degrade to zero entities while /health incorrectly reports ready.
+          await supabaseRequest('GET', 'graph_entities?select=id,description_citation_indexes&limit=1');
+          await supabaseRequest('GET', 'graph_relations?select=id,explanation&limit=1');
           await supabaseRequest('GET', 'graph_evidence?select=id&limit=1');
           checks.entityGraph = 'ready';
           await supabaseRequest('GET', 'node_revisions?select=id&limit=1');
@@ -4909,5 +4929,9 @@ module.exports = {
   entityGraphQueryPlan,
   rankEntityGraphSeeds,
   relationStatusPenalty,
-  __entityGraphInternal: { normalizedEntityName, canonicalGraphEntityIdentity },
+  __entityGraphInternal: {
+    normalizedEntityName,
+    canonicalGraphEntityIdentity,
+    normalizedEntityGraphForWrite,
+  },
 };
