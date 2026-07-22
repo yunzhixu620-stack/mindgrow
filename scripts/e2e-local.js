@@ -752,6 +752,69 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     if (!result.sitemap.includes("/guide/")) throw new Error("sitemap has no guide URL");
   });
 
+  await check("new-user empty state routes all three real onboarding flows", async () => {
+    const onboardingKey = "mindgrow:onboarding:v1:tenant:local-user:local-workspace";
+    await page.goto(BASE_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await page.waitForSelector('[data-testid="knowledge-workspace"]');
+    const original = await page.evaluate((key) => ({ state: localStorage.getItem("mindgrow.local.v2"), onboarding: localStorage.getItem(key) }), onboardingKey);
+    if (!original.state) throw new Error("Cannot snapshot the existing local account");
+    if (await page.$('[data-testid="new-user-empty-state"]')) throw new Error("Existing account incorrectly received new-user onboarding");
+
+    const resetToEmptyAccount = async () => {
+      await page.evaluate(({ stateJson, key }) => {
+        const state = JSON.parse(stateJson);
+        const defaultMap = state.maps.find((map) => map.isDefault);
+        if (!defaultMap) throw new Error("Default map is missing");
+        state.maps = [{ ...defaultMap, nodeCount: 0 }];
+        state.nodes = { [defaultMap.id]: [] };
+        state.edges = { [defaultMap.id]: [] };
+        state.entityGraphs = { [defaultMap.id]: { entities: [], relations: [] } };
+        state.layouts = {};
+        localStorage.setItem("mindgrow.local.v2", JSON.stringify(state));
+        localStorage.removeItem(key);
+      }, { stateJson: original.state, key: onboardingKey });
+      await page.goto(BASE_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
+      await page.waitForSelector('[data-testid="new-user-empty-state"]');
+    };
+
+    try {
+      await resetToEmptyAccount();
+      const cards = await page.$$eval('[data-testid="new-user-empty-state"] [data-testid^="onboarding-"]', (items) => items.map((item) => item.textContent.trim()));
+      if (cards.length !== 3 || !["个人笔记", "论文速读", "会议纪要"].every((label) => cards.some((card) => card.includes(label)))) throw new Error(`Onboarding cards are incomplete: ${cards.join(" | ")}`);
+      await page.click('[data-testid="onboarding-personal-notes"]');
+      await page.waitForFunction(() => !document.querySelector('[data-testid="new-user-empty-state"]'));
+      const personalNotes = await page.evaluate(() => {
+        const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+        const map = state.maps.find((candidate) => candidate.name === "我的个人笔记");
+        return { id: map?.id || "", contents: (state.nodes[map?.id] || []).map((node) => node.content) };
+      });
+      if (!personalNotes.id || !["学习目标", "灵感想法", "待办事项"].every((item) => personalNotes.contents.includes(item))) throw new Error(`Personal note seeds are incomplete: ${JSON.stringify(personalNotes)}`);
+
+      await resetToEmptyAccount();
+      await page.click('[data-testid="onboarding-article-reading"]');
+      await page.waitForSelector('[data-testid="article-content-workspace"]');
+      await page.waitForFunction(() => document.activeElement?.matches('input[type="url"]'));
+
+      await resetToEmptyAccount();
+      await page.click('[data-testid="onboarding-meeting-notes"]');
+      await page.waitForSelector('[data-testid="meeting-workspace"]');
+
+      await resetToEmptyAccount();
+      await page.click('button[aria-label="关闭新用户引导"]');
+      await page.waitForFunction(() => !document.querySelector('[data-testid="new-user-empty-state"]'));
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.waitForSelector('[data-testid="knowledge-workspace"][data-library-busy="false"]');
+      if (await page.$('[data-testid="new-user-empty-state"]')) throw new Error("Dismissed onboarding reappeared after reload");
+    } finally {
+      await page.evaluate(({ stateJson, key, onboarding }) => {
+        localStorage.setItem("mindgrow.local.v2", stateJson);
+        if (onboarding === null) localStorage.removeItem(key);
+        else localStorage.setItem(key, onboarding);
+      }, { stateJson: original.state, key: onboardingKey, onboarding: original.onboarding });
+      await page.goto(`${BASE_URL}/guide`, { waitUntil: "domcontentloaded", timeout: 60000 });
+    }
+  });
+
   await page.screenshot({ path: path.join(artifactDir, "seo-guide.png"), fullPage: true });
   await Promise.race([
     browser.close(),
