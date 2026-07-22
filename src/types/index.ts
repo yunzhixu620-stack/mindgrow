@@ -225,6 +225,8 @@ export interface AnswerSource {
 export interface RetrievalTrace {
   mode: string;
   task?: string;
+  queryRoute?: "basic" | "local" | "drift" | "global";
+  rankingVersion?: string;
   seedNodes?: number;
   expandedNodes?: number;
   graphDocuments?: number;

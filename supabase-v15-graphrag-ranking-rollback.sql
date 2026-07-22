@@ -1,0 +1,5 @@
+BEGIN;
+
+DROP FUNCTION IF EXISTS hybrid_search_document_chunks_v2(TEXT, TEXT, TEXT, VECTOR, INTEGER);
+
+COMMIT;

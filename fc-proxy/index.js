@@ -21,7 +21,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.11.0';
+const API_VERSION = '10.12.0';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -697,19 +697,35 @@ async function retrieveDocumentEvidence(question, mapId, workspaceId) {
     console.warn('Query embedding unavailable; using keyword branch only', { code: error.publicCode || error.code || 'EMBEDDING_UNAVAILABLE' });
   }
   try {
-    const result = await supabaseRequest('POST', 'rpc/hybrid_search_document_chunks', {
+    const searchPayload = {
       p_workspace_id: workspaceId,
       p_map_id: mapId,
       p_query_text: question,
       p_query_embedding: embedding,
       p_match_count: 30,
-    });
+    };
+    let result;
+    let retrievalVersion = 'v2';
+    try {
+      result = await supabaseRequest('POST', 'rpc/hybrid_search_document_chunks_v2', searchPayload);
+    } catch (error) {
+      retrievalVersion = 'v1';
+      console.warn('GraphRAG ranking signals unavailable; using compatible RRF fallback', { code: error.publicCode || 'RANKING_RPC_UNAVAILABLE' });
+      result = await supabaseRequest('POST', 'rpc/hybrid_search_document_chunks', searchPayload);
+    }
     const candidates = (Array.isArray(result) ? result : []).map((item) => ({
       id: `chunk:${item.chunk_id}`,
       content: String(item.content || ''),
       desc: String(item.locator || ''),
       type: 'detail',
-      score: Number(item.score || 0),
+      score: Number(item.rrf_score != null ? item.rrf_score : (item.score || 0)),
+      rrfScore: Number(item.rrf_score != null ? item.rrf_score : (item.score || 0)),
+      semanticRank: item.semantic_rank == null ? null : Number(item.semantic_rank),
+      keywordRank: item.keyword_rank == null ? null : Number(item.keyword_rank),
+      semanticScore: item.semantic_score == null ? null : Number(item.semantic_score),
+      keywordScore: item.keyword_score == null ? null : Number(item.keyword_score),
+      documentCreatedAt: String(item.document_created_at || ''),
+      retrievalVersion,
       anchorScore: anchorCoverage(anchors, `${item.document_title || ''} ${item.content || ''}`),
       sourceKind: 'document_chunk',
       documentId: String(item.document_id || ''),
@@ -777,13 +793,19 @@ function entityGraphQueryPlan(question) {
   if (/(指标|accuracy|recall|precision|f1|score|metric)/i.test(value)) typeHints.add('metric');
   if (/(模型|model)/i.test(value)) typeHints.add('model');
   if (/(组织|公司|机构|organization|company)/i.test(value)) typeHints.add('organization');
-  const broad = /(图谱|关系|关联|链路|路径|全局|概览|脉络|知识网络|graph|relationship|path|overview|global)/i.test(value);
+  const broad = /(图谱|关系|关联|链路|路径|全局|全库|概览|脉络|知识网络|graph|relationship|path|overview|global)/i.test(value);
+  const multiHop = /(两跳|多跳|如何影响|为什么|链路|路径|2[- ]?hop|multi[- ]?hop|path)/i.test(value);
+  const globalOverview = /(全局|全库|整体|概览|脉络|综述|overview|global|landscape)/i.test(value);
   if (!focused) GRAPH_DEFAULT_RELATION_TYPES.forEach((item) => relationTypes.add(item));
   if (broad) relationTypes.add('related_to');
-  const maxHops = broad || /(两跳|多跳|如何影响|为什么|链路|路径|2[- ]?hop|multi[- ]?hop|path)/i.test(value) ? 2 : 1;
+  const maxHops = broad || multiHop ? 2 : 1;
+  const exactLookup = isTableQuestion(value)
+    || /(?:第\s*\d+\s*页|\b(?:doi|arxiv|isbn)\b|(?:recall|precision|ndcg|mrr)@\d+|多少|数值|分数|\d+(?:\.\d+)?%)/i.test(value);
+  const route = globalOverview && !multiHop ? 'global' : multiHop ? 'drift' : exactLookup ? 'basic' : focused ? 'local' : 'basic';
   return {
     broad,
     focused,
+    route,
     maxHops,
     relationTypes: [...relationTypes],
     typeHints: [...typeHints],
@@ -802,16 +824,21 @@ function rankEntityGraphSeeds(question, entities) {
     const exactNames = names.filter((item) => normalizedQuery.includes(item));
     const matchedName = exactNames.sort((left, right) => right.length - left.length)[0] || names[0] || '';
     const anchorScore = anchorCoverage(anchors, names.join(' ') + ' ' + String((entity && entity.description) || ''));
+    const sourceContext = (Array.isArray(entity && entity.citations) ? entity.citations : [])
+      .map((citation) => String((citation && citation.title) || '') + ' ' + String((citation && citation.locator) || ''))
+      .join(' ');
+    const sourceScore = anchorCoverage(anchors, sourceContext);
     const entityType = String((entity && (entity.entityType || entity.entity_type)) || 'other');
     const typeScore = plan.typeHints.includes(entityType) ? 0.12 : 0;
-    const exactScore = exactNames.length ? 0.68 : 0;
+    const exactScore = exactNames.length ? 0.62 : 0;
     const confidenceScore = Math.max(0, Math.min(1, Number((entity && entity.confidence) || 0))) * 0.04;
     return {
       entity,
       matchedName,
       exact: exactNames.length > 0,
       anchorScore,
-      score: exactScore + anchorScore * 0.24 + typeScore + confidenceScore,
+      sourceScore,
+      score: exactScore + anchorScore * 0.16 + sourceScore * 0.12 + typeScore + confidenceScore,
     };
   }).filter((item) => item.exact || item.anchorScore >= 0.34)
     .sort((left, right) => right.score - left.score);
@@ -833,10 +860,106 @@ function rankEntityGraphSeeds(question, entities) {
 
 function relationStatusPenalty(status, question) {
   const value = String(question || '').toLowerCase();
-  if (status === 'negated' && !/(否定|不是|并非|未|取消|反驳|not|reject|cancel|contradict)/i.test(value)) return 0.12;
+  if (status === 'negated' && !/(是否|有无|有没有|否定|不是|并非|未|取消|反驳|whether|not|reject|cancel|contradict)/i.test(value)) return 0.12;
   if ((status === 'historical' || status === 'proposed')
     && !/(原来|曾经|历史|计划|拟|proposal|histor|previous|original)/i.test(value)) return 0.05;
   return 0;
+}
+
+function boundedRetrievalScore(value, fallback) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return Number(fallback || 0);
+  return Math.max(0, Math.min(1, numeric));
+}
+
+function retrievalRankSignal(rank, maximumRank) {
+  const numeric = Number(rank);
+  const maximum = Math.max(1, Number(maximumRank || 60));
+  if (!Number.isInteger(numeric) || numeric < 1) return 0;
+  return Math.max(0, 1 - (numeric - 1) / maximum);
+}
+
+function graphRagRecencyScore(createdAt, nowMs) {
+  const timestamp = Date.parse(String(createdAt || ''));
+  if (!Number.isFinite(timestamp)) return 0.5;
+  const ageDays = Math.max(0, (Number(nowMs || Date.now()) - timestamp) / 86400000);
+  if (ageDays <= 30) return 1;
+  if (ageDays <= 180) return 0.8;
+  if (ageDays <= 365) return 0.6;
+  if (ageDays <= 1095) return 0.35;
+  return 0.15;
+}
+
+function graphRagEvidenceSignals(question, item, index, total, nowMs) {
+  const candidate = item || {};
+  const anchors = queryAnchors(question);
+  const citation = Array.isArray(candidate.citations) ? candidate.citations[0] : null;
+  const content = String(candidate.content || '') + ' ' + String(candidate.desc || '');
+  const sourceContext = String(candidate.documentTitle || (citation && citation.title) || '')
+    + ' ' + String((citation && citation.locator) || candidate.desc || '')
+    + ' ' + (Array.isArray(candidate.graphLabels) ? candidate.graphLabels.join(' ') : '');
+  const entityAnchor = Number.isFinite(Number(candidate.anchorScore))
+    ? boundedRetrievalScore(candidate.anchorScore) : anchorCoverage(anchors, content);
+  let semantic = 0;
+  if (Number.isFinite(Number(candidate.rerankScore))) semantic = boundedRetrievalScore(candidate.rerankScore);
+  else if (Number.isFinite(Number(candidate.semanticScore))) semantic = boundedRetrievalScore(candidate.semanticScore);
+  else if (candidate.semanticRank != null) semantic = retrievalRankSignal(candidate.semanticRank, 60);
+  else if (candidate.sourceKind === 'entity_graph_evidence') {
+    const graphTraversalScore = Number(candidate.graphScore != null ? candidate.graphScore : candidate.score);
+    semantic = Number.isFinite(graphTraversalScore)
+      ? boundedRetrievalScore(graphTraversalScore)
+      : boundedRetrievalScore(entityAnchor * (Number(candidate.graphDepth || 0) <= 1 ? 0.85 : 0.75));
+  }
+  else if (candidate.sourceKind === 'document_chunk' && Number.isFinite(Number(candidate.rrfScore || candidate.score))) {
+    semantic = boundedRetrievalScore(Number(candidate.rrfScore || candidate.score) / (2 / 61));
+  } else if (candidate.sourceKind === 'document_chunk' && total > 0) semantic = Math.max(0, 1 - Number(index || 0) / total);
+  let lexical = 0;
+  if (candidate.keywordRank != null) lexical = retrievalRankSignal(candidate.keywordRank, 60);
+  else if (Number.isFinite(Number(candidate.keywordScore))) {
+    const keywordScore = Math.max(0, Number(candidate.keywordScore));
+    lexical = keywordScore / (1 + keywordScore);
+  } else if (candidate.sourceKind === 'entity_graph_evidence') lexical = anchorCoverage(anchors, content);
+  let path = 0;
+  if (candidate.sourceKind === 'entity_graph_evidence') {
+    path = Number(candidate.graphDepth || 0) <= 1 ? 1 : 0.72;
+  } else if (candidate.primaryGraphLinked) path = 1;
+  else if (candidate.graphLinked) path = 0.62;
+  else if (candidate.seed) path = 0.52;
+  else if (candidate.expanded) path = Number(candidate.graphDepth || 1) <= 1 ? 0.38 : 0.22;
+  let metadata = anchorCoverage(anchors, sourceContext);
+  if (candidate.sourceKind === 'entity_graph_evidence') metadata = Math.max(metadata, 0.65);
+  else if (candidate.primaryGraphLinked) metadata = Math.max(metadata, 0.55);
+  else if (candidate.graphLinked) metadata = Math.max(metadata, 0.35);
+  const recency = graphRagRecencyScore(candidate.documentCreatedAt, nowMs);
+  const statusPenalty = relationStatusPenalty(candidate.graphRelationStatus, question);
+  const score = entityAnchor * 0.28 + semantic * 0.24 + lexical * 0.18
+    + path * 0.14 + metadata * 0.10 + recency * 0.06 - statusPenalty;
+  return {
+    entityAnchor,
+    semantic,
+    lexical,
+    path,
+    metadata,
+    recency,
+    statusPenalty,
+    score: Math.max(0, score),
+  };
+}
+
+function rankGraphRagEvidence(question, candidates, options) {
+  const rows = Array.isArray(candidates) ? candidates : [];
+  const nowMs = options && options.nowMs ? Number(options.nowMs) : Date.now();
+  return rows.map((item, index) => {
+    const retrievalSignals = graphRagEvidenceSignals(question, item, index, rows.length, nowMs);
+    return {
+      ...item,
+      score: retrievalSignals.score,
+      retrievalScore: retrievalSignals.score,
+      retrievalSignals,
+      originalRank: index + 1,
+    };
+  }).sort((left, right) => Number(right.retrievalScore || 0) - Number(left.retrievalScore || 0)
+    || Number(left.originalRank || 0) - Number(right.originalRank || 0));
 }
 
 async function retrieveEntityGraphEvidence(question, mapId, workspaceId) {
@@ -1031,20 +1154,18 @@ async function retrieveGraphEvidence(question, mapId, workspaceId) {
     graphLabelsByDocument.set(citation.documentId, labels.slice(0, 6));
   }));
 
-  const scoredChunks = documentEvidence.map((item, index) => {
+  const scoredChunks = rankGraphRagEvidence(question, documentEvidence.map((item) => {
     const graphLinked = graphDocumentIds.has(item.documentId);
     const primaryGraphLinked = primaryGraphDocumentIds.has(item.documentId);
     const graphLabels = graphLabelsByDocument.get(item.documentId) || [];
-    const semanticScore = Number.isFinite(Number(item.rerankScore)) ? Number(item.rerankScore) : Math.max(0, 1 - index / Math.max(documentEvidence.length, 1));
     return {
       ...item,
       graphLinked,
       primaryGraphLinked,
       graphLabels,
-      graphScore: semanticScore + (primaryGraphLinked ? 0.62 : graphLinked ? 0.24 : 0) + Number(item.anchorScore || 0) * 0.18,
       desc: `${item.desc || ''}${graphLabels.length ? ` · 图谱路径：${graphLabels.join(' → ')}` : ''}`,
     };
-  }).sort((left, right) => right.graphScore - left.graphScore);
+  }));
 
   const primaryChunks = scoredChunks.filter((item) => item.primaryGraphLinked);
   const linkedChunks = scoredChunks.filter((item) => item.graphLinked && !item.primaryGraphLinked);
@@ -1053,12 +1174,21 @@ async function retrieveGraphEvidence(question, mapId, workspaceId) {
     ? [...primaryChunks.slice(0, 10), ...linkedChunks.slice(0, 5), ...unlinkedChunks.slice(0, 2)]
     : scoredChunks.slice(0, 16);
   const deduplicated = new Map();
-  [...entityEvidence, ...graphConditionedChunks, ...graphNodes].forEach((item) => {
+  const rankingCandidates = [...entityEvidence, ...graphConditionedChunks, ...graphNodes.map((item) => ({
+    ...item,
+    sourceKind: item.sourceKind || 'concept_node',
+  }))];
+  rankGraphRagEvidence(question, rankingCandidates).forEach((item) => {
     if (!deduplicated.has(item.id)) deduplicated.set(item.id, item);
   });
-  const evidence = [...deduplicated.values()].slice(0, 24);
+  const queryPlan = entityEvidence.trace && entityEvidence.trace.entityQueryPlan
+    ? entityEvidence.trace.entityQueryPlan : entityGraphQueryPlan(question);
+  const evidenceLimit = queryPlan.route === 'drift' || queryPlan.route === 'global' ? 16 : 12;
+  const evidence = [...deduplicated.values()].slice(0, evidenceLimit);
   evidence.trace = {
     mode: 'hybrid_graph_rag',
+    rankingVersion: 's2.12-v1',
+    queryRoute: queryPlan.route,
     seedNodes: graphNodes.filter((node) => node.seed).length,
     expandedNodes: graphNodes.filter((node) => node.expanded).length,
     graphDocuments: graphDocumentIds.size,
@@ -1072,6 +1202,12 @@ async function retrieveGraphEvidence(question, mapId, workspaceId) {
     needsDisambiguation: Boolean(entityEvidence.trace && entityEvidence.trace.needsDisambiguation),
     disambiguationCandidates: entityEvidence.trace && entityEvidence.trace.disambiguationCandidates
       ? entityEvidence.trace.disambiguationCandidates : [],
+    topCandidates: evidence.slice(0, 5).map((item) => ({
+      id: item.id,
+      sourceKind: item.sourceKind || 'concept_node',
+      score: Number(Number(item.retrievalScore || 0).toFixed(4)),
+      signals: item.retrievalSignals || null,
+    })),
   };
   return evidence;
 }
@@ -4983,6 +5119,7 @@ const server = http.createServer(async (req, res) => {
         knowledgeStoreConfigured: Boolean(SUPABASE_URL && SUPABASE_KEY),
         knowledgeStore: 'unknown',
         hybridRetrieval: 'unknown',
+        graphRagRanking: 'unknown',
         entityGraph: 'unknown',
         nodeTimeline: 'unknown',
         whiteboardLayout: 'unknown',
@@ -5006,10 +5143,23 @@ const server = http.createServer(async (req, res) => {
         } catch (_) {
           if (checks.knowledgeStore !== 'ok') checks.knowledgeStore = 'unreachable';
           if (checks.hybridRetrieval !== 'ready') checks.hybridRetrieval = 'unavailable';
+          if (checks.graphRagRanking !== 'ready') checks.graphRagRanking = 'unavailable';
           checks.entityGraph = 'unavailable';
           checks.nodeTimeline = 'unavailable';
         }
         if (checks.knowledgeStore === 'ok') {
+          try {
+            await supabaseRequest('POST', 'rpc/hybrid_search_document_chunks_v2', {
+              p_workspace_id: '00000000-0000-0000-0000-000000000000',
+              p_map_id: '00000000-0000-0000-0000-000000000000',
+              p_query_text: '',
+              p_query_embedding: null,
+              p_match_count: 1,
+            });
+            checks.graphRagRanking = 'ready';
+          } catch (_) {
+            checks.graphRagRanking = 'unavailable';
+          }
           try {
             await supabaseRequest('GET', 'maps?select=id,canvas_view&limit=1');
             await supabaseRequest('GET', 'node_layouts?select=node_id,group_id,card_width,card_height&limit=1');
@@ -5024,12 +5174,14 @@ const server = http.createServer(async (req, res) => {
       } else {
         checks.knowledgeStore = 'not_configured';
         checks.hybridRetrieval = 'not_configured';
+        checks.graphRagRanking = 'not_configured';
         checks.entityGraph = 'not_configured';
         checks.nodeTimeline = 'not_configured';
         checks.whiteboardLayout = 'not_configured';
       }
       const healthy = checks.authConfiguration === 'ok' && checks.modelConfigured && checks.knowledgeStore === 'ok'
-        && checks.hybridRetrieval === 'ready' && checks.entityGraph === 'ready' && checks.nodeTimeline === 'ready'
+        && checks.hybridRetrieval === 'ready' && checks.graphRagRanking === 'ready'
+        && checks.entityGraph === 'ready' && checks.nodeTimeline === 'ready'
         && checks.whiteboardLayout === 'ready' && checks.deploymentIdentity !== 'missing';
       res.writeHead(healthy ? 200 : 503, { 'Content-Type': 'application/json; charset=utf-8' });
       return res.end(JSON.stringify({
@@ -5148,6 +5300,9 @@ module.exports = {
   entityGraphQueryPlan,
   rankEntityGraphSeeds,
   relationStatusPenalty,
+  graphRagRecencyScore,
+  graphRagEvidenceSignals,
+  rankGraphRagEvidence,
   __entityGraphInternal: {
     normalizedEntityName,
     canonicalGraphEntityIdentity,
