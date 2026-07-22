@@ -1,3 +1,5 @@
+@import "pdfjs-dist/web/pdf_viewer.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -311,3 +313,24 @@ html {
 .bg-branch-6 { background-color: var(--branch-6); }
 .bg-branch-7 { background-color: var(--branch-7); }
 .bg-branch-8 { background-color: var(--branch-8); }
+
+/* ===== PDF source verification ===== */
+.mindgrow-pdf-container .pdfViewer {
+  padding: 16px 10px 28px;
+}
+.mindgrow-pdf-container .pdfViewer .page {
+  margin: 0 auto 16px;
+  border-radius: 8px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.38);
+  overflow: hidden;
+}
+.mindgrow-pdf-container .textLayer .highlight {
+  margin: -1px;
+  padding: 1px;
+  border-radius: 3px;
+  background-color: rgba(250, 204, 21, 0.68);
+  box-shadow: 0 0 0 1px rgba(202, 138, 4, 0.28);
+}
+.mindgrow-pdf-container .textLayer .highlight.selected {
+  background-color: rgba(34, 211, 167, 0.82);
+}

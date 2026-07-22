@@ -155,6 +155,8 @@ export interface Citation {
   index: number;
   quote: string;
   locator?: string;
+  pageNumber?: number | null;
+  chunkIndex?: number;
   documentId?: string;
   title?: string;
   sourceUrl?: string;
