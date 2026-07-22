@@ -6,6 +6,7 @@ import Link from "next/link";
 import { WorkspaceMenu } from "@/components/auth/workspace-menu";
 import { MODE_LIBRARY_CONFIG } from "@/lib/mode-libraries";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
+import { SyncIndicator } from "@/components/ui/sync-indicator";
 
 const MODES: { key: AppMode; label: string; emoji: string; tooltip: string }[] = [
   { key: "meeting", label: "会议助手", emoji: "🎯", tooltip: "整理会议记录，提取决议和行动项" },
@@ -103,6 +104,7 @@ export function Header() {
 
       {/* Right: Actions */}
       <div className="flex items-center gap-1">
+        <SyncIndicator />
         <WorkspaceMenu />
         {/* Layout direction only belongs to the knowledge-map workspace. */}
         {!isMobile && currentMode === "knowledge" && (
