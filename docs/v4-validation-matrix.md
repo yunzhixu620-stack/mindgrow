@@ -50,7 +50,7 @@
 | S2.3 CI 部署事实校验 | 已合并 | PR #38 / `4653d25`；GitHub Pages 静态清单的完整 SHA、API `10.7.0` 与 `authRequired=true` 生产校验通过；后端 `git_sha` 按 Owner 决定留到 S2.10 |
 | S2.4 Backlinks + 时间轴 | 已合并 | PR #39 / `04f4cab`；Supabase V13、阿里云 API `10.8.0` 与 GitHub Pages 已发布；补齐触发器 PATCH 后，公网 smoke、真实账号 created/updated 时间轴与刷新持久化全部通过 |
 | S2.5 canonical ID + 真 createdAt | 已合并 | PR #41 / `e68b455` 与 PR #42；Supabase V11 字段、API `10.9.2` 与公网 smoke 已验证；真实文章重复导入、canonical ID/时间、刷新持久化和临时数据清理全部通过 |
-| S2.6 React Flow 可复现 bug | 局部已有 | 已修复若干跳转/展开问题；尚未形成只按复现步骤验收的清单 |
+| S2.6 React Flow 可复现 bug | 已合并 | PR #43 / `3f89eee`；修复知识宇宙全页返回后大型图从总览退化为全部展开的竞态；固定复现清单、单测与 E2E 均已落库，GitHub Pages 真实账号验证通过 |
 | S2.7 Obsidian 式实体网状图 | 局部已有 | 已有实体图、一跳聚焦和详情；缺完整强关系默认、过滤、搜索验收 |
 | S2.8 Heptabase 白板底座 | 待开发 | 需要卡片、空间分组和可视化编排模型 |
 | S2.9 阿里云常驻实例 | 待开发 | 属生产云配置；需 Owner 授权、成本记录和回滚证据 |
@@ -92,3 +92,12 @@
 3. [x] 公网 `/health` 返回 `status=ok`、`version=10.9.2`、`authRequired=true`、`knowledgeStore=ok`、`hybridRetrieval=ready`、`entityGraph=ready`、`nodeTimeline=ready`；公开后端 smoke 7/7 通过。
 4. [x] 真实文章首次保存得到 5 个实体、1 条关系；第二篇得到 3 个实体、2 条关系，跨文章去重后共 6 个实体。`GraphRAG` canonical ID 固定为 `entity_ac6ac5a82bced63768762f78`，首次时间 `2026-07-22 11:59 UTC`、最近更新 `2026-07-22 12:01 UTC`，刷新后仍保留两条专属证据。
 5. [x] 删除临时文章知识库 `QA-S2.5-实体时间-20260722`；生产账号恢复到原有知识库集合。
+
+## S2.6 发布检查点
+
+1. [x] 在 `main@caca8d9` 生产真实账号稳定复现 RF-01：默认知识库 107 个原节点，从知识宇宙返回后持续显示 108 个 React Flow 节点，工具栏为 `主干 107/107`，不是瞬时动画。
+2. [x] PR #43 增加 `outline` 初始化恢复规则，同时保护用户主动选择的 `all` 与逐级展开后的 `custom`；未修改存储节点、边、引用、实体或 GraphRAG 拓扑。
+3. [x] 本地门禁：unit 142/142、lint、build、E2E 35/35；新增“全页返回后仍保持大型图总览”用例通过，三板块热切换 147ms / 216ms / 118ms。
+4. [x] PR #43 压缩合并为 `main@3f89eee`；`gh-pages@93d837b` 发布成功，production fact 精确对应前端完整 SHA、API `10.9.2` 与 `authRequired=true`；公网后端 smoke 7/7。
+5. [x] GitHub Pages 真实账号按 RF-01 复测：进入知识宇宙后返回，`viewMode=outline`、React Flow 节点数为 1、总原节点为 107、抬头为 1、控制台无 warning/error。
+6. [x] 生产逐级展开回归：总览 1 → 10，只出现 9 个下一层主题与 9 个继续展开入口；收起后恢复 1，页面状态为“已同步”。
