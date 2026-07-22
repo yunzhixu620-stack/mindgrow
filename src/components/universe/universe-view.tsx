@@ -7,6 +7,8 @@ import { IS_LOCAL_MODE } from "@/lib/client-api";
 import { isMapForMode, MODE_LIBRARY_CONFIG } from "@/lib/mode-libraries";
 import { tenantCache, tenantScopeKey, type TenantScope } from "@/lib/tenant-cache";
 import { useMindGrowStore, type AppMode } from "@/store/mindgrow-store";
+import { EntityDetailPanel } from "@/components/entity/entity-detail-panel";
+import type { Citation } from "@/types";
 import {
   fetchUniverseLibraries,
   universeFallbackWarning,
@@ -16,13 +18,16 @@ import {
 const UNIVERSE_CACHE_TTL_MS = 60_000;
 const LOCAL_TENANT_SCOPE: TenantScope = { userId: "local-user", workspaceId: "local-workspace" };
 
-interface GraphNode {
+export type UniverseRefKind = "library" | "knowledge-node" | "entity";
+
+export interface GraphNode {
   id: string;
   mapId: string;
   mapName: string;
   label: string;
   type: string;
-  kind: "library" | "knowledge";
+  refKind: UniverseRefKind;
+  refId: string;
   x: number;
   y: number;
   vx: number;
@@ -31,12 +36,16 @@ interface GraphNode {
   color: string;
 }
 
-interface GraphLink {
+export interface GraphLink {
+  id: string;
   source: string;
   target: string;
   strength: number;
   kind: "hierarchy" | "relation" | "cross-library";
   label: string;
+  relationId?: string;
+  explanation?: string;
+  citations?: Citation[];
 }
 
 const TYPE_COLORS: Record<string, string> = {
@@ -76,7 +85,7 @@ function topicTerms(value: string) {
   return terms;
 }
 
-function buildUniverseData(libraries: LibraryGraph[]): { nodes: GraphNode[]; links: GraphLink[]; crossLibraryCount: number } {
+export function buildUniverseData(libraries: LibraryGraph[]): { nodes: GraphNode[]; links: GraphLink[]; crossLibraryCount: number } {
   const nodes: GraphNode[] = [];
   const links: GraphLink[] = [];
   const libraryTerms = new Map<string, Set<string>>();
@@ -95,7 +104,8 @@ function buildUniverseData(libraries: LibraryGraph[]): { nodes: GraphNode[]; lin
       mapName: library.map.name,
       label: library.map.name,
       type: "library",
-      kind: "library",
+      refKind: "library",
+      refId: library.map.id,
       x: clusterX,
       y: clusterY,
       vx: 0,
@@ -120,7 +130,8 @@ function buildUniverseData(libraries: LibraryGraph[]): { nodes: GraphNode[]; lin
         mapName: library.map.name,
         label: node.content,
         type: node.type,
-        kind: "knowledge",
+        refKind: "knowledge-node",
+        refId: node.id,
         x: clusterX + Math.cos(angle) * distance,
         y: clusterY + Math.sin(angle) * distance,
         vx: 0,
@@ -137,7 +148,7 @@ function buildUniverseData(libraries: LibraryGraph[]): { nodes: GraphNode[]; lin
         exactConcepts.set(exact, entries);
       }
       if (!incomingContains.has(node.id)) {
-        links.push({ source: hubId, target: graphNode.id, strength: 0.85, kind: "hierarchy", label: "知识库主干" });
+        links.push({ id: `hierarchy:${hubId}:${graphNode.id}`, source: hubId, target: graphNode.id, strength: 0.85, kind: "hierarchy", label: "知识库主干" });
       }
     });
 
@@ -150,7 +161,7 @@ function buildUniverseData(libraries: LibraryGraph[]): { nodes: GraphNode[]; lin
       const distance = 120 + (seed % 190);
       const graphNode: GraphNode = {
         id: graphId, mapId: library.map.id, mapName: library.map.name, label: entity.canonicalName,
-        type: "entity", kind: "knowledge", x: clusterX + Math.cos(angle) * distance,
+        type: "entity", refKind: "entity", refId: entity.id, x: clusterX + Math.cos(angle) * distance,
         y: clusterY + Math.sin(angle) * distance, vx: 0, vy: 0, radius: 6.5, color: "#a78bfa",
       };
       nodes.push(graphNode);
@@ -166,17 +177,31 @@ function buildUniverseData(libraries: LibraryGraph[]): { nodes: GraphNode[]; lin
       const source = entityNodeIds.get(relation.sourceId);
       const target = entityNodeIds.get(relation.targetId);
       if (!source || !target) return;
-      links.push({ source, target, strength: relation.confidence, kind: "relation", label: relation.label });
+      links.push({
+        id: `entity-relation:${library.map.id}:${relation.id}`,
+        source,
+        target,
+        strength: relation.confidence,
+        kind: "relation",
+        label: relation.shortLabel || relation.label,
+        relationId: relation.id,
+        explanation: relation.explanation,
+        citations: relation.citations,
+      });
     });
 
     library.edges.forEach((edge) => {
       if (!scopedIds.has(edge.sourceId) || !scopedIds.has(edge.targetId)) return;
       links.push({
+        id: `knowledge-edge:${library.map.id}:${edge.id}`,
         source: `${library.map.id}:${edge.sourceId}`,
         target: `${library.map.id}:${edge.targetId}`,
         strength: edge.weight || 0.6,
         kind: edge.relation === "contains" ? "hierarchy" : "relation",
         label: edge.relation === "contains" ? "包含" : edge.relation === "contradicts" ? "观点冲突" : "概念关联",
+        relationId: edge.relationId,
+        explanation: edge.relationExplanation,
+        citations: edge.citations,
       });
     });
   });
@@ -192,7 +217,7 @@ function buildUniverseData(libraries: LibraryGraph[]): { nodes: GraphNode[]; lin
       const key = [left.id, right.id].sort().join("|");
       if (crossPairs.has(key)) continue;
       crossPairs.add(key);
-      links.push({ source: left.id, target: right.id, strength: 0.9, kind: "cross-library", label: `共享概念：${left.label}` });
+      links.push({ id: `cross-concept:${key}`, source: left.id, target: right.id, strength: 0.9, kind: "cross-library", label: `共享概念：${left.label}` });
     }
   });
 
@@ -210,6 +235,7 @@ function buildUniverseData(libraries: LibraryGraph[]): { nodes: GraphNode[]; lin
       const similarity = shared.length / unionSize;
       if (similarity < 0.06 || shared.length < 2) continue;
       links.push({
+        id: `cross-library:${left.map.id}:${right.map.id}`,
         source: `library:${left.map.id}`,
         target: `library:${right.map.id}`,
         strength: Math.min(1, 0.45 + similarity * 2),
@@ -232,7 +258,7 @@ function simulateForceLayout(nodes: GraphNode[], links: GraphLink[], iterations 
         const dx = right.x - left.x;
         const dy = right.y - left.y;
         const distance = Math.sqrt(dx * dx + dy * dy) || 1;
-        const force = (left.kind === "library" || right.kind === "library" ? 3600 : 1500) / (distance * distance);
+        const force = (left.refKind === "library" || right.refKind === "library" ? 3600 : 1500) / (distance * distance);
         const forceX = (dx / distance) * force;
         const forceY = (dy / distance) * force;
         left.vx -= forceX;
@@ -267,6 +293,23 @@ function simulateForceLayout(nodes: GraphNode[], links: GraphLink[], iterations 
   return nodes;
 }
 
+export function pointToSegmentDistance(
+  pointX: number,
+  pointY: number,
+  sourceX: number,
+  sourceY: number,
+  targetX: number,
+  targetY: number,
+) {
+  const dx = targetX - sourceX;
+  const dy = targetY - sourceY;
+  if (dx === 0 && dy === 0) return Math.hypot(pointX - sourceX, pointY - sourceY);
+  const projection = Math.max(0, Math.min(1, ((pointX - sourceX) * dx + (pointY - sourceY) * dy) / (dx * dx + dy * dy)));
+  const closestX = sourceX + projection * dx;
+  const closestY = sourceY + projection * dy;
+  return Math.hypot(pointX - closestX, pointY - closestY);
+}
+
 export function UniverseView() {
   const router = useRouter();
   const { user, currentWorkspace } = useAuth();
@@ -290,6 +333,8 @@ export function UniverseView() {
   const [warning, setWarning] = useState("");
   const [reloadToken, setReloadToken] = useState(0);
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
+  const [hoveredLinkId, setHoveredLinkId] = useState<string | null>(null);
+  const [selectedEntityNodeId, setSelectedEntityNodeId] = useState<string | null>(null);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(0.82);
   const [dragging, setDragging] = useState(false);
@@ -332,6 +377,8 @@ export function UniverseView() {
     setWarning("");
     if (!cached) setLibraries([]);
     setHoveredNode(null);
+    setHoveredLinkId(null);
+    setSelectedEntityNodeId(null);
     setOffset({ x: 0, y: 0 });
     setZoom(0.82);
     void fetchUniverseLibraries(controller.signal)
@@ -359,6 +406,8 @@ export function UniverseView() {
 
   useEffect(() => {
     setHoveredNode(null);
+    setHoveredLinkId(null);
+    setSelectedEntityNodeId(null);
     setOffset({ x: 0, y: 0 });
     setZoom(0.82);
   }, [scope]);
@@ -399,6 +448,7 @@ export function UniverseView() {
       const source = nodeById.get(link.source);
       const target = nodeById.get(link.target);
       if (!source || !target) return;
+      const isHoveredLink = link.id === hoveredLinkId;
       const sourceX = centerX + source.x * zoom;
       const sourceY = centerY + source.y * zoom;
       const targetX = centerX + target.x * zoom;
@@ -407,15 +457,16 @@ export function UniverseView() {
       context.moveTo(sourceX, sourceY);
       context.lineTo(targetX, targetY);
       context.setLineDash(link.kind === "cross-library" ? [7, 5] : link.kind === "relation" ? [4, 4] : []);
-      context.strokeStyle = link.kind === "cross-library" ? "rgba(250,204,21,0.5)" : link.kind === "relation" ? "rgba(244,114,182,0.28)" : "rgba(255,255,255,0.075)";
-      context.lineWidth = link.kind === "cross-library" ? 1.4 : link.kind === "relation" ? 1 : 0.65;
+      context.strokeStyle = isHoveredLink ? "rgba(221,214,254,0.95)" : link.kind === "cross-library" ? "rgba(250,204,21,0.5)" : link.kind === "relation" ? "rgba(244,114,182,0.28)" : "rgba(255,255,255,0.075)";
+      context.lineWidth = isHoveredLink ? 2.4 : link.kind === "cross-library" ? 1.4 : link.kind === "relation" ? 1 : 0.65;
       context.stroke();
       context.setLineDash([]);
-      if (link.kind === "cross-library" && (source.id === hoveredNode || target.id === hoveredNode)) {
+      if (isHoveredLink) {
         context.font = "11px sans-serif";
         context.textAlign = "center";
-        context.fillStyle = "#fde68a";
-        context.fillText(link.label, (sourceX + targetX) / 2, (sourceY + targetY) / 2 - 6);
+        context.fillStyle = link.kind === "cross-library" ? "#fde68a" : "#ddd6fe";
+        const linkLabel = link.label.length > 34 ? `${link.label.slice(0, 33)}…` : link.label;
+        context.fillText(linkLabel, (sourceX + targetX) / 2, (sourceY + targetY) / 2 - 7);
       }
     });
     positionedNodes.forEach((node) => {
@@ -423,7 +474,7 @@ export function UniverseView() {
       const x = centerX + node.x * zoom;
       const y = centerY + node.y * zoom;
       const radius = Math.max(3, node.radius * Math.sqrt(zoom)) * (isHovered ? 1.3 : 1);
-      if (isHovered || node.kind === "library") {
+      if (isHovered || node.refKind === "library") {
         const glow = context.createRadialGradient(x, y, 0, x, y, radius * 3);
         glow.addColorStop(0, `${node.color}45`);
         glow.addColorStop(1, "transparent");
@@ -434,25 +485,25 @@ export function UniverseView() {
       }
       context.beginPath();
       context.arc(x, y, radius, 0, Math.PI * 2);
-      context.fillStyle = `${node.color}${node.kind === "library" ? "e8" : isHovered ? "ff" : "88"}`;
+      context.fillStyle = `${node.color}${node.refKind === "library" ? "e8" : isHovered ? "ff" : "88"}`;
       context.fill();
-      context.strokeStyle = node.kind === "library" ? "#ffffffb0" : node.color;
-      context.lineWidth = node.kind === "library" ? 1.6 : isHovered ? 1.5 : 0.5;
+      context.strokeStyle = node.refKind === "library" ? "#ffffffb0" : node.color;
+      context.lineWidth = node.refKind === "library" ? 1.6 : isHovered ? 1.5 : 0.5;
       context.stroke();
-      if (node.kind === "library" || isHovered || (node.type === "topic" && zoom >= 0.75)) {
-        context.font = node.kind === "library" ? "600 13px sans-serif" : isHovered ? "12px sans-serif" : "10px sans-serif";
-        context.fillStyle = node.kind === "library" ? "#fafafa" : "#d4d4d8";
+      if (node.refKind === "library" || isHovered || (node.type === "topic" && zoom >= 0.75)) {
+        context.font = node.refKind === "library" ? "600 13px sans-serif" : isHovered ? "12px sans-serif" : "10px sans-serif";
+        context.fillStyle = node.refKind === "library" ? "#fafafa" : "#d4d4d8";
         context.textAlign = "center";
         const label = node.label.length > 28 ? `${node.label.slice(0, 27)}…` : node.label;
         context.fillText(label, x, y + radius + 15);
-        if (isHovered && node.kind === "knowledge") {
+        if (isHovered && node.refKind !== "library") {
           context.font = "10px sans-serif";
           context.fillStyle = "#a1a1aa";
           context.fillText(node.mapName, x, y + radius + 29);
         }
       }
     });
-  }, [hoveredNode, offset, positionedNodes, universeData.links, zoom]);
+  }, [hoveredLinkId, hoveredNode, offset, positionedNodes, universeData.links, zoom]);
 
   useEffect(() => {
     draw();
@@ -475,14 +526,42 @@ export function UniverseView() {
     }) || null;
   }, [offset, positionedNodes, zoom]);
 
+  const locateLink = useCallback((clientX: number, clientY: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2 + offset.x;
+    const centerY = rect.top + rect.height / 2 + offset.y;
+    const nodeById = new Map(positionedNodes.map((node) => [node.id, node]));
+    let closest: { link: GraphLink; distance: number } | null = null;
+    for (const link of universeData.links) {
+      if (link.kind === "hierarchy") continue;
+      const source = nodeById.get(link.source);
+      const target = nodeById.get(link.target);
+      if (!source || !target) continue;
+      const distance = pointToSegmentDistance(
+        clientX,
+        clientY,
+        centerX + source.x * zoom,
+        centerY + source.y * zoom,
+        centerX + target.x * zoom,
+        centerY + target.y * zoom,
+      );
+      if (distance <= 7 && (!closest || distance < closest.distance)) closest = { link, distance };
+    }
+    return closest?.link || null;
+  }, [offset, positionedNodes, universeData.links, zoom]);
+
   const handleMouseMove = useCallback((event: React.MouseEvent<HTMLCanvasElement>) => {
     if (dragging) {
       setOffset((current) => ({ x: current.x + event.clientX - dragStart.x, y: current.y + event.clientY - dragStart.y }));
       setDragStart({ x: event.clientX, y: event.clientY });
       return;
     }
-    setHoveredNode(locateNode(event.clientX, event.clientY)?.id || null);
-  }, [dragStart, dragging, locateNode]);
+    const node = locateNode(event.clientX, event.clientY);
+    setHoveredNode(node?.id || null);
+    setHoveredLinkId(node ? null : locateLink(event.clientX, event.clientY)?.id || null);
+  }, [dragStart, dragging, locateLink, locateNode]);
 
   const changeZoom = useCallback((nextZoom: number, clientX?: number, clientY?: number) => {
     const bounded = Math.min(2.5, Math.max(0.28, nextZoom));
@@ -497,9 +576,7 @@ export function UniverseView() {
     setZoom(bounded);
   }, [offset, zoom]);
 
-  const openHoveredLibrary = useCallback(() => {
-    const node = positionedNodes.find((item) => item.id === hoveredNode);
-    if (!node) return;
+  const openNodeLibrary = useCallback((node: GraphNode) => {
     const library = visibleLibraries.find((item) => item.map.id === node.mapId);
     if (library) {
       const mode: AppMode = isMapForMode(library.map, "article") ? "article" : isMapForMode(library.map, "meeting") ? "meeting" : "knowledge";
@@ -507,7 +584,31 @@ export function UniverseView() {
     }
     setCurrentMapId(node.mapId);
     router.push("/");
-  }, [hoveredNode, positionedNodes, visibleLibraries, router, setCurrentMapId, setCurrentMode]);
+  }, [visibleLibraries, router, setCurrentMapId, setCurrentMode]);
+
+  const selectedEntityNode = selectedEntityNodeId
+    ? positionedNodes.find((node) => node.id === selectedEntityNodeId && node.refKind === "entity") || null
+    : null;
+  const selectedEntityLibrary = selectedEntityNode
+    ? visibleLibraries.find((library) => library.map.id === selectedEntityNode.mapId) || null
+    : null;
+  const selectedUniverseEntity = selectedEntityNode && selectedEntityLibrary
+    ? selectedEntityLibrary.entityGraph.entities.find((entity) => entity.id === selectedEntityNode.refId) || null
+    : null;
+  const hoveredLink = hoveredLinkId ? universeData.links.find((link) => link.id === hoveredLinkId) || null : null;
+
+  const closeUniverseEntity = useCallback(() => setSelectedEntityNodeId(null), []);
+  const locateUniverseEntity = useCallback(() => {
+    if (!selectedEntityNode) return;
+    const targetZoom = Math.max(1.05, zoom);
+    setZoom(targetZoom);
+    setOffset({ x: -selectedEntityNode.x * targetZoom, y: -selectedEntityNode.y * targetZoom });
+    setHoveredNode(selectedEntityNode.id);
+    setHoveredLinkId(null);
+  }, [selectedEntityNode, zoom]);
+  const openSelectedEntityLibrary = useCallback(() => {
+    if (selectedEntityNode) openNodeLibrary(selectedEntityNode);
+  }, [openNodeLibrary, selectedEntityNode]);
 
   const totalNodes = visibleLibraries.reduce((sum, library) => sum + library.nodes.length, 0);
   const modeConfig = scope === "all" ? { label: "统一知识", shortLabel: "全部" } : MODE_LIBRARY_CONFIG[scope];
@@ -521,15 +622,22 @@ export function UniverseView() {
     >
       <canvas
         ref={canvasRef}
-        className={`h-full w-full ${dragging ? "cursor-grabbing" : hoveredNode ? "cursor-pointer" : "cursor-grab"}`}
+        className={`h-full w-full ${dragging ? "cursor-grabbing" : hoveredNode ? "cursor-pointer" : hoveredLinkId ? "cursor-help" : "cursor-grab"}`}
         onMouseMove={handleMouseMove}
         onMouseDown={(event) => { setDragging(true); setDragStart({ x: event.clientX, y: event.clientY }); }}
         onMouseUp={(event) => {
           const moved = Math.abs(event.clientX - dragStart.x) + Math.abs(event.clientY - dragStart.y);
           setDragging(false);
-          if (moved < 5 && locateNode(event.clientX, event.clientY)) openHoveredLibrary();
+          const node = locateNode(event.clientX, event.clientY);
+          if (moved >= 5 || !node) return;
+          if (node.refKind === "entity") {
+            setSelectedEntityNodeId(node.id);
+            setHoveredLinkId(null);
+          } else {
+            openNodeLibrary(node);
+          }
         }}
-        onMouseLeave={() => { setDragging(false); setHoveredNode(null); }}
+        onMouseLeave={() => { setDragging(false); setHoveredNode(null); setHoveredLinkId(null); }}
         onWheel={(event) => { event.preventDefault(); changeZoom(zoom * (event.deltaY < 0 ? 1.12 : 0.89), event.clientX, event.clientY); }}
         aria-label={`${modeConfig.label}知识宇宙，可拖动和缩放`}
       />
@@ -542,7 +650,7 @@ export function UniverseView() {
           <span><i className="mr-1 inline-block h-px w-4 border-t border-dashed border-pink-300/70 align-middle" />概念关联</span>
           <span><i className="mr-1 inline-block h-px w-4 border-t border-dashed border-yellow-300/80 align-middle" />跨库生长关系</span>
         </div>
-        <div className="mt-2 text-[10px] text-zinc-500">悬停查看关系，点击节点进入所属知识库。</div>
+        <div className="mt-2 text-[10px] text-zinc-500">悬停连线查看关系；点击实体看解释，点击库或普通节点进入所属知识库。</div>
         <div className="mt-3 flex flex-wrap gap-1" data-testid="universe-scope-switch">
           {(["all", "knowledge", "article", "meeting"] as const).map((item) => <button key={item} type="button" onClick={() => setScope(item)} className={`rounded-lg px-2.5 py-1.5 text-[10px] font-semibold ${scope === item ? "bg-violet-400 text-black" : "border border-white/10 text-zinc-300 hover:bg-white/10"}`}>{item === "all" ? "全部知识" : item === "knowledge" ? "知识碎片" : item === "article" ? "文章" : "会议"}</button>)}
         </div>
@@ -553,6 +661,27 @@ export function UniverseView() {
         <button type="button" onClick={() => { setZoom(0.82); setOffset({ x: 0, y: 0 }); }} aria-label="重置知识宇宙视图" title="适应画布" className="min-w-14 rounded-lg px-2 py-2 text-[10px] font-medium text-zinc-300 hover:bg-white/10">{Math.round(zoom * 100)}%</button>
         <button type="button" onClick={() => changeZoom(zoom * 1.18)} aria-label="放大知识宇宙" title="放大" className="flex h-8 w-8 items-center justify-center rounded-lg text-base text-zinc-300 hover:bg-white/10">＋</button>
       </div>
+
+      {hoveredLink && (
+        <div className="pointer-events-none absolute bottom-4 left-1/2 z-50 w-[min(420px,calc(100%-2rem))] -translate-x-1/2 rounded-xl border border-violet-300/20 bg-black/80 px-4 py-3 text-xs text-zinc-200 shadow-2xl backdrop-blur" data-testid="universe-link-hover" data-link-id={hoveredLink.id}>
+          <div className="font-semibold text-violet-200">{hoveredLink.label}</div>
+          {hoveredLink.explanation && <p className="mt-1 line-clamp-2 text-[10px] leading-5 text-zinc-400">{hoveredLink.explanation}</p>}
+          {(hoveredLink.citations || []).length > 0 && <div className="mt-1 text-[9px] text-zinc-500">{hoveredLink.citations?.length} 条可核验引用</div>}
+        </div>
+      )}
+
+      {selectedUniverseEntity && selectedEntityLibrary && selectedEntityNode && (
+        <EntityDetailPanel
+          entity={selectedUniverseEntity}
+          entities={selectedEntityLibrary.entityGraph.entities}
+          relations={selectedEntityLibrary.entityGraph.relations}
+          mapName={selectedEntityLibrary.map.name}
+          onClose={closeUniverseEntity}
+          onLocate={locateUniverseEntity}
+          onOpenLibrary={openSelectedEntityLibrary}
+          className="md:top-20"
+        />
+      )}
 
       {warning && <div role="status" className="absolute bottom-4 left-1/2 z-40 flex max-w-[min(620px,calc(100%-2rem))] -translate-x-1/2 items-center gap-3 rounded-xl border border-amber-300/25 bg-amber-950/90 px-4 py-2 text-xs text-amber-100 shadow-xl backdrop-blur">
         <span>{warning}</span>
