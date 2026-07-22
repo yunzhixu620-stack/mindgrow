@@ -5,6 +5,7 @@ import { useMindGrowStore, type AppMode } from "@/store/mindgrow-store";
 import Link from "next/link";
 import { WorkspaceMenu } from "@/components/auth/workspace-menu";
 import { MODE_LIBRARY_CONFIG } from "@/lib/mode-libraries";
+import { Breadcrumb } from "@/components/ui/breadcrumb";
 
 const MODES: { key: AppMode; label: string; emoji: string; tooltip: string }[] = [
   { key: "meeting", label: "会议助手", emoji: "🎯", tooltip: "整理会议记录，提取决议和行动项" },
@@ -37,7 +38,7 @@ export function Header() {
       }}
     >
       {/* Left: Logo + Mode Tabs */}
-      <div className="flex items-center gap-4">
+      <div className="flex min-w-0 items-center gap-4">
         {/* Logo */}
         <Link href="/" className="flex items-center gap-2 no-underline group">
           <div
@@ -97,6 +98,7 @@ export function Header() {
             ))}
           </div>
         )}
+        {!isMobile && <Breadcrumb />}
       </div>
 
       {/* Right: Actions */}

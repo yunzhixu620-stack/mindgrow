@@ -297,6 +297,50 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     await page.waitForFunction(() => document.body.innerText.includes("检索评测空间"));
   });
 
+  await check("product breadcrumb tracks hierarchy and uses the shared map loader", async () => {
+    const breadcrumbState = await page.evaluate(() => {
+      const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+      const activeId = document.querySelector('[data-testid="knowledge-workspace"]')?.getAttribute("data-current-map-id") || "";
+      const active = state.maps.find((map) => map.id === activeId);
+      const target = state.maps.find((map) => map.id !== activeId && !String(map.description || "").includes("[MindGrow:meeting]") && !String(map.description || "").includes("[MindGrow:article]"));
+      return { activeId, activeName: active?.name || "", targetId: target?.id || "", targetName: target?.name || "" };
+    });
+    if (!breadcrumbState.activeId || !breadcrumbState.activeName || !breadcrumbState.targetId) throw new Error(`Breadcrumb fixture is incomplete: ${JSON.stringify(breadcrumbState)}`);
+    const breadcrumbText = await page.$eval('[data-testid="product-breadcrumb"]', (element) => element.textContent.replace(/\s+/g, " ").trim());
+    if (!breadcrumbText.includes("本地工作区") || !breadcrumbText.includes("知识碎片") || !breadcrumbText.includes(breadcrumbState.activeName)) throw new Error(`Breadcrumb hierarchy is incomplete: ${breadcrumbText}`);
+    if (breadcrumbText.includes(" › 图 › ") || breadcrumbText.endsWith(" › 图")) throw new Error("Breadcrumb invented a graph level");
+    await page.evaluate(() => {
+      window.__breadcrumbGraphRequests = [];
+      window.__breadcrumbGraphCapture = (event) => {
+        const detail = event.detail || {};
+        const url = new URL(detail.path || "", window.location.origin);
+        const mapId = url.searchParams.get("mapId");
+        if (detail.method === "GET" && url.pathname.endsWith("/api/knowledge") && mapId) window.__breadcrumbGraphRequests.push(mapId);
+      };
+      window.addEventListener("mindgrow:local-api-request", window.__breadcrumbGraphCapture);
+    });
+    try {
+      await page.click('[data-testid="product-breadcrumb"] button[aria-label^="当前知识库"]');
+      await page.waitForSelector('[data-testid="breadcrumb-map-menu"]');
+      await page.click(`[data-testid="breadcrumb-map-menu"] button[data-map-id="${breadcrumbState.targetId}"]`);
+      await page.waitForFunction((targetId) => document.querySelector('[data-testid="knowledge-workspace"]')?.getAttribute("data-current-map-id") === targetId, {}, breadcrumbState.targetId);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      const requestCount = await page.evaluate((targetId) => window.__breadcrumbGraphRequests.filter((mapId) => mapId === targetId).length, breadcrumbState.targetId);
+      if (requestCount > 1) throw new Error(`Breadcrumb duplicated the shared loader: ${requestCount} graph requests`);
+
+      await page.click('[data-testid="product-breadcrumb"] button[aria-label^="当前知识库"]');
+      await page.waitForSelector('[data-testid="breadcrumb-map-menu"]');
+      await page.click(`[data-testid="breadcrumb-map-menu"] button[data-map-id="${breadcrumbState.activeId}"]`);
+      await page.waitForFunction((activeId) => document.querySelector('[data-testid="knowledge-workspace"]')?.getAttribute("data-current-map-id") === activeId, {}, breadcrumbState.activeId);
+    } finally {
+      await page.evaluate(() => {
+        window.removeEventListener("mindgrow:local-api-request", window.__breadcrumbGraphCapture);
+        delete window.__breadcrumbGraphCapture;
+        delete window.__breadcrumbGraphRequests;
+      });
+    }
+  });
+
   await check("meeting assistant generates and saves structured minutes", async () => {
     await clickByText(page, "button", "会议助手");
     await page.waitForSelector('[data-testid="meeting-workspace"]');
@@ -442,11 +486,9 @@ const expandOneVisibleLevel = async (page, previousCount) => {
       return state.maps.find((map) => map.name === "论文图谱测试库")?.id || "";
     });
     if (!targetMapId) throw new Error("New article project was not created");
-    const cards = await page.$$("button");
-    const oldCard = await Promise.all(cards.map(async (button) => ({ button, text: await button.evaluate((element) => element.textContent.trim()) })))
-      .then((items) => items.find((item) => item.text.includes("文章知识库") && !item.text.includes("独立文章知识库"))?.button);
-    const newCard = await Promise.all(cards.map(async (button) => ({ button, text: await button.evaluate((element) => element.textContent.trim()) })))
-      .then((items) => items.find((item) => item.text.includes("论文图谱测试库"))?.button);
+    const oldMapName = await page.evaluate((mapId) => JSON.parse(localStorage.getItem("mindgrow.local.v2")).maps.find((map) => map.id === mapId)?.name || "", articleLibraryId);
+    const oldCard = await page.$(`button[aria-label="打开知识库 ${oldMapName}"]`);
+    const newCard = await page.$('button[aria-label="打开知识库 论文图谱测试库"]');
     if (!oldCard || !newCard) throw new Error("Article project cards are missing");
     await oldCard.click();
     await new Promise((resolve) => setTimeout(resolve, 15));
@@ -564,17 +606,21 @@ const expandOneVisibleLevel = async (page, previousCount) => {
   await check("mobile chat and map tabs have no horizontal overflow", async () => {
     await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true });
     await page.reload({ waitUntil: "networkidle0" });
+    const mobileBreadcrumb = await page.$('[data-testid="mobile-breadcrumb-bar"] [data-testid="product-breadcrumb"]');
+    if (!mobileBreadcrumb) throw new Error("Mobile knowledge-base breadcrumb is missing");
+    const mobileBreadcrumbLabel = await mobileBreadcrumb.$eval("button span.truncate", (label) => label.textContent.trim());
+    if (mobileBreadcrumbLabel.length > 12) throw new Error(`Mobile breadcrumb was not shortened: ${mobileBreadcrumbLabel}`);
     const hasTextarea = await page.$('textarea[aria-label="输入知识或向知识库提问"]');
     if (!hasTextarea) throw new Error("Mobile chat input missing");
-    await clickByText(page, "button", "会议");
+    await page.click('[data-testid="mobile-product-tabs"] button[aria-label="切换到会议助手"]');
     await page.waitForFunction(() => document.body.innerText.includes("独立会议知识库"));
     const meetingHasMapTab = await page.$$eval("button", (buttons) => buttons.some((button) => button.textContent.includes("图谱")));
     if (!meetingHasMapTab || await page.$(".react-flow")) throw new Error("Mobile meeting graph tab behavior is incorrect");
-    await clickByText(page, "button", "图谱");
+    await page.click('[data-testid="mobile-product-tabs"] button[aria-label="查看知识图谱"]');
     await page.waitForSelector('[data-testid="knowledge-graph-workspace"][data-graph-mode="meeting"]');
-    await clickByText(page, "button", "知识");
+    await page.click('[data-testid="mobile-product-tabs"] button[aria-label="切换到知识碎片"]');
     await page.waitForSelector('textarea[aria-label="输入知识或向知识库提问"]');
-    await clickByText(page, "button", "图谱");
+    await page.click('[data-testid="mobile-product-tabs"] button[aria-label="查看知识图谱"]');
     await page.waitForSelector(".react-flow");
     await page.waitForSelector(".mindgrow-minimap");
     await page.waitForFunction(() => document.body.innerText.includes("当前显示") && document.body.innerText.includes("＋N 逐层展开"));
@@ -596,7 +642,7 @@ const expandOneVisibleLevel = async (page, previousCount) => {
   });
 
   await check("mobile template creation uses the shared graph loader once", async () => {
-    await clickByText(page, "button", "知识");
+    await page.click('[data-testid="mobile-product-tabs"] button[aria-label="切换到知识碎片"]');
     await page.waitForSelector('textarea[aria-label="输入知识或向知识库提问"]');
     const existingMapIds = await page.evaluate(() => JSON.parse(localStorage.getItem("mindgrow.local.v2")).maps.map((map) => map.id));
     await page.evaluate(() => {
@@ -627,7 +673,7 @@ const expandOneVisibleLevel = async (page, previousCount) => {
         return { id: map?.id || "", root: state.nodes[map?.id]?.[0]?.content || "" };
       }, existingMapIds);
       if (!created.id || !created.root) throw new Error("Template did not create a populated knowledge library");
-      await clickByText(page, "button", "图谱");
+      await page.click('[data-testid="mobile-product-tabs"] button[aria-label="查看知识图谱"]');
       await page.waitForFunction((root) => document.body.innerText.includes(root), {}, created.root);
       await new Promise((resolve) => setTimeout(resolve, 300));
       const requestCount = await page.evaluate((mapId) => window.__mindgrowLocalGraphRequests.filter((candidate) => candidate === mapId).length, created.id);
