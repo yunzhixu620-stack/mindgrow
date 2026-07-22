@@ -382,6 +382,22 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     await revealAllStoredNodes(page);
   });
 
+  await check("large map restores its outline after a full-page return", async () => {
+    await page.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
+    await page.waitForSelector('[data-testid="knowledge-workspace"]');
+    await page.waitForFunction(() => {
+      const workspace = document.querySelector('[data-testid="knowledge-graph-workspace"]');
+      const totalButton = Array.from(document.querySelectorAll("button"))
+        .find((button) => /^全部 \d+$/.test(button.textContent.trim()));
+      const total = Number(totalButton?.textContent.match(/\d+/)?.[0] || 0);
+      const visible = Number(workspace?.getAttribute("data-visible-node-count") || total);
+      return workspace?.getAttribute("data-graph-view-mode") === "outline"
+        && total >= 14
+        && visible > 0
+        && visible < total;
+    }, { timeout: 10000 });
+  });
+
   await check("graph display settings switch between title density and reading cards", async () => {
     await page.click('button[title="显示与间距"]');
     await page.waitForSelector('[data-testid="graph-display-settings"]');

@@ -28,6 +28,7 @@ import type { TenantScope } from "@/lib/tenant-cache";
 import { MODE_LIBRARY_CONFIG } from "@/lib/mode-libraries";
 import { entityGraphToKnowledgeGraph, entityViewNodeId, formalEntityGraph, isEntityViewNode } from "@/lib/entity-graph";
 import { MindMapSkeleton } from "@/components/mindmap/mind-map-skeleton";
+import { shouldInitializeLargeMapOutline, type MindMapViewMode } from "@/components/mindmap/outline-initialization";
 import { EntityDetailPanel } from "@/components/entity/entity-detail-panel";
 import { NodeContextPanel } from "@/components/node/node-context-panel";
 import { graphEdgeFocusOpacity, graphNodeFocusOpacity, oneHopNodeIds } from "@/lib/graph-hover";
@@ -853,7 +854,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
   const [showSpacing, setShowSpacing] = useState(false);
   const [showToolbar, setShowToolbar] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
-  const [viewMode, setViewMode] = useState<"outline" | "all" | "custom">("all");
+  const [viewMode, setViewMode] = useState<MindMapViewMode>("all");
   const [graphLayer, setGraphLayer] = useState<"concept" | "entity">("concept");
   const [entityViewMode, setEntityViewMode] = useState<"global" | "local" | "evidence">("global");
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
@@ -1021,14 +1022,19 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
     const childIds = new Set(activeEdges.filter((edge) => edge.relation === "contains").map((edge) => edge.targetId));
     const rootSignature = activeNodes.filter((node) => !childIds.has(node.id)).map((node) => node.id).sort().join(",");
     const largeMapKey = `${currentMapId}:large:${isMobile ? "mobile" : "desktop"}:${rootSignature}`;
-    if (initializedLargeMapRef.current === largeMapKey) return;
+    if (!shouldInitializeLargeMapOutline({
+      initializedKey: initializedLargeMapRef.current,
+      largeMapKey,
+      viewMode,
+      collapsedNodeCount: collapsedNodes.size,
+    })) return;
     initializedLargeMapRef.current = largeMapKey;
     setDirection("horizontal");
     setFocusedNodeId(null);
     setCollapsedNodes(getOutlineCollapsedNodes(displayHierarchy.nodes, displayHierarchy.edges));
     setViewMode("outline");
     refitGraph();
-  }, [currentMapId, activeNodes, activeEdges, displayHierarchy, isMobile, showingEntityGraph, graphLayer, setCollapsedNodes, refitGraph]);
+  }, [currentMapId, activeNodes, activeEdges, displayHierarchy, isMobile, showingEntityGraph, graphLayer, setCollapsedNodes, refitGraph, viewMode, collapsedNodes.size]);
 
   const baseGraph = useMemo(
     () => showingEntityGraph
@@ -1458,7 +1464,14 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
   const focusedNode = focusedNodeId ? activeNodes.find((node) => node.id === focusedNodeId) : null;
 
   return (
-    <div className="animate-fade-in flex-1 min-w-0 bg-[var(--background)] relative" data-testid="knowledge-graph-workspace" data-graph-mode={currentMode} data-graph-revealed="true">
+    <div
+      className="animate-fade-in flex-1 min-w-0 bg-[var(--background)] relative"
+      data-testid="knowledge-graph-workspace"
+      data-graph-mode={currentMode}
+      data-graph-revealed="true"
+      data-graph-view-mode={viewMode}
+      data-visible-node-count={visibleStoredNodeCount}
+    >
       {/* Top toolbar */}
       <div className={`absolute z-50 flex gap-1.5 ${isMobile ? 'right-3 flex-col items-end' : 'left-3 right-3 flex-wrap'}`} style={{ top: isMobile ? "max(calc(env(safe-area-inset-top) + 12px), 32px)" : "12px" }}>
         {/* Mobile: toggle toolbar */}
