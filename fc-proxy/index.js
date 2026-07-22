@@ -2342,7 +2342,7 @@ function relationEvidenceSupports(type, rows, sourceEntity, targetEntity) {
   const targetVariants = entityNameVariants(targetEntity);
   return (Array.isArray(rows) ? rows : []).some((row) => {
     const text = String((row && (row.quote || row.content)) || '');
-    const sentences = text.match(/[^。！？!?;\n]+[。！？!?;]?/g) || [text];
+    const sentences = graphEvidenceSentences(text);
     return sentences.some((sentence) => {
       const sourceMatches = sourceVariants.filter((variant) => normalizedTextMentions(sentence, variant));
       const targetMatches = targetVariants.filter((variant) => normalizedTextMentions(sentence, variant));

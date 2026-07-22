@@ -1,0 +1,217 @@
+[
+  {
+    "id": "zh-paper-graphrag",
+    "group": "zh_paper",
+    "citations": [{
+      "index": 1,
+      "quote": "GraphRAG 是一种通过实体关系图扩展检索路径并回答全局问题的知识检索方法。GraphRAG 使用知识图谱组织实体、概念及它们之间可验证的有向关系，并扩展检索路径。",
+      "content": "GraphRAG 是一种通过实体关系图扩展检索路径并回答全局问题的知识检索方法。GraphRAG 使用知识图谱组织实体、概念及它们之间可验证的有向关系，并扩展检索路径。",
+      "locator": "论文第 2 页",
+      "sourceType": "text"
+    }],
+    "raw": {
+      "entities": [
+        { "tempId": "E1", "name": "GraphRAG", "type": "method", "aliases": [], "description": "GraphRAG 是一种通过实体关系图扩展检索路径并回答全局问题的知识检索方法。", "descriptionEvidence": [1], "citationIndexes": [1], "confidence": 0.95 },
+        { "tempId": "E2", "name": "知识图谱", "type": "concept", "aliases": [], "description": "GraphRAG 使用知识图谱组织实体、概念及它们之间可验证的有向关系，并扩展检索路径。", "descriptionEvidence": [1], "citationIndexes": [1], "confidence": 0.92 }
+      ],
+      "relations": [
+        { "source": "E1", "target": "E2", "type": "uses", "shortLabel": "使用", "explanation": "GraphRAG 使用知识图谱组织可验证关系并扩展检索路径。", "status": "asserted", "citationIndexes": [1], "confidence": 0.93 }
+      ]
+    },
+    "expected": { "entityNames": ["GraphRAG", "知识图谱"], "relations": ["GraphRAG|知识图谱|uses"] }
+  },
+  {
+    "id": "en-paper-rag-dpr-alias",
+    "group": "en_paper_alias",
+    "citations": [{
+      "index": 1,
+      "quote": "Retrieval-Augmented Generation (RAG) combines parametric generation with retrieved evidence for grounded answers. DPR is the dense retriever used by RAG to fetch supporting passages. RAG uses DPR as the dense retriever for supporting passages.",
+      "content": "Retrieval-Augmented Generation (RAG) combines parametric generation with retrieved evidence for grounded answers. DPR is the dense retriever used by RAG to fetch supporting passages. RAG uses DPR as the dense retriever for supporting passages.",
+      "locator": "paper page 1",
+      "sourceType": "text"
+    }],
+    "raw": {
+      "entities": [
+        { "tempId": "E1", "name": "Retrieval-Augmented Generation", "type": "model", "aliases": ["RAG"], "description": "RAG combines parametric generation with retrieved evidence for grounded answers.", "descriptionEvidence": [1], "citationIndexes": [1], "confidence": 0.95 },
+        { "tempId": "E2", "name": "DPR", "type": "method", "aliases": ["Dense Passage Retriever"], "description": "DPR is the dense retriever used by RAG to fetch supporting passages.", "descriptionEvidence": [1], "citationIndexes": [1], "confidence": 0.93 }
+      ],
+      "relations": [
+        { "source": "E1", "target": "E2", "type": "uses", "shortLabel": "uses", "explanation": "RAG uses DPR as the dense retriever for supporting passages.", "status": "asserted", "citationIndexes": [1], "confidence": 0.94 }
+      ]
+    },
+    "expected": { "entityNames": ["Retrieval-Augmented Generation", "DPR"], "relations": ["Retrieval-Augmented Generation|DPR|uses"] }
+  },
+  {
+    "id": "meeting-owner-action",
+    "group": "meeting",
+    "citations": [{
+      "index": 1,
+      "quote": "张三负责在本周五前完成检索评测，并向项目组提交包含 Recall@5 的结果报告。完成检索评测是本次会议确认的交付任务。",
+      "content": "张三负责在本周五前完成检索评测，并向项目组提交包含 Recall@5 的结果报告。完成检索评测是本次会议确认的交付任务。",
+      "locator": "会议纪要第 3 段",
+      "sourceType": "meeting"
+    }],
+    "raw": {
+      "entities": [
+        { "tempId": "E1", "name": "张三", "type": "person", "aliases": [], "description": "张三负责在本周五前完成检索评测，并向项目组提交包含 Recall@5 的结果报告。", "descriptionEvidence": [1], "citationIndexes": [1], "confidence": 0.96 },
+        { "tempId": "E2", "name": "完成检索评测", "type": "task", "aliases": [], "description": "完成检索评测是本次会议确认的交付任务，需要在本周五前提交结果报告。", "descriptionEvidence": [1], "citationIndexes": [1], "confidence": 0.94 }
+      ],
+      "relations": [
+        { "source": "E1", "target": "E2", "type": "responsible_for", "shortLabel": "负责", "explanation": "张三负责完成检索评测并提交包含 Recall@5 的结果报告。", "status": "asserted", "citationIndexes": [1], "confidence": 0.96 }
+      ]
+    },
+    "expected": { "entityNames": ["张三", "完成检索评测"], "relations": ["张三|完成检索评测|responsible_for"] }
+  },
+  {
+    "id": "negated-retriever-role",
+    "group": "negation",
+    "citations": [
+      {
+        "index": 1,
+        "quote": "实验明确说明 BM25 不是该系统的稠密检索器，BM25 仅作为稀疏检索基线。",
+        "content": "实验明确说明 BM25 不是该系统的稠密检索器，BM25 仅作为稀疏检索基线。",
+        "locator": "实验设置第 1 句",
+        "sourceType": "text"
+      },
+      {
+        "index": 2,
+        "quote": "系统的稠密检索器负责召回候选段落，并把候选证据交给生成模块。",
+        "content": "系统的稠密检索器负责召回候选段落，并把候选证据交给生成模块。",
+        "locator": "实验设置第 2 句",
+        "sourceType": "text"
+      }
+    ],
+    "raw": {
+      "entities": [
+        { "tempId": "E1", "name": "BM25", "type": "method", "aliases": [], "description": "BM25 不是该系统的稠密检索器，原文只将它作为稀疏检索基线。", "descriptionEvidence": [1], "citationIndexes": [1], "confidence": 0.94 },
+        { "tempId": "E2", "name": "系统的稠密检索器", "type": "concept", "aliases": [], "description": "系统的稠密检索器负责召回候选段落，并把候选证据交给生成模块。", "descriptionEvidence": [2], "citationIndexes": [2], "confidence": 0.9 }
+      ],
+      "relations": [
+        { "source": "E1", "target": "E2", "type": "is", "shortLabel": "定义为", "explanation": "BM25 不是该系统的稠密检索器，原文将其排除在该角色之外。", "status": "negated", "citationIndexes": [1], "confidence": 0.95 }
+      ]
+    },
+    "expected": { "entityNames": ["BM25", "系统的稠密检索器"], "relations": ["BM25|系统的稠密检索器|is"] }
+  },
+  {
+    "id": "table-numeric-metric",
+    "group": "table_numeric",
+    "citations": [{
+      "index": 1,
+      "quote": "表 2 显示 RAG 使用指标 Recall@5 评估检索效果，并在 Natural Questions 上评测取得 85%。Recall@5 是衡量前五个召回结果的指标。Natural Questions 是该表使用的评测数据集。",
+      "content": "表 2 显示 RAG 使用指标 Recall@5 评估检索效果，并在 Natural Questions 上评测取得 85%。Recall@5 是衡量前五个召回结果的指标。Natural Questions 是该表使用的评测数据集。",
+      "locator": "表 2",
+      "sourceType": "text"
+    }],
+    "raw": {
+      "entities": [
+        { "tempId": "E1", "name": "RAG", "type": "model", "aliases": [], "description": "RAG 使用 Recall@5 评估检索效果，并在 Natural Questions 上取得 85%。", "descriptionEvidence": [1], "citationIndexes": [1], "confidence": 0.95 },
+        { "tempId": "E2", "name": "Recall@5", "type": "metric", "aliases": [], "description": "Recall@5 是表 2 用于衡量前五个召回结果的检索评估指标。", "descriptionEvidence": [1], "citationIndexes": [1], "confidence": 0.94 },
+        { "tempId": "E3", "name": "Natural Questions", "type": "dataset", "aliases": [], "description": "Natural Questions 是表 2 报告 RAG 检索结果所使用的评测数据集。", "descriptionEvidence": [1], "citationIndexes": [1], "confidence": 0.93 }
+      ],
+      "relations": [
+        { "source": "E1", "target": "E2", "type": "has_metric", "shortLabel": "使用指标", "explanation": "RAG 使用 Recall@5 作为表 2 的检索效果评估指标。", "status": "asserted", "citationIndexes": [1], "confidence": 0.95 },
+        { "source": "E1", "target": "E3", "type": "evaluated_on", "shortLabel": "评测于", "explanation": "RAG 在 Natural Questions 数据集上评测并取得 85%。", "status": "asserted", "citationIndexes": [1], "confidence": 0.94 }
+      ]
+    },
+    "expected": { "entityNames": ["RAG", "Recall@5", "Natural Questions"], "relations": ["RAG|Recall@5|has_metric", "RAG|Natural Questions|evaluated_on"] }
+  },
+  {
+    "id": "layoutlmv3-alias-task",
+    "group": "abbreviation_alias",
+    "citations": [{
+      "index": 1,
+      "quote": "LayoutLMv3（文档布局语言模型）在本文中联合建模文本、布局与图像信息。LayoutLMv3 使用 WPA 词图像对齐任务学习跨模态对应关系。WPA 是本文提出的词图像对齐预训练任务。",
+      "content": "LayoutLMv3（文档布局语言模型）在本文中联合建模文本、布局与图像信息。LayoutLMv3 使用 WPA 词图像对齐任务学习跨模态对应关系。WPA 是本文提出的词图像对齐预训练任务。",
+      "locator": "方法章节",
+      "sourceType": "text"
+    }],
+    "raw": {
+      "entities": [
+        { "tempId": "E1", "name": "LayoutLMv3", "type": "model", "aliases": ["文档布局语言模型"], "description": "LayoutLMv3 在本文中联合建模文本、布局与图像信息，并学习文档跨模态表示。", "descriptionEvidence": [1], "citationIndexes": [1], "confidence": 0.96 },
+        { "tempId": "E2", "name": "WPA", "type": "task", "aliases": ["词图像对齐"], "description": "WPA 是 LayoutLMv3 使用的词图像对齐预训练任务，用于学习跨模态对应关系。", "descriptionEvidence": [1], "citationIndexes": [1], "confidence": 0.94 }
+      ],
+      "relations": [
+        { "source": "E1", "target": "E2", "type": "uses", "shortLabel": "使用", "explanation": "LayoutLMv3 使用 WPA 任务学习词与图像区域的跨模态对应关系。", "status": "asserted", "citationIndexes": [1], "confidence": 0.95 }
+      ]
+    },
+    "expected": { "entityNames": ["LayoutLMv3", "WPA"], "relations": ["LayoutLMv3|WPA|uses"] }
+  },
+  {
+    "id": "reject-empty-description",
+    "group": "no_definition",
+    "citations": [{
+      "index": 1,
+      "quote": "OrphanTerm appears once in the appendix without a definition or document role.",
+      "content": "OrphanTerm appears once in the appendix without a definition or document role.",
+      "locator": "appendix",
+      "sourceType": "text"
+    }],
+    "raw": {
+      "entities": [
+        { "tempId": "E1", "name": "OrphanTerm", "type": "concept", "aliases": [], "description": "", "descriptionEvidence": [], "citationIndexes": [1], "confidence": 0.8 }
+      ],
+      "relations": []
+    },
+    "expected": { "entityNames": [], "relations": [] }
+  },
+  {
+    "id": "reject-fabricated-number",
+    "group": "numeric_rejection",
+    "citations": [{
+      "index": 1,
+      "quote": "MetricModel reaches 85% accuracy on the frozen evaluation set.",
+      "content": "MetricModel reaches 85% accuracy on the frozen evaluation set.",
+      "locator": "results",
+      "sourceType": "text"
+    }],
+    "raw": {
+      "entities": [
+        { "tempId": "E1", "name": "MetricModel", "type": "model", "aliases": [], "description": "MetricModel reaches 95% accuracy on the frozen evaluation set in this experiment.", "descriptionEvidence": [1], "citationIndexes": [1], "confidence": 0.9 }
+      ],
+      "relations": []
+    },
+    "expected": { "entityNames": [], "relations": [] }
+  },
+  {
+    "id": "reject-cooccurrence-relation",
+    "group": "predicate_rejection",
+    "citations": [{
+      "index": 1,
+      "quote": "BM25 is a sparse lexical retrieval method used as a baseline in this paper. DPR is a dense passage retrieval method evaluated in the same section. BM25 and DPR are compared in the retrieval section.",
+      "content": "BM25 is a sparse lexical retrieval method used as a baseline in this paper. DPR is a dense passage retrieval method evaluated in the same section. BM25 and DPR are compared in the retrieval section.",
+      "locator": "retrieval section",
+      "sourceType": "text"
+    }],
+    "raw": {
+      "entities": [
+        { "tempId": "E1", "name": "BM25", "type": "method", "aliases": [], "description": "BM25 is a sparse lexical retrieval method used as a baseline in this paper.", "descriptionEvidence": [1], "citationIndexes": [1], "confidence": 0.93 },
+        { "tempId": "E2", "name": "DPR", "type": "method", "aliases": [], "description": "DPR is a dense passage retrieval method evaluated in the same section.", "descriptionEvidence": [1], "citationIndexes": [1], "confidence": 0.93 }
+      ],
+      "relations": [
+        { "source": "E1", "target": "E2", "type": "uses", "shortLabel": "uses", "explanation": "BM25 uses DPR as its dense encoder for passage retrieval in this paper.", "status": "asserted", "citationIndexes": [1], "confidence": 0.9 }
+      ]
+    },
+    "expected": { "entityNames": ["BM25", "DPR"], "relations": [] }
+  },
+  {
+    "id": "reject-wrong-direction",
+    "group": "direction_rejection",
+    "citations": [{
+      "index": 1,
+      "quote": "DPR is a dense retriever that encodes questions and passages separately. RAG uses DPR to obtain supporting passages for retrieval-augmented generation. DPR is used by RAG as the dense retriever.",
+      "content": "DPR is a dense retriever that encodes questions and passages separately. RAG uses DPR to obtain supporting passages for retrieval-augmented generation. DPR is used by RAG as the dense retriever.",
+      "locator": "architecture",
+      "sourceType": "text"
+    }],
+    "raw": {
+      "entities": [
+        { "tempId": "E1", "name": "DPR", "type": "method", "aliases": [], "description": "DPR is a dense retriever that encodes questions and passages separately.", "descriptionEvidence": [1], "citationIndexes": [1], "confidence": 0.94 },
+        { "tempId": "E2", "name": "RAG", "type": "model", "aliases": [], "description": "RAG uses DPR to obtain supporting passages for retrieval-augmented generation.", "descriptionEvidence": [1], "citationIndexes": [1], "confidence": 0.95 }
+      ],
+      "relations": [
+        { "source": "E1", "target": "E2", "type": "uses", "shortLabel": "uses", "explanation": "DPR uses RAG as the generator that supplies supporting passages.", "status": "asserted", "citationIndexes": [1], "confidence": 0.91 }
+      ]
+    },
+    "expected": { "entityNames": ["DPR", "RAG"], "relations": [] }
+  }
+]
