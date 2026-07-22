@@ -26,7 +26,7 @@ import { EntityGraph, GraphEntity, KnowledgeNode, KnowledgeEdge } from "@/types"
 import { apiFetch, IS_LOCAL_MODE } from "@/lib/client-api";
 import type { TenantScope } from "@/lib/tenant-cache";
 import { MODE_LIBRARY_CONFIG } from "@/lib/mode-libraries";
-import { entityGraphToKnowledgeGraph, entityViewNodeId, isEntityViewNode } from "@/lib/entity-graph";
+import { entityGraphToKnowledgeGraph, entityViewNodeId, formalEntityGraph, isEntityViewNode } from "@/lib/entity-graph";
 
 // ============================================================
 // Branch color palette
@@ -50,6 +50,13 @@ const ENTITY_TYPE_COLORS: Record<string, string> = {
   person: "#f59e0b", organization: "#f97316", model: "#38bdf8", method: "#22d3a7",
   dataset: "#a78bfa", metric: "#818cf8", task: "#06b6d4", event: "#fb7185",
   decision: "#f472b6", time: "#94a3b8", concept: "#60a5fa", claim: "#e879f9", other: "#64748b",
+};
+
+const RELATION_STATUS_LABELS: Record<NonNullable<KnowledgeEdge["relationStatus"]>, string> = {
+  asserted: "已确认",
+  historical: "历史",
+  negated: "否定",
+  proposed: "待确认",
 };
 
 function isDisplayOverviewNode(nodeId: string) {
@@ -881,7 +888,8 @@ export function MindMapPanel() {
     }
   }, [editingNode]);
 
-  const entityDisplayGraph = useMemo(() => entityGraphToKnowledgeGraph(entityGraph), [entityGraph]);
+  const officialEntityGraph = useMemo(() => formalEntityGraph(entityGraph), [entityGraph]);
+  const entityDisplayGraph = useMemo(() => entityGraphToKnowledgeGraph(officialEntityGraph), [officialEntityGraph]);
   const showingEntityGraph = graphLayer === "entity" && entityDisplayGraph.nodes.length > 0;
   const activeNodes = showingEntityGraph ? entityDisplayGraph.nodes : storeNodes;
   const activeEdges = showingEntityGraph ? entityDisplayGraph.edges : storeEdges;
@@ -996,14 +1004,14 @@ export function MindMapPanel() {
 
   const graph = useMemo(
     () => showingEntityGraph
-      ? buildEntityNetworkGraph(entityGraph, entityViewMode, selectedEntityId, hoveredEntityId, hoveredRelationId)
+      ? buildEntityNetworkGraph(officialEntityGraph, entityViewMode, selectedEntityId, hoveredEntityId, hoveredRelationId)
       : buildGraph(
         displayHierarchy.nodes, displayHierarchy.edges, highlightedNodeId, searchResults, direction, sv,
         collapsedNodes, focusedNodeId,
         detailMode === "card" || (detailMode === "auto" && autoShowNodeDetails),
         isMobile, handleToggleBranch, handleFocusBranch,
       ),
-    [showingEntityGraph, entityGraph, entityViewMode, selectedEntityId, hoveredEntityId, hoveredRelationId, displayHierarchy, highlightedNodeId, searchResults, direction, sv, collapsedNodes, focusedNodeId, detailMode, autoShowNodeDetails, isMobile, handleToggleBranch, handleFocusBranch],
+    [showingEntityGraph, officialEntityGraph, entityViewMode, selectedEntityId, hoveredEntityId, hoveredRelationId, displayHierarchy, highlightedNodeId, searchResults, direction, sv, collapsedNodes, focusedNodeId, detailMode, autoShowNodeDetails, isMobile, handleToggleBranch, handleFocusBranch],
   );
 
   const visibleStoredNodeCount = Math.max(0, graph.nodes.length - displayHierarchy.syntheticNodeCount);
@@ -1018,7 +1026,7 @@ export function MindMapPanel() {
   const hoveredRelation = hoveredRelationId ? activeEdges.find((edge) => edge.id === hoveredRelationId) || null : null;
   const explainedRelation = selectedRelation || hoveredRelation;
   const selectedEntity = selectedEntityId
-    ? entityGraph.entities.find((entity) => entityViewNodeId(entity.id) === selectedEntityId) || null
+    ? officialEntityGraph.entities.find((entity) => entityViewNodeId(entity.id) === selectedEntityId) || null
     : null;
 
   const [flowNodes, setFlowNodes, onNodesChange] = useNodesState(graph.nodes);
@@ -1355,11 +1363,11 @@ export function MindMapPanel() {
               >概念图 {storeNodes.length}</button>
               <button
                 type="button"
-                disabled={entityGraph.entities.length === 0}
+                disabled={officialEntityGraph.entities.length === 0}
                 onClick={() => { setGraphLayer("entity"); setEntityViewMode("global"); setSelectedEntityId(null); setSelectedRelationId(null); setCollapsedNodes(new Set<string>()); setViewMode("all"); refitGraph(); }}
                 className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-all disabled:cursor-not-allowed disabled:opacity-35 ${graphLayer === "entity" ? "bg-violet-400 text-black" : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"}`}
-                title={entityGraph.entities.length ? "按实体与有向关系查看，可点击关系核对原文" : "当前知识库还没有可溯源实体；重新解析并保存文章或会议后生成"}
-              >实体图 {entityGraph.entities.length}</button>
+                title={officialEntityGraph.entities.length ? "按实体与有向关系查看，可点击关系核对原文" : "当前知识库还没有可溯源实体；重新解析并保存文章或会议后生成"}
+              >实体图 {officialEntityGraph.entities.length}</button>
             </div>
             <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/5 px-3 py-2 text-[10px] font-medium text-emerald-200" title="新增内容会成为节点；层级、关联与冲突关系会持续连接旧知识">
               🌱 生长中 · {activeNodes.length} 节点 · {activeEdges.length} 条连接{relationCount > 0 ? ` · ${relationCount} 条${showingEntityGraph ? "有向" : "语义"}关系` : ""}{citedNodeCount > 0 ? ` · ${citedNodeCount} 个可追溯节点` : ""}
@@ -1637,7 +1645,12 @@ export function MindMapPanel() {
           <div className="flex items-start justify-between gap-3">
             <div>
               <div className="text-[10px] font-semibold uppercase tracking-wider text-violet-300">关系原文证据</div>
-              <h3 className="mt-1 text-sm font-semibold text-[var(--foreground)]">{explainedRelation.relationLabel || "实体关系"}</h3>
+              <div className="mt-1 flex items-center gap-2">
+                <h3 className="text-sm font-semibold text-[var(--foreground)]">{explainedRelation.relationLabel || "实体关系"}</h3>
+                <span className="rounded-full border border-violet-300/25 bg-violet-400/10 px-2 py-0.5 text-[9px] font-semibold text-violet-200" data-testid="relation-status-chip">
+                  {RELATION_STATUS_LABELS[explainedRelation.relationStatus || "asserted"]}
+                </span>
+              </div>
             </div>
             <button type="button" onClick={() => setSelectedRelationId(null)} className="rounded-lg border border-[var(--border)] px-2 py-1 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)]" aria-label="关闭关系证据">×</button>
           </div>
