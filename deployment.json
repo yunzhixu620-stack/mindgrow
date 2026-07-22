@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "product": "mindgrow",
   "frontend": {
-    "gitSha": "a1dc8272fb577d48ea5818f7a7300ce6ba905b6b",
-    "builtAt": "2026-07-22T15:42:04.271Z"
+    "gitSha": "5a84e4d9103098477a1949262a0608200a77c1d7",
+    "builtAt": "2026-07-22T16:29:39.868Z"
   },
   "api": {
     "expectedVersion": "10.10.0",
