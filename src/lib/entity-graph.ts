@@ -110,6 +110,7 @@ export function aiEntityGraphToEntityGraph(
   graph: AIEntityGraph | null | undefined,
   citations: Citation[],
   scope: string,
+  generatedAt = new Date().toISOString(),
 ): EntityGraph {
   const entities: GraphEntity[] = (graph?.entities || []).map((entity, index) => ({
     id: `${scope}:${entity.tempId || `E${index + 1}`}`,
@@ -119,6 +120,8 @@ export function aiEntityGraphToEntityGraph(
     description: (entity.description || "").trim(),
     groundingStatus: "grounded",
     confidence: entity.confidence ?? 0.75,
+    createdAt: generatedAt,
+    updatedAt: generatedAt,
     citations: citationsFor(entity.citationIndexes, citations),
     descriptionCitations: citationsFor(entity.descriptionEvidence, citations),
   }));
@@ -139,6 +142,8 @@ export function aiEntityGraphToEntityGraph(
       explanation: relation.explanation || "",
       status: relation.status || "asserted",
       confidence: relation.confidence ?? 0.7,
+      createdAt: generatedAt,
+      updatedAt: generatedAt,
       citations: citationsFor(relation.citationIndexes, citations),
     };
   });
@@ -150,8 +155,9 @@ export function entityGraphToKnowledgeGraph(graph: EntityGraph): {
   edges: KnowledgeEdge[];
 } {
   const officialGraph = formalEntityGraph(graph);
-  const createdAt = "1970-01-01T00:00:00.000Z";
+  const fallbackCreatedAt = new Date().toISOString();
   const ids = new Map(officialGraph.entities.map((entity) => [entity.id, entityViewNodeId(entity.id)]));
+  const entitiesById = new Map(officialGraph.entities.map((entity) => [entity.id, entity]));
   const nodeType = (entityType: string): KnowledgeNode["type"] => {
     if (["person", "organization", "event"].includes(entityType)) return "topic";
     if (["metric", "time"].includes(entityType)) return "detail";
@@ -166,8 +172,8 @@ export function entityGraphToKnowledgeGraph(graph: EntityGraph): {
     status: "active",
     source: "ai_generated",
     confidence: entity.confidence,
-    createdAt,
-    updatedAt: createdAt,
+    createdAt: entity.createdAt || entity.updatedAt || fallbackCreatedAt,
+    updatedAt: entity.updatedAt || entity.createdAt || fallbackCreatedAt,
     citations: entity.citations,
   }));
   const edges: KnowledgeEdge[] = officialGraph.relations.map((relation) => ({
@@ -181,7 +187,10 @@ export function entityGraphToKnowledgeGraph(graph: EntityGraph): {
     relationExplanation: relation.explanation,
     citations: relation.citations,
     weight: relation.confidence,
-    createdAt,
+    createdAt: relation.createdAt
+      || entitiesById.get(relation.sourceId)?.createdAt
+      || entitiesById.get(relation.targetId)?.createdAt
+      || fallbackCreatedAt,
   })).filter((edge) => ids.has(edge.sourceId.replace(ENTITY_PREFIX, "")) && ids.has(edge.targetId.replace(ENTITY_PREFIX, "")));
   return { nodes, edges };
 }

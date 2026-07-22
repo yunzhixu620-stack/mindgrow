@@ -79,7 +79,8 @@ describe("entity graph field propagation", () => {
   });
 
   it("provides relation metadata without parsing the rendered edge label", () => {
-    const graph = aiEntityGraphToEntityGraph(graphWithRelation(), citations, "article:test");
+    const generatedAt = "2026-07-22T12:34:56.000Z";
+    const graph = aiEntityGraphToEntityGraph(graphWithRelation(), citations, "article:test", generatedAt);
     const knowledge = entityGraphToKnowledgeGraph(graph);
     expect(knowledge.edges[0]).toMatchObject({
       relationLabel: "采用",
@@ -88,6 +89,9 @@ describe("entity graph field propagation", () => {
       relationExplanation: "RAG uses DPR as the dense retrieval component.",
     });
     expect(knowledge.edges[0].relationLabel).not.toContain("证据");
+    expect(knowledge.nodes.every((node) => node.createdAt === generatedAt && node.updatedAt === generatedAt)).toBe(true);
+    expect(knowledge.edges[0].createdAt).toBe(generatedAt);
+    expect(knowledge.nodes.some((node) => node.createdAt.startsWith("1970-"))).toBe(false);
   });
 
   it("requires a trimmed canonical name and an eight-character description", () => {

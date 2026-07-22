@@ -1,7 +1,7 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { EntityDetailPanel, relatedEntityRelations } from "@/components/entity/entity-detail-panel";
+import { EntityDetailPanel, formatEntityTimestamp, relatedEntityRelations } from "@/components/entity/entity-detail-panel";
 import type { GraphEntity, GraphRelation } from "@/types";
 
 const grounded: GraphEntity = {
@@ -12,6 +12,8 @@ const grounded: GraphEntity = {
   description: "一种结合知识图谱与检索增强生成的方法。",
   groundingStatus: "grounded",
   confidence: 0.94,
+  createdAt: "2026-07-20T08:30:00.000Z",
+  updatedAt: "2026-07-22T09:45:00.000Z",
   citations: [{ index: 9, quote: "普通实体引用不应替代定义证据", locator: "附录" }],
   descriptionCitations: [{ index: 1, quote: "GraphRAG 使用知识图谱增强检索与回答。", locator: "第 2 页" }],
 };
@@ -55,6 +57,9 @@ describe("EntityDetailPanel", () => {
     expect(html).toContain("知识图谱");
     expect(html).toContain("在本图定位");
     expect(html).toContain("进入所属知识库");
+    expect(html).toContain("首次记录");
+    expect(html).toContain("2026-07-20 08:30 UTC");
+    expect(html).toContain("最近更新");
   });
 
   it("keeps legacy entities read-only without inventing description evidence", () => {
@@ -71,5 +76,10 @@ describe("EntityDetailPanel", () => {
   it("selects only relations directly connected to the entity", () => {
     const unrelated = { ...relation, id: "unrelated", sourceId: "entity-c", targetId: "entity-d" };
     expect(relatedEntityRelations(grounded.id, [relation, unrelated])).toEqual([relation]);
+  });
+
+  it("formats entity timestamps deterministically and ignores invalid legacy values", () => {
+    expect(formatEntityTimestamp("2026-07-22T09:45:00.000Z")).toBe("2026-07-22 09:45 UTC");
+    expect(formatEntityTimestamp("legacy")).toBe("");
   });
 });

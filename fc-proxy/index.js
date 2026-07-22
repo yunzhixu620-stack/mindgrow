@@ -21,7 +21,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.8.0';
+const API_VERSION = '10.9.0';
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
 const DASHSCOPE_AUDIO_ENDPOINT = process.env.DASHSCOPE_AUDIO_ENDPOINT || 'https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer';
 const ALLOWED_ORIGINS = new Set(
@@ -3937,6 +3937,16 @@ function stableGraphId(prefix, value) {
   return `${prefix}_${crypto.createHash('sha1').update(String(value || '')).digest('hex').slice(0, 24)}`;
 }
 
+function canonicalGraphEntityIdentity(workspaceId, mapId, entityType, name) {
+  const normalizedName = normalizedEntityName(name);
+  const key = `${String(entityType || 'other')}:${normalizedName}`;
+  return {
+    normalizedName,
+    key,
+    id: stableGraphId('entity', `${workspaceId}|${mapId}|${key}`),
+  };
+}
+
 function graphEvidenceCitation(row, documentsById) {
   const document = documentsById.get(row.document_id) || {};
   return {
@@ -3982,6 +3992,8 @@ async function loadEntityGraph(workspaceId, mapId) {
           aliases: Array.isArray(item.aliases) ? item.aliases : [],
           description: item.description || '',
           confidence: Number(item.confidence || 0),
+          createdAt: item.created_at,
+          updatedAt: item.updated_at,
           citations: entityEvidence,
           descriptionCitations: entityEvidence.filter((citation) => descriptionIndexes.has(citation.index)),
         };
@@ -3996,6 +4008,8 @@ async function loadEntityGraph(workspaceId, mapId) {
         explanation: item.explanation || '',
         status: item.status || 'asserted',
         confidence: Number(item.confidence || 0),
+        createdAt: item.created_at,
+        updatedAt: item.updated_at,
         citations: evidenceBySubject.get(`relation:${item.id}`) || [],
       })),
     };
@@ -4019,10 +4033,9 @@ async function createEntityGraphRows(workspaceId, mapId, documentId, entityGraph
   ]));
   const tempToEntityId = new Map();
   const entityRows = inputEntities.map((item) => {
-    const normalized = normalizedEntityName(item.name);
-    const key = `${item.type}:${normalized}`;
-    const previous = existingByKey.get(key);
-    const id = previous && previous.id ? previous.id : stableGraphId('entity', `${workspaceId}|${mapId}|${key}`);
+    const identity = canonicalGraphEntityIdentity(workspaceId, mapId, item.type, item.name);
+    const previous = existingByKey.get(identity.key);
+    const id = previous && previous.id ? previous.id : identity.id;
     tempToEntityId.set(item.tempId, id);
     const aliases = [...new Set([
       ...(Array.isArray(previous && previous.aliases) ? previous.aliases : []),
@@ -4033,7 +4046,7 @@ async function createEntityGraphRows(workspaceId, mapId, documentId, entityGraph
       workspace_id: workspaceId,
       map_id: mapId,
       canonical_name: String(item.name || '').slice(0, 300),
-      normalized_name: normalized,
+      normalized_name: identity.normalizedName,
       entity_type: item.type,
       aliases,
       description: String(item.description || ''),
@@ -4382,8 +4395,8 @@ async function handleKnowledge(req, context) {
         supabaseRequest('GET', `maps?workspace_id=eq.${workspace}&select=*&order=is_default.desc,updated_at.desc&limit=500`),
         supabaseRequest('GET', `nodes?workspace_id=eq.${workspace}&status=eq.active&select=id,map_id,content,desc,type,status,source,confidence,created_at,updated_at&limit=12000`),
         supabaseRequest('GET', `edges?workspace_id=eq.${workspace}&select=id,map_id,source_id,target_id,relation,weight,created_at&limit=24000`),
-        supabaseRequest('GET', `graph_entities?workspace_id=eq.${workspace}&select=id,map_id,canonical_name,entity_type,aliases,description,description_citation_indexes,confidence&order=confidence.desc&limit=12000`),
-        supabaseRequest('GET', `graph_relations?workspace_id=eq.${workspace}&select=id,map_id,source_entity_id,target_entity_id,relation_type,label,explanation,status,confidence&order=confidence.desc&limit=24000`),
+        supabaseRequest('GET', `graph_entities?workspace_id=eq.${workspace}&select=id,map_id,canonical_name,entity_type,aliases,description,description_citation_indexes,confidence,created_at,updated_at&order=confidence.desc&limit=12000`),
+        supabaseRequest('GET', `graph_relations?workspace_id=eq.${workspace}&select=id,map_id,source_entity_id,target_entity_id,relation_type,label,explanation,status,confidence,created_at,updated_at&order=confidence.desc&limit=24000`),
       ]);
       if (![mapRows, nodeRows, edgeRows, entityRows, relationRows].every(Array.isArray)) throw dependencyError('knowledge_store');
       const graphByMap = new Map(mapRows.map((row) => [row.id, {
@@ -4407,6 +4420,8 @@ async function handleKnowledge(req, context) {
           aliases: Array.isArray(row.aliases) ? row.aliases : [],
           description: row.description || '',
           confidence: Number(row.confidence || 0),
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
           citations: [],
           descriptionCitations: [],
         });
@@ -4424,6 +4439,8 @@ async function handleKnowledge(req, context) {
           explanation: row.explanation || '',
           status: row.status || 'asserted',
           confidence: Number(row.confidence || 0),
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
           citations: [],
         });
       });
@@ -4892,4 +4909,5 @@ module.exports = {
   entityGraphQueryPlan,
   rankEntityGraphSeeds,
   relationStatusPenalty,
+  __entityGraphInternal: { normalizedEntityName, canonicalGraphEntityIdentity },
 };

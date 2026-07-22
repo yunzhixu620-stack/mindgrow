@@ -49,7 +49,7 @@
 | S2.2 `/api/bootstrap` 首屏聚合 | 已合并 | PR #37 / `eac8102`；阿里云 API `10.7.0`、GitHub Pages 已发布；匿名拒绝公网 smoke 6/6、带认证本地聚合 smoke 7/7；真实登录首屏一次恢复工作区、5 个知识库与默认图 107 节点，三板块往返无缓存残留，页面无 warning/error |
 | S2.3 CI 部署事实校验 | 已合并 | PR #38 / `4653d25`；GitHub Pages 静态清单的完整 SHA、API `10.7.0` 与 `authRequired=true` 生产校验通过；后端 `git_sha` 按 Owner 决定留到 S2.10 |
 | S2.4 Backlinks + 时间轴 | 已合并 | PR #39 / `04f4cab`；Supabase V13、阿里云 API `10.8.0` 与 GitHub Pages 已发布；补齐触发器 PATCH 后，公网 smoke、真实账号 created/updated 时间轴与刷新持久化全部通过 |
-| S2.5 canonical ID + 真 createdAt | 待开发 | 依赖统一实体数据模型与可撤销迁移 |
+| S2.5 canonical ID + 真 createdAt | 开发中 | 复用现有 map 内 canonical upsert；API `10.9.0` 返回实体/关系真实 `createdAt`、`updatedAt`，前端不再伪造 1970 时间 |
 | S2.6 React Flow 可复现 bug | 局部已有 | 已修复若干跳转/展开问题；尚未形成只按复现步骤验收的清单 |
 | S2.7 Obsidian 式实体网状图 | 局部已有 | 已有实体图、一跳聚焦和详情；缺完整强关系默认、过滤、搜索验收 |
 | S2.8 Heptabase 白板底座 | 待开发 | 需要卡片、空间分组和可视化编排模型 |

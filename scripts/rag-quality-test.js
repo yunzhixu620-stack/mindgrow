@@ -44,8 +44,10 @@ const {
   rankEntityGraphSeeds,
   relationStatusPenalty,
   __citationInternal,
+  __entityGraphInternal,
 } = require("../fc-proxy/index.js");
 const { verifiedIndexes, verifiedCitationPayload } = __citationInternal;
+const { canonicalGraphEntityIdentity } = __entityGraphInternal;
 
 const root = path.join(__dirname, "..", "tests", "fixtures", "papers");
 const fixtures = [
@@ -512,6 +514,17 @@ check("entity graph migration is tenant-scoped and service-role only", () => {
   assert(groundingMigration.includes("ADD COLUMN IF NOT EXISTS explanation TEXT NOT NULL DEFAULT ''"));
   assert(groundingMigration.includes("DROP COLUMN IF EXISTS description_citation_indexes"));
   assert(groundingMigration.includes("DROP COLUMN IF EXISTS explanation"));
+});
+
+check("canonical entity ids are stable inside one library and isolated across libraries", () => {
+  const first = canonicalGraphEntityIdentity("workspace-a", "article-library", "model", "Graph RAG");
+  const same = canonicalGraphEntityIdentity("workspace-a", "article-library", "model", "graph rag");
+  const otherLibrary = canonicalGraphEntityIdentity("workspace-a", "other-library", "model", "Graph RAG");
+  const otherType = canonicalGraphEntityIdentity("workspace-a", "article-library", "method", "Graph RAG");
+  assert.strictEqual(first.id, same.id);
+  assert.strictEqual(first.normalizedName, "graph rag");
+  assert.notStrictEqual(first.id, otherLibrary.id);
+  assert.notStrictEqual(first.id, otherType.id);
 });
 
 const all = fixtures.map((fixture) => {
