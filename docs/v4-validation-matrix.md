@@ -2,11 +2,12 @@
 
 > 执行基线：`docs/codex-tasks-v4.md`
 > 更新规则：每个任务进入下一阶段前更新本表；“已有局部能力”不等于“任务已完成”。
-> 最近核对基线：`main@7cb1842`（Sprint 1 已合并，S2.1 尚未合并）
+> 最近核对基线：`main@7cb1842`；S2.1 发布分支 `agent/s2-1-map-mode@b27846c`（PR #36）
 
 ## 状态定义
 
 - `已合并`：代码与规定门禁已进入 `main`。
+- `发布中`：数据库和后端已发布并验证，前端尚未合并到 `main`。
 - `待发布`：实现和本地门禁已完成，但仍需预览、数据库或云端发布证据。
 - `局部已有`：产品中已有相关功能，但尚未满足该任务的完整验收口径。
 - `待开发`：尚未按 v4 验收口径实施。
@@ -43,7 +44,7 @@
 
 | 任务 | 状态 | 当前结论 / 下一门禁 |
 |---|---|---|
-| S2.1 maps.mode 数据迁移 | 待发布 | 显式 `mode`、旧数据回填、兼容触发器、回滚脚本、前后端贯通和 E2E 已实现；须按“Supabase 迁移 → 阿里云函数 → 前端”发布后才能合并完成 |
+| S2.1 maps.mode 数据迁移 | 发布中 | Supabase V12 已迁移并校验 22 张 map（knowledge 17 / meeting 3 / article 2 / invalid 0）；阿里云 API `10.6.0` 已发布，公网 health 与匿名拒绝 smoke 5/5 通过；待 authenticated CRUD 与前端合并 |
 | S2.2 `/api/bootstrap` 首屏聚合 | 待开发 | 依赖 S2.1 稳定的数据分类 |
 | S2.3 CI 部署事实校验 | 待开发 | 需增加 `git_sha`、线上 health 与静态前端对应断言 |
 | S2.4 Backlinks + 时间轴 | 待开发 | 当前 citation 不等于可反查 backlinks |
@@ -67,8 +68,9 @@
 
 ## S2.1 发布检查点
 
-1. 在 Supabase SQL Editor 执行 `supabase-v12-map-mode-migration.sql`，保存验证查询结果。
-2. 部署 API `10.6.0` 到阿里云函数，确认 `/health.version`、`authRequired` 与配置一致。
-3. 运行带真实测试账号的 authenticated backend smoke，确认三种 `mode` 可写入、读取和清理。
-4. 合并前端并等待 Vercel/GitHub Pages 对应提交成功。
-5. 若任一阶段失败，先停止后续发布；数据库回滚使用 `supabase-v12-map-mode-rollback.sql`。
+1. [x] 2026-07-22 在 Supabase SQL Editor 执行 `supabase-v12-map-mode-migration.sql`：22 张 map 全部获得合法 `mode`；约束、索引、兼容触发器、`NOT NULL` 均已核验。
+2. [x] 2026-07-22 部署阿里云函数 API `10.6.0`：`/health` 返回 `status=ok`、`authRequired=true`、`knowledgeStore=ok`、`hybridRetrieval=ready`、`entityGraph=ready`。
+3. [x] 2026-07-22 运行公网匿名 smoke：CORS、health 与三类匿名拒绝共 5/5 通过。
+4. [ ] 运行带真实测试账号的 authenticated backend smoke，确认三种 `mode` 可写入、读取和清理；当前未提供 `MINDGROW_ACCESS_TOKEN`，不以匿名结果替代。
+5. [ ] 合并前端并等待 Vercel/GitHub Pages 对应提交成功。
+6. 若任一阶段失败，先停止后续发布；数据库回滚使用 `supabase-v12-map-mode-rollback.sql`，阿里云函数回滚到 API `10.5.2`。
