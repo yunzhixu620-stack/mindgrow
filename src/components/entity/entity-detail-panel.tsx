@@ -42,6 +42,13 @@ export function relatedEntityRelations(entityId: string, relations: GraphRelatio
   return relations.filter((relation) => relation.sourceId === entityId || relation.targetId === entityId);
 }
 
+export function formatEntityTimestamp(value?: string) {
+  if (!value) return "";
+  const timestamp = new Date(value);
+  if (Number.isNaN(timestamp.getTime())) return "";
+  return `${timestamp.toISOString().slice(0, 16).replace("T", " ")} UTC`;
+}
+
 export function EntityDetailPanel({
   entity,
   entities,
@@ -59,6 +66,8 @@ export function EntityDetailPanel({
   const aliases = entity.aliases || [];
   const entityById = useMemo(() => new Map(entities.map((item) => [item.id, item])), [entities]);
   const relatedRelations = useMemo(() => relatedEntityRelations(entity.id, relations), [entity.id, relations]);
+  const createdAt = formatEntityTimestamp(entity.createdAt);
+  const updatedAt = formatEntityTimestamp(entity.updatedAt);
   const titleId = `entity-detail-title-${entity.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
 
   useEffect(() => {
@@ -98,6 +107,12 @@ export function EntityDetailPanel({
             {groundingStatus === "legacy" && <span className="rounded-full border border-amber-300/20 bg-amber-400/10 px-2 py-0.5 font-semibold text-amber-200">历史只读</span>}
             {mapName && <span className="truncate text-[var(--muted-foreground)]">来自 {mapName}</span>}
           </div>
+          {createdAt && (
+            <div className="mt-1.5 text-[9px] text-[var(--text-muted)]" aria-label="实体时间">
+              首次记录 <time dateTime={entity.createdAt}>{createdAt}</time>
+              {updatedAt && updatedAt !== createdAt && <> · 最近更新 <time dateTime={entity.updatedAt}>{updatedAt}</time></>}
+            </div>
+          )}
         </div>
         <button type="button" onClick={onClose} className="shrink-0 rounded-lg border border-[var(--border)] px-2 py-1 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)]" aria-label="关闭实体详情">×</button>
       </div>

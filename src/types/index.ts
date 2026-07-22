@@ -36,6 +36,10 @@ export interface GraphEntity {
   /** Missing on historical payloads; derive it from the v4 evidence fields before rendering. */
   groundingStatus?: EntityGroundingStatus;
   confidence: number;
+  /** Backend first-seen time for a canonical entity; absent only on rolling-upgrade or legacy payloads. */
+  createdAt?: string;
+  /** Last canonical metadata update time; absent only on rolling-upgrade or legacy payloads. */
+  updatedAt?: string;
   citations: Citation[];
   descriptionCitations: Citation[];
 }
@@ -50,6 +54,8 @@ export interface GraphRelation {
   explanation: string;
   status: "asserted" | "historical" | "negated" | "proposed";
   confidence: number;
+  createdAt?: string;
+  updatedAt?: string;
   citations: Citation[];
 }
 
