@@ -96,6 +96,9 @@ function AnswerFeedback({ messageId }: { messageId: string }) {
 function MessageBubble({ msg }: { msg: ChatMessage }) {
   if (msg.role === "system") return null;
   const isUser = msg.role === "user";
+  const routeLabel = msg.retrievalTrace?.queryRoute
+    ? ({ basic: "精确检索", local: "实体局部检索", drift: "多跳探索", global: "全库概览" } as const)[msg.retrievalTrace.queryRoute]
+    : null;
   return (
     <div data-chat-message-id={msg.id} className={`flex ${isUser ? "justify-end" : "justify-start"} animate-fade-in-up`}>
       <div
@@ -120,7 +123,7 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
         )}
         {!isUser && msg.retrievalTrace && (
           <div className="mt-2 rounded-lg border border-violet-400/20 bg-violet-400/5 px-2.5 py-2 text-[10px] text-violet-200" data-testid="graphrag-trace">
-            <span className="mr-1.5 font-semibold">检索链路</span>
+            <span className="mr-1.5 font-semibold">检索链路{routeLabel ? ` · ${routeLabel}` : ""}</span>
             {msg.retrievalTrace.needsDisambiguation
               ? "实体消歧 · 找到 " + String(msg.retrievalTrace.entitySeeds || 0) + " 个同名候选，已暂停自动回答"
               : (msg.retrievalTrace.entitySeeds || 0) > 0

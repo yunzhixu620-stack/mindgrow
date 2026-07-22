@@ -65,6 +65,8 @@ interface ArticleQaMessage {
   retrievalTrace?: {
     mode: string;
     task?: string;
+    queryRoute?: "basic" | "local" | "drift" | "global";
+    rankingVersion?: string;
     seedNodes: number;
     expandedNodes: number;
     graphDocuments: number;
@@ -254,6 +256,9 @@ function ArticleTaskHeader({ task }: { task: NonNullable<ArticleQaMessage["task"
 }
 
 function ArticleRetrievalTrace({ trace }: { trace: NonNullable<ArticleQaMessage["retrievalTrace"]> }) {
+  const routeLabel = trace.queryRoute
+    ? ({ basic: "精确检索", local: "实体局部检索", drift: "多跳探索", global: "全库概览" } as const)[trace.queryRoute]
+    : null;
   let text: string;
   if (trace.mode === "article_translation") {
     text = "论文翻译 · " + String(trace.graphDocuments || 0) + " 篇来源 · "
@@ -272,7 +277,7 @@ function ArticleRetrievalTrace({ trace }: { trace: NonNullable<ArticleQaMessage[
       + String(trace.candidateChunks || 0) + " 个证据块";
   }
   return <div className="mt-2 rounded-lg border border-violet-400/20 bg-violet-400/5 px-2.5 py-2 text-[10px] text-violet-200" data-testid="graphrag-trace">
-    <span className="mr-1.5 font-semibold">检索链路</span>{text}
+    <span className="mr-1.5 font-semibold">检索链路{routeLabel ? ` · ${routeLabel}` : ""}</span>{text}
   </div>;
 }
 

@@ -1,0 +1,186 @@
+{
+  "schemaVersion": 1,
+  "frozenAt": "2026-07-23",
+  "rankingCases": [
+    {
+      "id": "article-rag-retriever",
+      "board": "article",
+      "question": "RAG 使用什么稠密检索器？",
+      "relevantIds": ["rag-uses-dpr"],
+      "candidates": [
+        { "id": "rag-overview", "sourceKind": "document_chunk", "content": "RAG combines retrieval and generation.", "documentTitle": "RAG paper", "anchorScore": 0.35, "semanticScore": 0.96, "keywordRank": 9, "documentCreatedAt": "2020-05-22" },
+        { "id": "rag-uses-dpr", "sourceKind": "entity_graph_evidence", "content": "RAG uses DPR as its dense retriever.", "documentTitle": "RAG paper", "anchorScore": 0.92, "graphDepth": 1, "graphRelationStatus": "asserted", "documentCreatedAt": "2020-05-22" },
+        { "id": "bm25-baseline", "sourceKind": "document_chunk", "content": "BM25 is a sparse baseline.", "documentTitle": "DPR paper", "anchorScore": 0.18, "semanticScore": 0.71, "keywordRank": 18, "documentCreatedAt": "2020-04-10" }
+      ]
+    },
+    {
+      "id": "article-layoutlm-wpa",
+      "board": "article",
+      "question": "LayoutLMv3 的 Word-Patch Alignment 起什么作用？",
+      "relevantIds": ["wpa-definition"],
+      "candidates": [
+        { "id": "layoutlm-general", "sourceKind": "document_chunk", "content": "LayoutLMv3 is a multimodal pre-training model.", "documentTitle": "LayoutLMv3", "anchorScore": 0.45, "semanticScore": 0.92, "keywordRank": 8, "primaryGraphLinked": true, "documentCreatedAt": "2022-04-18" },
+        { "id": "wpa-definition", "sourceKind": "document_chunk", "content": "Word-Patch Alignment learns fine-grained alignment between text words and image patches.", "documentTitle": "LayoutLMv3", "anchorScore": 0.95, "semanticScore": 0.88, "keywordRank": 1, "primaryGraphLinked": true, "documentCreatedAt": "2022-04-18" },
+        { "id": "mim-objective", "sourceKind": "document_chunk", "content": "Masked image modeling reconstructs image tokens.", "documentTitle": "LayoutLMv3", "anchorScore": 0.22, "semanticScore": 0.7, "keywordRank": 22, "graphLinked": true, "documentCreatedAt": "2022-04-18" }
+      ]
+    },
+    {
+      "id": "article-recall-metric",
+      "board": "article",
+      "question": "Natural Questions 上的 Recall@5 是多少？",
+      "relevantIds": ["recall-85"],
+      "candidates": [
+        { "id": "recall-85", "sourceKind": "document_chunk", "content": "Natural Questions Recall@5 reaches 85%.", "documentTitle": "Retrieval evaluation", "anchorScore": 1, "semanticScore": 0.86, "keywordRank": 1, "primaryGraphLinked": true, "documentCreatedAt": "2026-06-01" },
+        { "id": "recall-819", "sourceKind": "document_chunk", "content": "The internal Recall@5 improved to 81.9%.", "documentTitle": "Meeting notes", "anchorScore": 0.5, "semanticScore": 0.93, "keywordRank": 4, "documentCreatedAt": "2026-07-01" },
+        { "id": "recall-definition", "sourceKind": "entity_graph_evidence", "content": "Recall@5 measures whether evidence appears in the first five results.", "documentTitle": "Metrics glossary", "anchorScore": 0.55, "graphDepth": 1, "documentCreatedAt": "2025-01-01" }
+      ]
+    },
+    {
+      "id": "article-negated-relation",
+      "board": "article",
+      "question": "BM25 为什么不是该实验的稠密检索器？",
+      "relevantIds": ["bm25-negated"],
+      "candidates": [
+        { "id": "bm25-negated", "sourceKind": "entity_graph_evidence", "content": "BM25 is not the dense retriever in this experiment.", "documentTitle": "RAG experiment", "anchorScore": 0.94, "graphDepth": 1, "graphRelationStatus": "negated", "documentCreatedAt": "2020-05-22" },
+        { "id": "bm25-used", "sourceKind": "document_chunk", "content": "BM25 is used in a different sparse retrieval baseline.", "documentTitle": "DPR baselines", "anchorScore": 0.58, "semanticScore": 0.9, "keywordRank": 2, "documentCreatedAt": "2020-04-10" },
+        { "id": "dpr-definition", "sourceKind": "document_chunk", "content": "DPR is a dense passage retriever.", "documentTitle": "DPR paper", "anchorScore": 0.35, "semanticScore": 0.74, "keywordRank": 17, "documentCreatedAt": "2020-04-10" }
+      ]
+    },
+    {
+      "id": "article-current-vs-historical",
+      "board": "article",
+      "question": "当前系统采用哪个检索器？",
+      "relevantIds": ["current-retriever"],
+      "candidates": [
+        { "id": "old-retriever", "sourceKind": "entity_graph_evidence", "content": "The prototype used BM25.", "documentTitle": "Historical design", "anchorScore": 0.82, "graphDepth": 1, "graphRelationStatus": "historical", "documentCreatedAt": "2024-01-01" },
+        { "id": "current-retriever", "sourceKind": "entity_graph_evidence", "content": "The current system uses DPR and hybrid retrieval.", "documentTitle": "Current design", "anchorScore": 0.82, "graphDepth": 1, "graphRelationStatus": "asserted", "documentCreatedAt": "2026-07-01" },
+        { "id": "retrieval-overview", "sourceKind": "document_chunk", "content": "Retrieval systems can be sparse or dense.", "documentTitle": "Overview", "anchorScore": 0.36, "semanticScore": 0.88, "keywordRank": 7, "documentCreatedAt": "2025-01-01" }
+      ]
+    },
+    {
+      "id": "meeting-owner",
+      "board": "meeting",
+      "question": "谁负责复测检索效果？",
+      "relevantIds": ["owner-li-lei"],
+      "candidates": [
+        { "id": "owner-li-lei", "sourceKind": "entity_graph_evidence", "content": "李雷负责复测检索效果。", "documentTitle": "检索复盘会议", "anchorScore": 0.96, "graphDepth": 1, "graphRelationStatus": "asserted", "documentCreatedAt": "2026-07-22" },
+        { "id": "zhao-interviews", "sourceKind": "entity_graph_evidence", "content": "赵敏负责用户访谈。", "documentTitle": "检索复盘会议", "anchorScore": 0.32, "graphDepth": 1, "graphRelationStatus": "asserted", "documentCreatedAt": "2026-07-22" },
+        { "id": "test-guidance", "sourceKind": "document_chunk", "content": "复测需要覆盖固定评测集。", "documentTitle": "评测指南", "anchorScore": 0.55, "semanticScore": 0.84, "keywordRank": 5, "documentCreatedAt": "2026-06-01" }
+      ]
+    },
+    {
+      "id": "meeting-due-date",
+      "board": "meeting",
+      "question": "复测的截止日期是什么？",
+      "relevantIds": ["due-0727"],
+      "candidates": [
+        { "id": "due-0727", "sourceKind": "entity_graph_evidence", "content": "李雷负责复测，截止 2026-07-27。", "documentTitle": "检索复盘会议", "anchorScore": 0.9, "graphDepth": 1, "graphRelationStatus": "asserted", "documentCreatedAt": "2026-07-22" },
+        { "id": "meeting-date", "sourceKind": "document_chunk", "content": "会议于 2026-07-22 召开。", "documentTitle": "检索复盘会议", "anchorScore": 0.42, "semanticScore": 0.78, "keywordRank": 6, "documentCreatedAt": "2026-07-22" },
+        { "id": "old-deadline", "sourceKind": "entity_graph_evidence", "content": "原计划截止 2026-07-25。", "documentTitle": "旧计划", "anchorScore": 0.7, "graphDepth": 1, "graphRelationStatus": "historical", "documentCreatedAt": "2026-07-15" }
+      ]
+    },
+    {
+      "id": "meeting-rejected-decision",
+      "board": "meeting",
+      "question": "会议是否批准了云同步？",
+      "relevantIds": ["cloud-not-approved"],
+      "candidates": [
+        { "id": "cloud-not-approved", "sourceKind": "entity_graph_evidence", "content": "会议尚未批准云同步功能。", "documentTitle": "产品评审会", "anchorScore": 0.94, "graphDepth": 1, "graphRelationStatus": "negated", "documentCreatedAt": "2026-07-22" },
+        { "id": "cloud-proposal", "sourceKind": "entity_graph_evidence", "content": "团队提出云同步方案。", "documentTitle": "产品评审会", "anchorScore": 0.76, "graphDepth": 1, "graphRelationStatus": "proposed", "documentCreatedAt": "2026-07-22" },
+        { "id": "cloud-general", "sourceKind": "document_chunk", "content": "云同步可以跨设备访问。", "documentTitle": "产品介绍", "anchorScore": 0.48, "semanticScore": 0.9, "keywordRank": 4, "documentCreatedAt": "2026-07-20" }
+      ]
+    },
+    {
+      "id": "knowledge-causal-path",
+      "board": "knowledge",
+      "question": "为什么旧文档导致了答案错误？",
+      "relevantIds": ["stale-index-cause"],
+      "candidates": [
+        { "id": "old-document-semantic", "sourceKind": "document_chunk", "content": "旧文档仍可用于历史追踪。", "documentTitle": "文档管理", "anchorScore": 0.55, "semanticScore": 0.93, "keywordRank": 3, "documentCreatedAt": "2026-07-01" },
+        { "id": "stale-index-cause", "sourceKind": "entity_graph_evidence", "content": "因为索引未刷新，系统召回旧文档，导致答案错误。", "documentTitle": "故障复盘", "anchorScore": 0.96, "graphDepth": 2, "graphRelationStatus": "asserted", "documentCreatedAt": "2026-07-22" },
+        { "id": "answer-quality", "sourceKind": "document_chunk", "content": "答案质量需要通过引用验证。", "documentTitle": "回答规范", "anchorScore": 0.38, "semanticScore": 0.8, "keywordRank": 12, "documentCreatedAt": "2026-06-01" }
+      ]
+    },
+    {
+      "id": "knowledge-organization-target",
+      "board": "knowledge",
+      "question": "A 公司接受了多少次访谈？",
+      "relevantIds": ["company-a-interviews"],
+      "candidates": [
+        { "id": "company-b-interviews", "sourceKind": "document_chunk", "content": "B 公司参与了另一轮访谈。", "documentTitle": "B 公司访谈", "anchorScore": 0.48, "semanticScore": 0.93, "keywordRank": 5, "documentCreatedAt": "2026-07-20" },
+        { "id": "company-a-interviews", "sourceKind": "document_chunk", "content": "A 公司本周接受了 20 次用户访谈。", "documentTitle": "A 公司访谈", "anchorScore": 1, "semanticScore": 0.87, "keywordRank": 1, "primaryGraphLinked": true, "documentCreatedAt": "2026-07-22" },
+        { "id": "interview-method", "sourceKind": "document_chunk", "content": "用户访谈用于发现需求。", "documentTitle": "研究方法", "anchorScore": 0.32, "semanticScore": 0.81, "keywordRank": 14, "documentCreatedAt": "2025-01-01" }
+      ]
+    },
+    {
+      "id": "article-multihop-wikipedia",
+      "board": "article",
+      "question": "RAG 如何通过 DPR 从 Wikipedia 获取证据？",
+      "relevantIds": ["rag-dpr-wikipedia-path"],
+      "candidates": [
+        { "id": "wikipedia-general", "sourceKind": "document_chunk", "content": "Wikipedia is a large public encyclopedia.", "documentTitle": "Wikipedia", "anchorScore": 0.42, "semanticScore": 0.95, "keywordRank": 7, "documentCreatedAt": "2026-01-01" },
+        { "id": "rag-dpr-wikipedia-path", "sourceKind": "entity_graph_evidence", "content": "RAG uses DPR to retrieve passages from a Wikipedia index.", "documentTitle": "RAG paper", "anchorScore": 1, "graphDepth": 2, "graphRelationStatus": "asserted", "documentCreatedAt": "2020-05-22" },
+        { "id": "bart-generator", "sourceKind": "entity_graph_evidence", "content": "RAG uses BART as its generator.", "documentTitle": "RAG paper", "anchorScore": 0.52, "graphDepth": 1, "graphRelationStatus": "asserted", "documentCreatedAt": "2020-05-22" }
+      ]
+    },
+    {
+      "id": "knowledge-global-overview",
+      "board": "knowledge",
+      "question": "全库检索质量脉络有哪些核心证据？",
+      "relevantIds": ["overview-metrics", "overview-failure"],
+      "candidates": [
+        { "id": "overview-metrics", "sourceKind": "document_chunk", "content": "Recall@5 从 72.4% 提升到 81.9%。", "documentTitle": "检索指标", "anchorScore": 0.78, "semanticScore": 0.86, "keywordRank": 2, "graphLinked": true, "documentCreatedAt": "2026-07-22" },
+        { "id": "overview-failure", "sourceKind": "entity_graph_evidence", "content": "索引未刷新曾导致旧文档误召回。", "documentTitle": "故障复盘", "anchorScore": 0.72, "graphDepth": 2, "graphRelationStatus": "historical", "documentCreatedAt": "2026-07-22" },
+        { "id": "unrelated-ui", "sourceKind": "document_chunk", "content": "界面支持深色主题。", "documentTitle": "UI 指南", "anchorScore": 0.05, "semanticScore": 0.45, "keywordRank": 40, "documentCreatedAt": "2026-07-22" }
+      ]
+    }
+  ],
+  "entityLinkingCases": [
+    {
+      "id": "alias-entry",
+      "question": "Retrieval-Augmented Generation 使用什么？",
+      "expectedSeedIds": ["rag"],
+      "expectAmbiguous": false,
+      "entities": [
+        { "id": "rag", "canonicalName": "RAG", "entityType": "model", "aliases": ["Retrieval-Augmented Generation"], "description": "检索增强生成", "confidence": 0.95, "citations": [{ "title": "RAG paper", "locator": "page 1" }] },
+        { "id": "dpr", "canonicalName": "DPR", "entityType": "method", "aliases": ["Dense Passage Retrieval"], "description": "稠密检索", "confidence": 0.95, "citations": [{ "title": "DPR paper", "locator": "page 1" }] }
+      ]
+    },
+    {
+      "id": "same-name-ambiguous",
+      "question": "Atlas 是什么？",
+      "expectedSeedIds": ["atlas-model", "atlas-org"],
+      "expectAmbiguous": true,
+      "entities": [
+        { "id": "atlas-model", "canonicalName": "Atlas", "entityType": "model", "aliases": ["ATLAS"], "description": "检索增强语言模型", "confidence": 0.9, "citations": [{ "title": "Atlas 模型论文", "locator": "page 1" }] },
+        { "id": "atlas-org", "canonicalName": "Atlas", "entityType": "organization", "aliases": ["ATLAS"], "description": "研究组织", "confidence": 0.9, "citations": [{ "title": "Atlas 组织记录", "locator": "段落 1" }] }
+      ]
+    },
+    {
+      "id": "type-disambiguation",
+      "question": "Atlas 模型是什么？",
+      "expectedSeedIds": ["atlas-model"],
+      "expectAmbiguous": false,
+      "entities": [
+        { "id": "atlas-model", "canonicalName": "Atlas", "entityType": "model", "aliases": ["ATLAS"], "description": "检索增强语言模型", "confidence": 0.9, "citations": [{ "title": "Atlas 模型论文", "locator": "page 1" }] },
+        { "id": "atlas-org", "canonicalName": "Atlas", "entityType": "organization", "aliases": ["ATLAS"], "description": "研究组织", "confidence": 0.9, "citations": [{ "title": "Atlas 组织记录", "locator": "段落 1" }] }
+      ]
+    },
+    {
+      "id": "source-disambiguation",
+      "question": "Atlas 组织记录里的 Atlas 是什么？",
+      "expectedSeedIds": ["atlas-org"],
+      "expectAmbiguous": false,
+      "entities": [
+        { "id": "atlas-model", "canonicalName": "Atlas", "entityType": "model", "aliases": ["ATLAS"], "description": "检索增强语言模型", "confidence": 0.9, "citations": [{ "title": "Atlas 模型论文", "locator": "page 1" }] },
+        { "id": "atlas-org", "canonicalName": "Atlas", "entityType": "organization", "aliases": ["ATLAS"], "description": "研究组织", "confidence": 0.9, "citations": [{ "title": "Atlas 组织记录", "locator": "段落 1" }] }
+      ]
+    }
+  ],
+  "routingCases": [
+    { "question": "RAG 使用什么检索器？", "expectedRoute": "local" },
+    { "question": "RAG 与 Wikipedia 的两跳链路是什么？", "expectedRoute": "drift" },
+    { "question": "全库知识图谱概览", "expectedRoute": "global" },
+    { "question": "Recall@5 是多少？", "expectedRoute": "basic" }
+  ]
+}

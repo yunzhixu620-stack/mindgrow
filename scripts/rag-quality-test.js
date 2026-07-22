@@ -43,6 +43,9 @@ const {
   entityGraphQueryPlan,
   rankEntityGraphSeeds,
   relationStatusPenalty,
+  graphRagRecencyScore,
+  graphRagEvidenceSignals,
+  rankGraphRagEvidence,
   __citationInternal,
   __entityGraphInternal,
 } = require("../fc-proxy/index.js");
@@ -346,15 +349,19 @@ check("GraphRAG query planning constrains relation types and hop counts", () => 
   const usage = entityGraphQueryPlan("RAG 使用什么检索器？");
   assert.deepStrictEqual(usage.relationTypes, ["uses", "depends_on", "retrieves_from"]);
   assert.strictEqual(usage.maxHops, 1);
+  assert.strictEqual(usage.route, "local");
   const proposal = entityGraphQueryPlan("谁提出了 RAG？");
   assert.deepStrictEqual(proposal.relationTypes, ["proposes"]);
   assert(proposal.typeHints.includes("person"));
   const path = entityGraphQueryPlan("RAG 与 DPR 的两跳链路是什么？");
   assert.strictEqual(path.maxHops, 2);
+  assert.strictEqual(path.route, "drift");
   assert(path.relationTypes.includes("related_to"));
   const membership = entityGraphQueryPlan("WPA 属于 LayoutLMv3 的哪个组件？");
   assert(membership.relationTypes.includes("part_of"));
   assert(membership.relationTypes.includes("contains"));
+  assert.strictEqual(entityGraphQueryPlan("全库知识图谱概览").route, "global");
+  assert.strictEqual(entityGraphQueryPlan("Recall@5 是多少？").route, "basic");
 });
 
 check("entity aliases are exact graph entries and ambiguous names require clarification", () => {
@@ -371,6 +378,9 @@ check("entity aliases are exact graph entries and ambiguous names require clarif
   const typed = rankEntityGraphSeeds("Atlas 模型是什么？", entities);
   assert.strictEqual(typed.ambiguous, false);
   assert.strictEqual(typed.seeds[0].entity.id, "atlas-model");
+  const sourced = rankEntityGraphSeeds("Atlas 组织记录里的 Atlas 是什么？", entities);
+  assert.strictEqual(sourced.ambiguous, false);
+  assert.strictEqual(sourced.seeds[0].entity.id, "atlas-org");
 });
 
 check("negated and historical edges are penalized unless the question requests them", () => {
@@ -383,9 +393,29 @@ check("negated and historical edges are penalized unless the question requests t
 check("entity graph evidence is connected to the formal answer retrieval path", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "fc-proxy", "index.js"), "utf8");
   assert.match(source, /retrieveEntityGraphEvidence\(question, mapId, workspaceId\)/);
-  assert.match(source, /\[\.\.\.entityEvidence, \.\.\.graphConditionedChunks, \.\.\.graphNodes\]/);
+  assert.match(source, /rankGraphRagEvidence\(question, rankingCandidates\)/);
+  assert.match(source, /rankingVersion: 's2\.12-v1'/);
   assert.match(source, /needsDisambiguation/);
   assert.match(source, /entity_graph_evidence/);
+});
+
+check("GraphRAG reranking exposes bounded explainable signals", () => {
+  const question = "RAG 使用什么稠密检索器？";
+  const direct = {
+    id: "direct", sourceKind: "entity_graph_evidence", content: "RAG uses DPR as its dense retriever.",
+    anchorScore: 0.95, graphDepth: 1, graphRelationStatus: "asserted", documentCreatedAt: "2026-07-01",
+  };
+  const semanticDistractor = {
+    id: "distractor", sourceKind: "document_chunk", content: "Retrieval overview", anchorScore: 0.2,
+    semanticScore: 0.96, keywordRank: 12, documentCreatedAt: "2026-07-01",
+  };
+  const ranked = rankGraphRagEvidence(question, [semanticDistractor, direct], { nowMs: Date.parse("2026-07-23") });
+  assert.strictEqual(ranked[0].id, "direct");
+  const signals = graphRagEvidenceSignals(question, direct, 0, 2, Date.parse("2026-07-23"));
+  ["entityAnchor", "semantic", "lexical", "path", "metadata", "recency", "statusPenalty", "score"].forEach((key) => {
+    assert(Number.isFinite(signals[key]), `missing finite ${key} signal`);
+  });
+  assert(graphRagRecencyScore("2026-07-01", Date.parse("2026-07-23")) > graphRagRecencyScore("2020-01-01", Date.parse("2026-07-23")));
 });
 
 check("long knowledge and meeting structures preserve critical facts without unsupported features", () => {
@@ -516,10 +546,25 @@ check("entity graph migration is tenant-scoped and service-role only", () => {
   assert(groundingMigration.includes("DROP COLUMN IF EXISTS explanation"));
 });
 
+check("GraphRAG ranking migration keeps RRF and exposes independent sparse and semantic signals", () => {
+  const migration = fs.readFileSync(path.join(__dirname, "..", "supabase-v15-graphrag-ranking-migration.sql"), "utf8");
+  const rollback = fs.readFileSync(path.join(__dirname, "..", "supabase-v15-graphrag-ranking-rollback.sql"), "utf8");
+  assert(migration.includes("hybrid_search_document_chunks_v2"));
+  ["rrf_score", "semantic_rank", "keyword_rank", "semantic_score", "keyword_score", "document_created_at"].forEach((field) => {
+    assert(migration.includes(field), `ranking RPC is missing ${field}`);
+  });
+  assert(migration.includes("REVOKE ALL ON FUNCTION hybrid_search_document_chunks_v2"));
+  assert(migration.includes("GRANT EXECUTE ON FUNCTION hybrid_search_document_chunks_v2"));
+  assert(migration.includes("TO service_role"));
+  assert(rollback.includes("DROP FUNCTION IF EXISTS hybrid_search_document_chunks_v2"));
+});
+
 check("health readiness verifies required entity-grounding columns", () => {
   const healthSource = fs.readFileSync(path.join(__dirname, "..", "fc-proxy", "index.js"), "utf8");
   assert(healthSource.includes("graph_entities?select=id,description_citation_indexes&limit=1"));
   assert(healthSource.includes("graph_relations?select=id,explanation&limit=1"));
+  assert(healthSource.includes("rpc/hybrid_search_document_chunks_v2"));
+  assert(healthSource.includes("checks.graphRagRanking === 'ready'"));
 });
 
 check("canonical entity ids are stable inside one library and isolated across libraries", () => {

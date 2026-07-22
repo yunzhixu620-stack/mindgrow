@@ -21,7 +21,7 @@
 
 ## 3. 合成监控与发布门禁
 
-- 每 5 分钟：`GET /health`，要求 HTTP 200、`version` 与 `docs/api-version.txt` 一致、`gitSha` 为完整 40 位提交号、`checks.deploymentIdentity === "ready"`、`authRequired === true`，model/store/hybridRetrieval 均为 ready 或 ok。生产 `authRequired !== true` 立即按 SEV0 处理；生产缺失部署身份按 SEV1 处理。版本文件是运行时 `API_VERSION` 的 CI 校验镜像，不是第二个真源。
+- 每 5 分钟：`GET /health`，要求 HTTP 200、`version` 与 `docs/api-version.txt` 一致、`gitSha` 为完整 40 位提交号、`checks.deploymentIdentity === "ready"`、`authRequired === true`，model/store/hybridRetrieval/graphRagRanking 均为 ready 或 ok。生产 `authRequired !== true` 立即按 SEV0 处理；生产缺失部署身份或 GraphRAG 排序迁移按 SEV1 处理。版本文件是运行时 `API_VERSION` 的 CI 校验镜像，不是第二个真源。
 - 每 15 分钟：匿名访问 knowledge/workspaces/audio 均应为 401；任何 2xx 视为 SEV0。
 - 每 60 分钟：专用测试账号列出 workspaces/maps，不执行付费模型。
 - 每天：专用测试知识库解析一篇固定短文，验证 citation quote 与来源一致；生成一次 Audio 脚本。
@@ -42,7 +42,7 @@ API 发版时先修改 `fc-proxy/index.js` 的 `API_VERSION`，再在同一个 P
 
 1. 先看 `/health` 的 knowledgeStore；确认不是阿里云 DNS/网络问题。
 2. 在 Supabase 控制台检查项目状态、Auth、REST API 和 SQL 查询。
-3. 新项目用 `supabase-schema.sql`；已有 V7 项目按版本顺序执行 V8–V13 migration。V12 `maps.mode` 的核对与回滚步骤见 `docs/s2-1-map-mode-migration.md`；V13 节点时间轴见 `docs/s2-4-backlinks-timeline.md`。
+3. 新项目用 `supabase-schema.sql` 后继续执行尚未合入基线 schema 的 migration；已有 V7 项目按版本顺序执行 V8–V15 migration。V12 `maps.mode` 的核对见 `docs/s2-1-map-mode-migration.md`，V13 节点时间轴见 `docs/s2-4-backlinks-timeline.md`，V14 白板见 `docs/s2-8-whiteboard-foundation.md`，V15 GraphRAG 排序见 `docs/s2-12-graphrag-ranking.md`。每个版本都使用同版本 rollback，不跨版本逆序跳过。
 4. 阿里云环境变量只放 project URL 与 service-role/secret key；部署后立即跑匿名 401 检查。
 5. 若 30 分钟内无法恢复，状态页标记云同步不可用；不要把生产网站切为匿名本地共享数据。
 
