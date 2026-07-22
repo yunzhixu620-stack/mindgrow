@@ -600,12 +600,18 @@ const expandOneVisibleLevel = async (page, previousCount) => {
   });
 
   await check("LLM Wiki entity graph exposes typed relations with verbatim evidence", async () => {
+    const entityStage = async (label, task) => {
+      try { return await task(); } catch (error) { throw new Error(`${label}: ${error.message}`); }
+    };
     const storedGraph = await page.evaluate((mapId) => JSON.parse(localStorage.getItem("mindgrow.local.v2")).entityGraphs?.[mapId], articleLibraryId);
     if (!storedGraph?.entities?.length || !storedGraph?.relations?.length) throw new Error("Saved article has no entity graph");
     await clickByText(page, '[data-testid="graph-layer-switch"] button', "实体图");
     await page.waitForFunction(() => document.body.innerText.includes("实体知识图谱"));
     await page.waitForFunction(() => document.querySelectorAll(".react-flow__node").length >= 2 && document.querySelectorAll(".react-flow__edge").length >= 1);
     await page.waitForSelector('[data-testid="entity-view-modes"]');
+    const entityQuery = storedGraph.entities[0].canonicalName;
+    const networkSummary = await page.$eval('[data-testid="entity-network-summary"]', (element) => element.textContent);
+    if (!networkSummary.includes("强关系") || !networkSummary.includes("无强关系实体已隐藏")) throw new Error(`Default entity graph is not the strong-relation view: ${networkSummary}`);
     const globalNodeCount = await page.$$eval('[data-testid="entity-network-node"]', (nodes) => nodes.length);
     if (globalNodeCount < 2) throw new Error("Obsidian entity network did not render enough entities");
     await page.hover('[data-testid="entity-network-node"]');
@@ -624,39 +630,81 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     await page.screenshot({ path: path.join(artifactDir, "desktop-entity-network.png") });
     await page.keyboard.press("Escape");
     await page.waitForFunction(() => !document.querySelector('[data-testid="entity-detail-panel"]'));
-    const entityQuery = storedGraph.entities[0].canonicalName;
-    await page.keyboard.down("Control");
-    await page.keyboard.press("k");
-    await page.keyboard.up("Control");
-    await page.waitForSelector('[data-testid="command-palette"] input');
-    await page.$eval('[data-testid="command-palette"] input', (input, query) => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
-      setter.call(input, query);
-      input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: query }));
-    }, entityQuery);
-    await page.waitForSelector('[data-result-group="entities"] [data-result-kind="entity"]');
-    await page.click('[data-result-group="entities"] [data-result-kind="entity"]');
-    await page.waitForSelector('[data-testid="entity-detail-panel"]');
-    const commandEntityTitle = await page.$eval('[data-testid="entity-detail-panel"]', (panel) => panel.textContent);
-    if (!commandEntityTitle.includes(entityQuery)) throw new Error("Command palette did not focus the selected entity");
-    await page.keyboard.press("Escape");
-    await page.waitForFunction(() => !document.querySelector('[data-testid="entity-detail-panel"]'));
-    await clickByText(page, '[data-testid="entity-view-modes"] button', "证据链");
-    await page.waitForFunction(() => {
-      const evidenceButton = Array.from(document.querySelectorAll('[data-testid="entity-view-modes"] button'))
-        .find((button) => button.textContent.includes("证据链"));
-      return evidenceButton?.className.includes("bg-violet-400");
+    await entityStage("图内实体搜索", async () => {
+      await page.click('button[aria-label="搜索与过滤实体"]');
+      await page.waitForSelector('[data-testid="entity-network-tools"]');
+      await page.type('[data-testid="entity-network-search"]', entityQuery);
+      await page.waitForSelector('[data-testid="entity-network-search-result"]');
+      const graphSearchResult = await page.$eval('[data-testid="entity-network-search-result"]', (element) => element.textContent);
+      if (!graphSearchResult.includes(entityQuery)) throw new Error("Graph-native search did not match the entity name");
+      await page.click('[data-testid="entity-network-search-result"]');
+      await page.waitForSelector('[data-testid="entity-detail-panel"]');
+      const graphSearchDetail = await page.$eval('[data-testid="entity-detail-panel"]', (panel) => panel.textContent);
+      if (!graphSearchDetail.includes(entityQuery)) throw new Error("Graph-native search did not enter the selected entity's one-hop view");
+      await page.keyboard.press("Escape");
+      await page.waitForFunction(() => !document.querySelector('[data-testid="entity-detail-panel"]'));
     });
-    await page.waitForSelector(".react-flow__edge-interaction");
-    await page.hover(".react-flow__edge-interaction");
-    await page.waitForFunction(() => Boolean(document.querySelector(".react-flow__edge-text")?.textContent.trim()));
-    if (await page.$('[data-testid="relation-evidence-panel"]')) throw new Error("Relation hover opened the evidence card before click");
-    await page.$eval(".react-flow__edge-interaction", (edgeInteraction) => {
-      edgeInteraction.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+    await entityStage("实体类型筛选", async () => {
+      await clickByText(page, '[data-testid="entity-view-modes"] button', "全局强关系");
+      await page.click('button[aria-label="搜索与过滤实体"]');
+      await page.waitForSelector('[data-testid="entity-network-type-filters"] button[data-entity-type="concept"]');
+      await page.click('[data-testid="entity-network-type-filters"] button[data-entity-type="concept"]');
+      await page.waitForFunction(() => document.querySelector('[data-testid="entity-network-summary"]')?.textContent.includes("已筛选 1 种类型"));
+      const conceptFilterPressed = await page.$eval('[data-testid="entity-network-type-filters"] button[data-entity-type="concept"]', (button) => button.getAttribute("aria-pressed"));
+      if (conceptFilterPressed !== "true") throw new Error("Entity type filter did not expose its active state");
+      await page.click('[data-testid="entity-network-type-filters"] button[data-entity-type="concept"]');
+      await page.waitForFunction(() => !document.querySelector('[data-testid="entity-network-summary"]')?.textContent.includes("已筛选"));
     });
-    await page.waitForSelector('[data-testid="relation-evidence-panel"]');
-    const evidence = await page.$eval('[data-testid="relation-evidence-panel"]', (panel) => panel.textContent);
-    if (!evidence.includes("关系原文证据") || !evidence.includes("原文片段")) throw new Error("Relation evidence is not traceable to the original text");
+    await entityStage("孤立实体开关", async () => {
+      await page.click('[data-testid="entity-network-show-isolated"]');
+      await page.waitForFunction(() => document.querySelector('[data-testid="entity-network-show-isolated"]')?.getAttribute("aria-pressed") === "true");
+      await page.click('[data-testid="entity-network-show-isolated"]');
+      await page.waitForFunction(() => document.querySelector('[data-testid="entity-network-show-isolated"]')?.getAttribute("aria-pressed") === "false");
+      await page.click('button[aria-label="搜索与过滤实体"]');
+      await page.waitForFunction(() => !document.querySelector('[data-testid="entity-network-tools"]'));
+    });
+    await entityStage("Ctrl+K 实体定位", async () => {
+      await entityStage("Ctrl+K 打开", async () => {
+        await page.keyboard.down("Control");
+        await page.keyboard.press("k");
+        await page.keyboard.up("Control");
+        await page.waitForSelector('[data-testid="command-palette"] input');
+      });
+      await entityStage("Ctrl+K 搜索结果", async () => {
+        await page.$eval('[data-testid="command-palette"] input', (input, query) => {
+          const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+          setter.call(input, query);
+          input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: query }));
+        }, entityQuery);
+        await page.waitForSelector('[data-result-group="entities"] [data-result-kind="entity"]');
+      });
+      await entityStage("Ctrl+K 详情定位", async () => {
+        await page.click('[data-result-group="entities"] [data-result-kind="entity"]');
+        await page.waitForSelector('[data-testid="entity-detail-panel"]');
+        const commandEntityTitle = await page.$eval('[data-testid="entity-detail-panel"]', (panel) => panel.textContent);
+        if (!commandEntityTitle.includes(entityQuery)) throw new Error("Command palette did not focus the selected entity");
+        await page.keyboard.press("Escape");
+        await page.waitForFunction(() => !document.querySelector('[data-testid="entity-detail-panel"]'));
+      });
+    });
+    await entityStage("关系证据链", async () => {
+      await clickByText(page, '[data-testid="entity-view-modes"] button', "证据链");
+      await page.waitForFunction(() => {
+        const evidenceButton = Array.from(document.querySelectorAll('[data-testid="entity-view-modes"] button'))
+          .find((button) => button.textContent.includes("证据链"));
+        return evidenceButton?.className.includes("bg-violet-400");
+      });
+      await page.waitForSelector(".react-flow__edge-interaction");
+      await page.hover(".react-flow__edge-interaction");
+      await page.waitForFunction(() => Boolean(document.querySelector(".react-flow__edge-text")?.textContent.trim()));
+      if (await page.$('[data-testid="relation-evidence-panel"]')) throw new Error("Relation hover opened the evidence card before click");
+      await page.$eval(".react-flow__edge-interaction", (edgeInteraction) => {
+        edgeInteraction.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+      });
+      await page.waitForSelector('[data-testid="relation-evidence-panel"]');
+      const evidence = await page.$eval('[data-testid="relation-evidence-panel"]', (panel) => panel.textContent);
+      if (!evidence.includes("关系原文证据") || !evidence.includes("原文片段")) throw new Error("Relation evidence is not traceable to the original text");
+    });
     await clickByText(page, '[data-testid="graph-layer-switch"] button', "概念图");
     await page.waitForFunction(() => !document.body.innerText.includes("实体知识图谱"));
   });

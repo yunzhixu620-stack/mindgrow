@@ -34,6 +34,7 @@ import { NodeContextPanel } from "@/components/node/node-context-panel";
 import { graphEdgeFocusOpacity, graphNodeFocusOpacity, oneHopNodeIds } from "@/lib/graph-hover";
 import { COMMAND_ENTITY_FOCUS_EVENT } from "@/lib/command-search";
 import { buildLocalNodeContext } from "@/lib/node-context";
+import { searchEntityNetwork, selectEntityNetwork, type EntityNetworkMode } from "@/lib/entity-network";
 
 // ============================================================
 // Branch color palette
@@ -346,39 +347,24 @@ function entityForcePositions(entityIds: string[], relations: EntityGraph["relat
   return positions;
 }
 
-function strongEntityRelations(relations: EntityGraph["relations"], limit = 3) {
-  const degree = new Map<string, number>();
-  return [...relations]
-    .filter((relation) => relation.confidence >= 0.68 && relation.citations.length > 0)
-    .sort((left, right) => right.confidence - left.confidence)
-    .filter((relation) => {
-      const sourceDegree = degree.get(relation.sourceId) || 0;
-      const targetDegree = degree.get(relation.targetId) || 0;
-      if (sourceDegree >= limit || targetDegree >= limit) return false;
-      degree.set(relation.sourceId, sourceDegree + 1);
-      degree.set(relation.targetId, targetDegree + 1);
-      return true;
-    });
-}
-
 function buildEntityNetworkGraph(
   entityGraph: EntityGraph,
-  mode: "global" | "local" | "evidence",
+  mode: EntityNetworkMode,
   selectedEntityId: string | null,
   hoveredEntityId: string | null,
   hoveredRelationId: string | null,
+  entityTypes: string[],
+  showIsolated: boolean,
 ): { nodes: Node[]; edges: Edge[]; branchMap: Map<string, number> } {
   const selectedRawId = entityGraph.entities.find((entity) => entityViewNodeId(entity.id) === selectedEntityId)?.id || null;
-  let relations = mode === "evidence"
-    ? entityGraph.relations.filter((relation) => relation.citations.length > 0 && relation.confidence >= 0.55)
-    : strongEntityRelations(entityGraph.relations);
-  let entities = entityGraph.entities;
-  if (mode === "local" && selectedRawId) {
-    relations = entityGraph.relations.filter((relation) => relation.sourceId === selectedRawId || relation.targetId === selectedRawId);
-    const ids = new Set([selectedRawId]);
-    relations.forEach((relation) => { ids.add(relation.sourceId); ids.add(relation.targetId); });
-    entities = entityGraph.entities.filter((entity) => ids.has(entity.id));
-  }
+  const selectedGraph = selectEntityNetwork(entityGraph, {
+    mode,
+    selectedEntityId: selectedRawId,
+    entityTypes,
+    showIsolated,
+  });
+  let relations = selectedGraph.relations;
+  const entities = selectedGraph.entities;
   const visibleIds = new Set(entities.map((entity) => entity.id));
   relations = relations.filter((relation) => visibleIds.has(relation.sourceId) && visibleIds.has(relation.targetId));
   const positions = entityForcePositions(entities.map((entity) => entity.id), relations);
@@ -856,10 +842,13 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
   const [isMobile, setIsMobile] = useState(false);
   const [viewMode, setViewMode] = useState<MindMapViewMode>("all");
   const [graphLayer, setGraphLayer] = useState<"concept" | "entity">("concept");
-  const [entityViewMode, setEntityViewMode] = useState<"global" | "local" | "evidence">("global");
+  const [entityViewMode, setEntityViewMode] = useState<EntityNetworkMode>("global");
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
   const [hoveredEntityId, setHoveredEntityId] = useState<string | null>(null);
   const [hoveredRelationId, setHoveredRelationId] = useState<string | null>(null);
+  const [entitySearch, setEntitySearch] = useState("");
+  const [entityTypeFilters, setEntityTypeFilters] = useState<string[]>([]);
+  const [showIsolatedEntities, setShowIsolatedEntities] = useState(false);
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
   const [selectedRelationId, setSelectedRelationId] = useState<string | null>(null);
   const [autoShowNodeDetails, setAutoShowNodeDetails] = useState(true);
@@ -904,6 +893,9 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
 
   const officialEntityGraph = useMemo(() => formalEntityGraph(entityGraph), [entityGraph]);
   const entityDisplayGraph = useMemo(() => entityGraphToKnowledgeGraph(officialEntityGraph), [officialEntityGraph]);
+  const availableEntityTypes = useMemo(() => Array.from(new Set(officialEntityGraph.entities.map((entity) => entity.entityType)))
+    .sort((left, right) => (ENTITY_TYPE_LABELS[left] || left).localeCompare(ENTITY_TYPE_LABELS[right] || right, "zh-CN")), [officialEntityGraph.entities]);
+  const entitySearchResults = useMemo(() => searchEntityNetwork(officialEntityGraph.entities, entitySearch), [officialEntityGraph.entities, entitySearch]);
   const showingEntityGraph = graphLayer === "entity" && entityDisplayGraph.nodes.length > 0;
   const activeNodes = showingEntityGraph ? entityDisplayGraph.nodes : storeNodes;
   const activeEdges = showingEntityGraph ? entityDisplayGraph.edges : storeEdges;
@@ -930,6 +922,9 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
     setSelectedEntityId(null);
     setHoveredEntityId(null);
     setHoveredRelationId(null);
+    setEntitySearch("");
+    setEntityTypeFilters([]);
+    setShowIsolatedEntities(false);
   }, [currentMapId, entityDisplayGraph.nodes.length, graphLayer, storeNodes.length]);
 
   // Search handler
@@ -973,6 +968,22 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
       });
     }, 80);
   }, [isMobile]);
+
+  const focusEntityFromSearch = useCallback((entityId: string) => {
+    setGraphLayer("entity");
+    setSelectedRelationId(null);
+    setSelectedEntityId(entityViewNodeId(entityId));
+    setEntityViewMode("local");
+    setShowSearch(false);
+    refitGraph();
+  }, [refitGraph]);
+
+  const toggleEntityTypeFilter = useCallback((entityType: string) => {
+    setEntityTypeFilters((current) => current.includes(entityType)
+      ? current.filter((type) => type !== entityType)
+      : [...current, entityType]);
+    refitGraph();
+  }, [refitGraph]);
 
   const handleToggleBranch = useCallback((nodeId: string) => {
     const expanding = collapsedNodes.has(nodeId);
@@ -1038,14 +1049,22 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
 
   const baseGraph = useMemo(
     () => showingEntityGraph
-      ? buildEntityNetworkGraph(officialEntityGraph, entityViewMode, selectedEntityId, hoveredEntityId, hoveredRelationId)
+      ? buildEntityNetworkGraph(
+        officialEntityGraph,
+        entityViewMode,
+        selectedEntityId,
+        hoveredEntityId,
+        hoveredRelationId,
+        entityTypeFilters,
+        showIsolatedEntities,
+      )
       : buildGraph(
         displayHierarchy.nodes, displayHierarchy.edges, highlightedNodeId, searchResults, direction, sv,
         collapsedNodes, focusedNodeId,
         detailMode === "card" || (detailMode === "auto" && autoShowNodeDetails),
         isMobile, handleToggleBranch, handleFocusBranch,
       ),
-    [showingEntityGraph, officialEntityGraph, entityViewMode, selectedEntityId, hoveredEntityId, hoveredRelationId, displayHierarchy, highlightedNodeId, searchResults, direction, sv, collapsedNodes, focusedNodeId, detailMode, autoShowNodeDetails, isMobile, handleToggleBranch, handleFocusBranch],
+    [showingEntityGraph, officialEntityGraph, entityViewMode, selectedEntityId, hoveredEntityId, hoveredRelationId, entityTypeFilters, showIsolatedEntities, displayHierarchy, highlightedNodeId, searchResults, direction, sv, collapsedNodes, focusedNodeId, detailMode, autoShowNodeDetails, isMobile, handleToggleBranch, handleFocusBranch],
   );
 
   const graph = useMemo(() => {
@@ -1527,6 +1546,13 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
                 >{mode === "global" ? "全局强关系" : mode === "local" ? "一跳关系" : "证据链"}</button>
               ))}
             </div>}
+            {showingEntityGraph && (
+              <div className="rounded-xl border border-violet-400/15 bg-violet-400/5 px-3 py-2 text-[10px] text-violet-200" data-testid="entity-network-summary">
+                {entityViewMode === "global" ? "强关系" : entityViewMode === "local" ? "一跳关系" : "证据关系"} {graph.edges.length} 条 · 显示 {graph.nodes.length}/{officialEntityGraph.entities.length} 个实体
+                {!showIsolatedEntities && entityViewMode !== "local" ? " · 无强关系实体已隐藏" : ""}
+                {entityTypeFilters.length ? ` · 已筛选 ${entityTypeFilters.length} 种类型` : ""}
+              </div>
+            )}
             {!showingEntityGraph && <div className="flex gap-0 bg-[var(--card)] border border-[var(--border)] rounded-xl p-1">
               <button
                 onClick={showOutline}
@@ -1580,7 +1606,8 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
               className={`w-8 h-8 rounded-xl flex items-center justify-center transition-all cursor-pointer border ${
                 showSearch ? "bg-[var(--primary)] text-[var(--primary-foreground)] border-transparent" : "bg-[var(--card)] text-[var(--muted-foreground)] border-[var(--border)] hover:text-[var(--foreground)]"
               }`}
-              title="搜索 (Ctrl+F)"
+              title={showingEntityGraph ? "搜索与过滤实体" : "搜索 (Ctrl+F)"}
+              aria-label={showingEntityGraph ? "搜索与过滤实体" : "搜索节点"}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" /></svg>
             </button>
@@ -1658,15 +1685,76 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
       {/* Search bar */}
       {showSearch && (
         <div className="absolute top-12 left-3 z-50 animate-fade-in-up">
-          <div className="bg-[var(--card)] border border-[var(--border)] rounded-xl p-2 shadow-lg min-w-[240px]">
+          <div
+            className="min-w-[280px] max-w-[min(88vw,360px)] rounded-xl border border-[var(--border)] bg-[var(--card)] p-2 shadow-lg"
+            data-testid={showingEntityGraph ? "entity-network-tools" : undefined}
+          >
             <input
-              value={localSearch}
-              onChange={(e) => handleSearch(e.target.value)}
-              placeholder="搜索节点..."
+              value={showingEntityGraph ? entitySearch : localSearch}
+              onChange={(event) => showingEntityGraph ? setEntitySearch(event.target.value) : handleSearch(event.target.value)}
+              placeholder={showingEntityGraph ? "搜索实体、别名或解释..." : "搜索节点..."}
+              aria-label={showingEntityGraph ? "搜索实体" : "搜索节点"}
+              data-testid={showingEntityGraph ? "entity-network-search" : undefined}
               className="w-full bg-[var(--background)] rounded-lg px-3 py-2 text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] outline-none border border-[var(--border)] focus:border-[var(--primary)]"
               autoFocus
             />
-            {localSearch && (
+            {showingEntityGraph && entitySearch.trim() && (
+              <div className="mt-2 space-y-1" data-testid="entity-network-search-results">
+                {entitySearchResults.map((entity) => (
+                  <button
+                    key={entity.id}
+                    type="button"
+                    onClick={() => focusEntityFromSearch(entity.id)}
+                    className="flex w-full items-start justify-between gap-3 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-violet-400/10"
+                    data-testid="entity-network-search-result"
+                  >
+                    <span className="min-w-0">
+                      <span className="block truncate text-xs font-semibold text-[var(--foreground)]">{entity.canonicalName}</span>
+                      <span className="mt-0.5 block line-clamp-1 text-[10px] text-[var(--muted-foreground)]">{entity.description}</span>
+                    </span>
+                    <span className="shrink-0 rounded-full border border-violet-400/20 px-2 py-0.5 text-[9px] text-violet-300">{ENTITY_TYPE_LABELS[entity.entityType] || entity.entityType}</span>
+                  </button>
+                ))}
+                {entitySearchResults.length === 0 && <div className="px-2 py-2 text-xs text-[var(--muted-foreground)]">没有匹配实体</div>}
+              </div>
+            )}
+            {showingEntityGraph && (
+              <div className="mt-2 border-t border-[var(--border)] pt-2">
+                <div className="mb-1.5 flex items-center justify-between gap-3">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">实体类型</span>
+                  {entityTypeFilters.length > 0 && (
+                    <button type="button" onClick={() => { setEntityTypeFilters([]); refitGraph(); }} className="text-[10px] text-violet-300 hover:text-violet-200">清除筛选</button>
+                  )}
+                </div>
+                <div className="flex max-h-24 flex-wrap gap-1 overflow-y-auto" data-testid="entity-network-type-filters">
+                  {availableEntityTypes.map((entityType) => {
+                    const active = entityTypeFilters.includes(entityType);
+                    const count = officialEntityGraph.entities.filter((entity) => entity.entityType === entityType).length;
+                    return (
+                      <button
+                        key={entityType}
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() => toggleEntityTypeFilter(entityType)}
+                        className={`rounded-full border px-2 py-1 text-[10px] transition-colors ${active ? "border-violet-300 bg-violet-400 text-black" : "border-[var(--border)] text-[var(--muted-foreground)] hover:border-violet-400/50 hover:text-[var(--foreground)]"}`}
+                        data-entity-type={entityType}
+                      >{ENTITY_TYPE_LABELS[entityType] || entityType} {count}</button>
+                    );
+                  })}
+                </div>
+                <button
+                  type="button"
+                  aria-pressed={showIsolatedEntities}
+                  onClick={() => { setShowIsolatedEntities((current) => !current); refitGraph(); }}
+                  className={`mt-2 flex w-full items-center justify-between rounded-lg border px-2.5 py-2 text-left text-[11px] transition-colors ${showIsolatedEntities ? "border-violet-300/60 bg-violet-400/10 text-violet-200" : "border-[var(--border)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"}`}
+                  data-testid="entity-network-show-isolated"
+                >
+                  <span>显示无强关系实体</span>
+                  <span>{showIsolatedEntities ? "已开启" : "默认隐藏"}</span>
+                </button>
+              </div>
+            )}
+            {!showingEntityGraph && localSearch && (
               <div className="mt-1.5 text-xs text-[var(--muted-foreground)]">
                 {searchResults.length > 0 ? `找到 ${searchResults.length} 个匹配` : "未找到匹配"}
               </div>
@@ -1771,7 +1859,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
         />
       )}
 
-      {hiddenNodeCount > 0 && (
+      {!showingEntityGraph && hiddenNodeCount > 0 && (
         <div className="pointer-events-none absolute bottom-4 left-3 z-40 rounded-xl border border-[var(--border)] bg-[var(--card)]/95 px-3 py-2 text-[11px] text-[var(--muted-foreground)] shadow-lg backdrop-blur">
           {isOverviewCollapsed
             ? `概览模式 · ${activeNodes.length} 个原节点完整保留 · 点击 ＋N 仅展开下一层`
@@ -1820,6 +1908,18 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
             ))}
           </div>
         </aside>
+      )}
+
+      {showingEntityGraph && graph.nodes.length === 0 && (
+        <div className="absolute left-1/2 top-1/2 z-30 w-[min(88%,360px)] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-violet-400/25 bg-[var(--card)]/95 p-5 text-center shadow-2xl backdrop-blur" data-testid="entity-network-empty">
+          <div className="text-sm font-semibold text-[var(--foreground)]">当前筛选下没有可显示的强关系</div>
+          <p className="mt-2 text-[11px] leading-5 text-[var(--muted-foreground)]">强关系必须同时满足置信度和原文证据。你可以清除类型筛选，或主动查看无强关系实体。</p>
+          <button
+            type="button"
+            onClick={() => { setEntityTypeFilters([]); setShowIsolatedEntities(true); refitGraph(); }}
+            className="mt-3 rounded-lg bg-violet-400 px-3 py-2 text-xs font-semibold text-black hover:bg-violet-300"
+          >显示全部有证据实体</button>
+        </div>
       )}
 
       <ReactFlow
