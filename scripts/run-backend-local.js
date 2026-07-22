@@ -17,6 +17,7 @@ const allowedHealthTables = new Set([
   "graph_entities",
   "graph_relations",
   "graph_evidence",
+  "node_revisions",
 ]);
 
 let backendProcess;
@@ -50,6 +51,7 @@ function startSupabaseStub() {
         graph_evidence: [],
         source_documents: [],
         node_citations: [],
+        node_revisions: [],
         document_chunks: [],
       };
 

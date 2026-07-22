@@ -53,7 +53,8 @@ function expectStatus(result, status) {
     && health.body?.authRequired === true && health.body?.allowAnonLocal === false
     && typeof health.body?.nodeEnv === "string" && health.body?.checks?.authConfiguration === "ok"
     && health.body?.checks?.modelConfigured === true && health.body?.checks?.knowledgeStore === "ok"
-    && health.body?.checks?.hybridRetrieval === "ready" && health.body?.checks?.entityGraph === "ready";
+    && health.body?.checks?.hybridRetrieval === "ready" && health.body?.checks?.entityGraph === "ready"
+    && health.body?.checks?.nodeTimeline === "ready";
   if (!health.ok) {
     health.expectation = "Expected healthy authenticated API " + expectedApiVersion + " with knowledge, hybrid retrieval, and entity graph ready";
     console.error("FAIL Dependency health gate: received " + (health.body?.version || "unknown"));
@@ -79,6 +80,11 @@ function expectStatus(result, status) {
       || !Array.isArray(bootstrap.body?.defaultMap?.nodes) || !Array.isArray(bootstrap.body?.defaultMap?.edges)
       || !Array.isArray(bootstrap.body?.defaultMap?.entityGraph?.entities)
       || bootstrap.body.defaultMap.map.id !== bootstrap.body.workspace?.defaultMapId) bootstrap.ok = false;
+    if (bootstrap.body?.defaultMap?.nodes?.[0]?.id) {
+      const context = await request("Load node backlinks and timeline", `/api/knowledge?action=nodeContext&nodeId=${encodeURIComponent(bootstrap.body.defaultMap.nodes[0].id)}`);
+      if (!context.body?.node?.id || !Array.isArray(context.body?.sources)
+        || !Array.isArray(context.body?.backlinks) || !Array.isArray(context.body?.timeline)) context.ok = false;
+    }
 
     if (!bootstrapOnly) {
       const maps = await request("List tenant maps", "/api/knowledge?action=maps");

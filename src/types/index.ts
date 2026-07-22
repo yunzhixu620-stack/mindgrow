@@ -134,6 +134,30 @@ export interface Citation {
   sourceType?: "url" | "pdf" | "text" | "meeting";
 }
 
+export interface NodeBacklink {
+  node: KnowledgeNode;
+  kinds: ("incoming_edge" | "shared_source")[];
+  relation: KnowledgeEdge["relation"] | null;
+  relationCreatedAt: string | null;
+  sharedCitations: Citation[];
+}
+
+export interface NodeRevision {
+  id: string;
+  eventType: "created" | "updated";
+  content: string;
+  desc: string;
+  changedFields: string[];
+  createdAt: string;
+}
+
+export interface NodeContext {
+  node: KnowledgeNode;
+  sources: Citation[];
+  backlinks: NodeBacklink[];
+  timeline: NodeRevision[];
+}
+
 export interface CitationClaimAuditRow {
   index: number;
   id: string;
