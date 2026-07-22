@@ -10,6 +10,7 @@ import { useMindGrowStore, type AppMode } from "@/store/mindgrow-store";
 import { EntityDetailPanel } from "@/components/entity/entity-detail-panel";
 import type { Citation } from "@/types";
 import { graphEdgeFocusOpacity, graphNodeFocusOpacity, oneHopNodeIds } from "@/lib/graph-hover";
+import { THEME_CHANGE_EVENT } from "@/lib/theme";
 import {
   fetchUniverseLibraries,
   universeFallbackWarning,
@@ -344,6 +345,13 @@ export function UniverseView() {
   const [dragging, setDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [scope, setScope] = useState<"all" | AppMode>(currentMode);
+  const [themeRevision, setThemeRevision] = useState(0);
+
+  useEffect(() => {
+    const handleThemeChange = () => setThemeRevision((value) => value + 1);
+    window.addEventListener(THEME_CHANGE_EVENT, handleThemeChange);
+    return () => window.removeEventListener(THEME_CHANGE_EVENT, handleThemeChange);
+  }, []);
 
   useEffect(() => {
     const requested = new URLSearchParams(window.location.search).get("mode");
@@ -435,8 +443,25 @@ export function UniverseView() {
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    canvas.dataset.canvasThemeRevision = String(themeRevision);
     const context = canvas.getContext("2d");
     if (!context) return;
+    const computedStyle = getComputedStyle(canvas);
+    const themeColor = (name: string, fallback: string) => computedStyle.getPropertyValue(name).trim() || fallback;
+    const canvasColors = {
+      background: themeColor("--bg-base", "#0a0a0f"),
+      star: themeColor("--canvas-star", "rgba(255,255,255,0.12)"),
+      edge: themeColor("--canvas-edge-muted", "rgba(255,255,255,0.075)"),
+      relation: themeColor("--canvas-relation", "rgba(244,114,182,0.34)"),
+      crossLibrary: themeColor("--canvas-cross-library", "rgba(250,204,21,0.58)"),
+      edgeHover: themeColor("--canvas-edge-hover", "rgba(221,214,254,0.95)"),
+      nodeStroke: themeColor("--canvas-node-stroke", "rgba(255,255,255,0.69)"),
+      label: themeColor("--canvas-label", "#d4d4d8"),
+      labelStrong: themeColor("--canvas-label-strong", "#fafafa"),
+      labelMuted: themeColor("--canvas-label-muted", "#a1a1aa"),
+      labelAccent: themeColor("--canvas-label-accent", "#ddd6fe"),
+      crossLabel: themeColor("--canvas-cross-label", "#fde68a"),
+    };
     const ratio = window.devicePixelRatio || 1;
     const rect = canvas.getBoundingClientRect();
     const pixelWidth = Math.max(1, Math.round(rect.width * ratio));
@@ -446,14 +471,16 @@ export function UniverseView() {
       canvas.height = pixelHeight;
     }
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
-    context.fillStyle = "#0a0a0f";
+    context.fillStyle = canvasColors.background;
     context.fillRect(0, 0, rect.width, rect.height);
     for (let index = 0; index < 120; index += 1) {
       const x = (index * 137.5) % Math.max(1, rect.width);
       const y = (index * 73.3) % Math.max(1, rect.height);
-      context.fillStyle = `rgba(255,255,255,${0.08 + (index % 5) * 0.025})`;
+      context.globalAlpha = 0.65 + (index % 5) * 0.08;
+      context.fillStyle = canvasColors.star;
       context.fillRect(x, y, 1, 1);
     }
+    context.globalAlpha = 1;
     const centerX = rect.width / 2 + offset.x;
     const centerY = rect.height / 2 + offset.y;
     const nodeById = new Map(positionedNodes.map((node) => [node.id, node]));
@@ -475,14 +502,14 @@ export function UniverseView() {
       context.moveTo(sourceX, sourceY);
       context.lineTo(targetX, targetY);
       context.setLineDash(link.kind === "cross-library" ? [7, 5] : link.kind === "relation" ? [4, 4] : []);
-      context.strokeStyle = isHoveredLink ? "rgba(221,214,254,0.95)" : link.kind === "cross-library" ? "rgba(250,204,21,0.5)" : link.kind === "relation" ? "rgba(244,114,182,0.28)" : "rgba(255,255,255,0.075)";
+      context.strokeStyle = isHoveredLink ? canvasColors.edgeHover : link.kind === "cross-library" ? canvasColors.crossLibrary : link.kind === "relation" ? canvasColors.relation : canvasColors.edge;
       context.lineWidth = isHoveredLink ? 2.4 : link.kind === "cross-library" ? 1.4 : link.kind === "relation" ? 1 : 0.65;
       context.stroke();
       context.setLineDash([]);
       if (isHoveredLink) {
         context.font = "11px sans-serif";
         context.textAlign = "center";
-        context.fillStyle = link.kind === "cross-library" ? "#fde68a" : "#ddd6fe";
+        context.fillStyle = link.kind === "cross-library" ? canvasColors.crossLabel : canvasColors.labelAccent;
         const linkLabel = link.label.length > 34 ? `${link.label.slice(0, 33)}…` : link.label;
         context.fillText(linkLabel, (sourceX + targetX) / 2, (sourceY + targetY) / 2 - 7);
       }
@@ -508,24 +535,24 @@ export function UniverseView() {
       context.arc(x, y, radius, 0, Math.PI * 2);
       context.fillStyle = `${node.color}${node.refKind === "library" ? "e8" : isHovered ? "ff" : "88"}`;
       context.fill();
-      context.strokeStyle = node.refKind === "library" ? "#ffffffb0" : node.color;
+      context.strokeStyle = node.refKind === "library" ? canvasColors.nodeStroke : node.color;
       context.lineWidth = node.refKind === "library" ? 1.6 : isHovered ? 1.5 : 0.5;
       context.stroke();
       if (node.refKind === "library" || isHovered || (node.type === "topic" && zoom >= 0.75)) {
         context.font = node.refKind === "library" ? "600 13px sans-serif" : isHovered ? "12px sans-serif" : "10px sans-serif";
-        context.fillStyle = node.refKind === "library" ? "#fafafa" : "#d4d4d8";
+        context.fillStyle = node.refKind === "library" ? canvasColors.labelStrong : canvasColors.label;
         context.textAlign = "center";
         const label = node.label.length > 28 ? `${node.label.slice(0, 27)}…` : node.label;
         context.fillText(label, x, y + radius + 15);
         if (isHovered && node.refKind !== "library") {
           context.font = "10px sans-serif";
-          context.fillStyle = "#a1a1aa";
+          context.fillStyle = canvasColors.labelMuted;
           context.fillText(node.mapName, x, y + radius + 29);
         }
       }
       context.restore();
     });
-  }, [hoveredLinkId, hoveredNode, offset, positionedNodes, universeData.links, zoom]);
+  }, [hoveredLinkId, hoveredNode, offset, positionedNodes, themeRevision, universeData.links, zoom]);
 
   useEffect(() => {
     if (activeFocusNodeId) focusNodeRef.current = activeFocusNodeId;
@@ -663,7 +690,7 @@ export function UniverseView() {
 
   return (
     <div
-      className="relative h-full w-full overflow-hidden bg-[#0a0a0f]"
+      className="relative h-full w-full overflow-hidden bg-[var(--bg-base)]"
       data-testid="universe-view"
       data-universe-mode={scope}
       data-universe-library-ids={visibleLibraries.map((library) => library.map.id).sort().join(",")}
@@ -690,33 +717,34 @@ export function UniverseView() {
         aria-label={`${modeConfig.label}知识宇宙，可拖动和缩放`}
         data-focus-node-id={activeFocusNodeId || ""}
         data-focus-neighbor-count={activeFocusNeighbors?.size || 0}
+        data-canvas-theme-revision={themeRevision}
       />
 
-      <div className="absolute left-4 top-16 z-30 max-w-[min(620px,calc(100%-2rem))] rounded-2xl border border-white/10 bg-black/55 p-4 backdrop-blur-xl">
-        <div className="text-sm font-semibold text-white">🌌 {modeConfig.label}宇宙</div>
-        <div className="mt-1 text-xs leading-5 text-zinc-400">{visibleLibraries.length} 个知识库 · {totalNodes} 个节点 · <span data-testid="universe-cross-library-count" data-count={universeData.crossLibraryCount}>{universeData.crossLibraryCount}</span> 条跨库关系</div>
-        <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-zinc-400">
-          <span><i className="mr-1 inline-block h-px w-4 bg-white/25 align-middle" />库内层级</span>
+      <div className="absolute left-4 top-16 z-30 max-w-[min(620px,calc(100%-2rem))] rounded-2xl border border-[var(--border-default)] bg-[var(--tooltip-bg)] p-4 shadow-[var(--shadow-md)] backdrop-blur-xl">
+        <div className="text-sm font-semibold text-[var(--text-primary)]">🌌 {modeConfig.label}宇宙</div>
+        <div className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">{visibleLibraries.length} 个知识库 · {totalNodes} 个节点 · <span data-testid="universe-cross-library-count" data-count={universeData.crossLibraryCount}>{universeData.crossLibraryCount}</span> 条跨库关系</div>
+        <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-[var(--text-secondary)]">
+          <span><i className="mr-1 inline-block h-px w-4 bg-[var(--canvas-edge)] align-middle" />库内层级</span>
           <span><i className="mr-1 inline-block h-px w-4 border-t border-dashed border-pink-300/70 align-middle" />概念关联</span>
           <span><i className="mr-1 inline-block h-px w-4 border-t border-dashed border-yellow-300/80 align-middle" />跨库生长关系</span>
         </div>
-        <div className="mt-2 text-[10px] text-zinc-500">悬停节点突出一跳关系；悬停连线查看证据；点击实体保留一跳焦点并查看解释。</div>
+        <div className="mt-2 text-[10px] text-[var(--text-tertiary)]">悬停节点突出一跳关系；悬停连线查看证据；点击实体保留一跳焦点并查看解释。</div>
         <div className="mt-3 flex flex-wrap gap-1" data-testid="universe-scope-switch">
-          {(["all", "knowledge", "article", "meeting"] as const).map((item) => <button key={item} type="button" onClick={() => setScope(item)} className={`rounded-lg px-2.5 py-1.5 text-[10px] font-semibold ${scope === item ? "bg-violet-400 text-black" : "border border-white/10 text-zinc-300 hover:bg-white/10"}`}>{item === "all" ? "全部知识" : item === "knowledge" ? "知识碎片" : item === "article" ? "文章" : "会议"}</button>)}
+          {(["all", "knowledge", "article", "meeting"] as const).map((item) => <button key={item} type="button" onClick={() => setScope(item)} className={`rounded-lg px-2.5 py-1.5 text-[10px] font-semibold ${scope === item ? "bg-violet-600 text-white" : "border border-[var(--border-default)] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"}`}>{item === "all" ? "全部知识" : item === "knowledge" ? "知识碎片" : item === "article" ? "文章" : "会议"}</button>)}
         </div>
       </div>
 
-      <div className="absolute right-4 top-4 z-40 flex items-center gap-1 rounded-xl border border-white/10 bg-black/60 p-1 shadow-xl backdrop-blur">
-        <button type="button" onClick={() => changeZoom(zoom / 1.18)} aria-label="缩小知识宇宙" title="缩小" className="flex h-8 w-8 items-center justify-center rounded-lg text-base text-zinc-300 hover:bg-white/10">−</button>
-        <button type="button" onClick={() => { setZoom(0.82); setOffset({ x: 0, y: 0 }); }} aria-label="重置知识宇宙视图" title="适应画布" className="min-w-14 rounded-lg px-2 py-2 text-[10px] font-medium text-zinc-300 hover:bg-white/10">{Math.round(zoom * 100)}%</button>
-        <button type="button" onClick={() => changeZoom(zoom * 1.18)} aria-label="放大知识宇宙" title="放大" className="flex h-8 w-8 items-center justify-center rounded-lg text-base text-zinc-300 hover:bg-white/10">＋</button>
+      <div className="absolute right-4 top-4 z-40 flex items-center gap-1 rounded-xl border border-[var(--border-default)] bg-[var(--tooltip-bg)] p-1 shadow-xl backdrop-blur">
+        <button type="button" onClick={() => changeZoom(zoom / 1.18)} aria-label="缩小知识宇宙" title="缩小" className="flex h-8 w-8 items-center justify-center rounded-lg text-base text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]">−</button>
+        <button type="button" onClick={() => { setZoom(0.82); setOffset({ x: 0, y: 0 }); }} aria-label="重置知识宇宙视图" title="适应画布" className="min-w-14 rounded-lg px-2 py-2 text-[10px] font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]">{Math.round(zoom * 100)}%</button>
+        <button type="button" onClick={() => changeZoom(zoom * 1.18)} aria-label="放大知识宇宙" title="放大" className="flex h-8 w-8 items-center justify-center rounded-lg text-base text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]">＋</button>
       </div>
 
       {hoveredLink && (
-        <div className="pointer-events-none absolute bottom-4 left-1/2 z-50 w-[min(420px,calc(100%-2rem))] -translate-x-1/2 rounded-xl border border-violet-300/20 bg-black/80 px-4 py-3 text-xs text-zinc-200 shadow-2xl backdrop-blur" data-testid="universe-link-hover" data-link-id={hoveredLink.id}>
-          <div className="font-semibold text-violet-200">{hoveredLink.label}</div>
-          {hoveredLink.explanation && <p className="mt-1 line-clamp-2 text-[10px] leading-5 text-zinc-400">{hoveredLink.explanation}</p>}
-          {(hoveredLink.citations || []).length > 0 && <div className="mt-1 text-[9px] text-zinc-500">{hoveredLink.citations?.length} 条可核验引用</div>}
+        <div className="pointer-events-none absolute bottom-4 left-1/2 z-50 w-[min(420px,calc(100%-2rem))] -translate-x-1/2 rounded-xl border border-violet-400/30 bg-[var(--tooltip-bg)] px-4 py-3 text-xs text-[var(--text-primary)] shadow-2xl backdrop-blur" data-testid="universe-link-hover" data-link-id={hoveredLink.id}>
+          <div className="font-semibold text-violet-500">{hoveredLink.label}</div>
+          {hoveredLink.explanation && <p className="mt-1 line-clamp-2 text-[10px] leading-5 text-[var(--text-secondary)]">{hoveredLink.explanation}</p>}
+          {(hoveredLink.citations || []).length > 0 && <div className="mt-1 text-[9px] text-[var(--text-tertiary)]">{hoveredLink.citations?.length} 条可核验引用</div>}
         </div>
       )}
 
@@ -739,12 +767,12 @@ export function UniverseView() {
       </div>}
 
       {(loading || error || (!loading && visibleLibraries.length === 0)) && (
-        <div className="absolute inset-0 z-20 flex items-center justify-center bg-[#0a0a0f]/80 px-6">
-          <div className="max-w-sm rounded-2xl border border-white/10 bg-zinc-950/90 p-6 text-center shadow-2xl">
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-[var(--overlay-bg)] px-6">
+          <div className="max-w-sm rounded-2xl border border-[var(--border-default)] bg-[var(--tooltip-bg)] p-6 text-center shadow-2xl">
             <div className="text-4xl">{error ? "⚠️" : loading ? "🪐" : "🌱"}</div>
-            <h2 className="mt-4 text-base font-semibold text-white">{error ? "知识宇宙加载失败" : loading ? `正在连接${modeConfig.label}知识库…` : `${modeConfig.label}宇宙还是一片空地`}</h2>
-            <p className="mt-2 text-xs leading-6 text-zinc-400">{error || (loading ? "正在汇总库内关系与跨库共享概念；慢请求会自动重试，不会无限等待。" : "先创建知识库并保存内容，新增节点会在这里继续生长。")}</p>
-            {error && <button type="button" onClick={() => setReloadToken((value) => value + 1)} className="mt-4 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-xs font-semibold text-white hover:bg-white/10">重新连接</button>}
+            <h2 className="mt-4 text-base font-semibold text-[var(--text-primary)]">{error ? "知识宇宙加载失败" : loading ? `正在连接${modeConfig.label}知识库…` : `${modeConfig.label}宇宙还是一片空地`}</h2>
+            <p className="mt-2 text-xs leading-6 text-[var(--text-secondary)]">{error || (loading ? "正在汇总库内关系与跨库共享概念；慢请求会自动重试，不会无限等待。" : "先创建知识库并保存内容，新增节点会在这里继续生长。")}</p>
+            {error && <button type="button" onClick={() => setReloadToken((value) => value + 1)} className="mt-4 rounded-lg border border-[var(--border-default)] bg-[var(--bg-elevated)] px-3 py-2 text-xs font-semibold text-[var(--text-primary)] hover:bg-[var(--bg-hover)]">重新连接</button>}
           </div>
         </div>
       )}

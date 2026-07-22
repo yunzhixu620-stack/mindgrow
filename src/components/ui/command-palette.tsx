@@ -129,7 +129,7 @@ export function CommandPalette() {
                       onClick={() => selectResult(result)}
                       className={`flex w-full items-start gap-3 rounded-xl px-3 py-2.5 text-left ${active ? "bg-[var(--primary-subtle)]" : "hover:bg-[var(--bg-hover)]"}`}
                     >
-                      <span className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg text-xs ${active ? "bg-[var(--primary)] text-black" : "bg-[var(--bg-elevated)] text-[var(--text-muted)]"}`}>{icon}</span>
+                      <span className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg text-xs ${active ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "bg-[var(--bg-elevated)] text-[var(--text-muted)]"}`}>{icon}</span>
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-xs font-medium text-[var(--foreground)]">{result.title}</span>
                         <span className="mt-0.5 block truncate text-[10px] text-[var(--text-muted)]">{result.subtitle}</span>

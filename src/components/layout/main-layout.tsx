@@ -10,6 +10,7 @@ import { warmupHealth } from "@/lib/warmup";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
 import { CommandPalette } from "@/components/ui/command-palette";
 import { SyncIndicator } from "@/components/ui/sync-indicator";
+import { ThemeToggle } from "@/components/ui/theme-toggle";
 
 export function MainLayout({ children }: { children: React.ReactNode }) {
   useEffect(() => {
@@ -43,7 +44,7 @@ function AuthenticatedLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden">
-      {isMobile ? <div className="flex shrink-0 items-center gap-2 border-b border-[var(--border-subtle)] bg-[var(--bg-surface)] pr-2" data-testid="mobile-breadcrumb-bar"><div className="min-w-0 flex-1"><Breadcrumb compact /></div><SyncIndicator compact /></div> : <Header />}
+      {isMobile ? <div className="flex shrink-0 items-center gap-2 border-b border-[var(--border-subtle)] bg-[var(--bg-surface)] pr-2" data-testid="mobile-breadcrumb-bar"><div className="min-w-0 flex-1"><Breadcrumb compact /></div><SyncIndicator compact /><ThemeToggle compact /></div> : <Header />}
       <div className="flex-1 overflow-hidden">{children}</div>
       {pathname === "/" && <CommandPalette />}
     </div>

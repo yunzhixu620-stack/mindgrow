@@ -488,7 +488,7 @@ export function ArticleParser() {
         <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 text-[10px] text-[var(--text-muted)]"><span className="h-px bg-[var(--border)]" />或粘贴正文<span className="h-px bg-[var(--border)]" /></div>
         <textarea value={content} onChange={(event) => { setContent(event.target.value); setPdf(null); }} rows={9} placeholder="粘贴文章正文。PDF 文字也会显示在这里，便于解析前核对。" className="w-full resize-y rounded-xl border border-[var(--border)] bg-[var(--background)] p-3 text-sm leading-relaxed outline-none focus:border-[var(--primary)]" />
         {notice && <div role="status" className="rounded-lg bg-[var(--bg-elevated)] px-3 py-2 text-xs text-[var(--text-secondary)]">{notice}</div>}
-        <button onClick={() => void parse()} disabled={busy || pdfBusy || (!url.trim() && content.trim().length < 50)} className="w-full rounded-xl bg-[var(--primary)] py-2.5 text-sm font-semibold text-black disabled:opacity-40">{busy ? "正在阅读、定位引用并核对原文…" : "解析文章"}</button>
+        <button onClick={() => void parse()} disabled={busy || pdfBusy || (!url.trim() && content.trim().length < 50)} className="w-full rounded-xl bg-[var(--primary)] py-2.5 text-sm font-semibold text-[var(--primary-foreground)] disabled:opacity-40">{busy ? "正在阅读、定位引用并核对原文…" : "解析文章"}</button>
       </div>
 
       {result && <div className="mt-5 space-y-3 animate-fade-in">
@@ -529,7 +529,7 @@ export function ArticleParser() {
           })}
         </div>
         {qaMessages.length > 0 && <div className="mb-3 max-h-[420px] space-y-3 overflow-y-auto rounded-xl bg-[var(--background)] p-3">
-          {qaMessages.map((message) => <div key={message.id} className={message.role === "user" ? "ml-8 rounded-xl bg-[var(--primary)] px-3 py-2 text-sm text-black" : "mr-0 rounded-xl border border-white/5 bg-[var(--bg-elevated)] px-3 py-2 text-sm sm:mr-8"}>
+          {qaMessages.map((message) => <div key={message.id} className={message.role === "user" ? "ml-8 rounded-xl bg-[var(--primary)] px-3 py-2 text-sm text-[var(--primary-foreground)]" : "mr-0 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2 text-sm sm:mr-8"}>
             {message.role === "assistant" && message.task && <ArticleTaskHeader task={message.task} />}
             {message.role === "assistant" ? <StructuredAnswer content={message.content} task={message.task} /> : <div className="whitespace-pre-wrap leading-relaxed">{message.content}</div>}
             {message.role === "assistant" && message.retrievalTrace && <ArticleRetrievalTrace trace={message.retrievalTrace} />}
@@ -548,7 +548,7 @@ export function ArticleParser() {
         </div>}
         <div className="flex items-end gap-2 rounded-xl border border-[var(--border)] bg-[var(--background)] p-2 focus-within:border-[var(--primary)]">
           <textarea value={qaInput} onChange={(event) => setQaInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void askArticleLibrary(); } }} rows={2} aria-label="与文章知识库对话" placeholder="例如：翻译这篇论文的摘要；比较三篇论文的检索方法" className="min-h-[44px] flex-1 resize-none bg-transparent px-1 text-sm outline-none" />
-          <button type="button" onClick={() => void askArticleLibrary()} disabled={!qaInput.trim() || qaBusy} className="rounded-lg bg-[var(--primary)] px-3 py-2 text-xs font-semibold text-black disabled:opacity-40">{qaBusy ? "处理中" : "发送"}</button>
+          <button type="button" onClick={() => void askArticleLibrary()} disabled={!qaInput.trim() || qaBusy} className="rounded-lg bg-[var(--primary)] px-3 py-2 text-xs font-semibold text-[var(--primary-foreground)] disabled:opacity-40">{qaBusy ? "处理中" : "发送"}</button>
         </div>
         <p className="mt-2 text-[10px] text-[var(--text-muted)]">长论文全文翻译会先请你指定摘要、章节或页码，避免单次输出截断；原文引用保持原语言。</p>
       </div>
@@ -588,7 +588,7 @@ function ArticleWikiNavigator({ mindMap, showCitations }: { mindMap: AIMindMap; 
 function AudioOverviewCard({ audio, speech, showCitations }: { audio: AudioOverview; speech: ReturnType<typeof useScriptSpeech>; showCitations: (indexes?: number[]) => React.ReactNode }) {
   return <ArticleBlock title={`音频概览 · ${audio.title}`}>
     <p className="mb-2 text-[var(--text-tertiary)]">{audio.intro}</p>
-    {audio.audioUrl ? <audio className="mb-3 w-full" controls preload="none" src={audio.audioUrl}>你的浏览器不支持音频播放。</audio> : <div className="mb-3 flex gap-2"><button type="button" onClick={speech.toggle} disabled={!speech.supported} className="rounded-lg bg-[var(--primary)] px-3 py-1.5 text-xs font-semibold text-black disabled:opacity-40">{speech.state === "playing" ? "暂停" : speech.state === "paused" ? "继续" : "播放"}</button><button type="button" onClick={speech.stop} className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs">停止</button></div>}
+    {audio.audioUrl ? <audio className="mb-3 w-full" controls preload="none" src={audio.audioUrl}>你的浏览器不支持音频播放。</audio> : <div className="mb-3 flex gap-2"><button type="button" onClick={speech.toggle} disabled={!speech.supported} className="rounded-lg bg-[var(--primary)] px-3 py-1.5 text-xs font-semibold text-[var(--primary-foreground)] disabled:opacity-40">{speech.state === "playing" ? "暂停" : speech.state === "paused" ? "继续" : "播放"}</button><button type="button" onClick={speech.stop} className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs">停止</button></div>}
     <div className="max-h-48 space-y-2 overflow-y-auto pr-1">{audio.segments.map((segment, index) => <button type="button" key={index} onClick={() => speech.playFrom(index)} className={`block w-full rounded-lg p-2 text-left ${speech.currentIndex === index ? "bg-[var(--primary-subtle)] ring-1 ring-[var(--primary)]" : "bg-[var(--bg-elevated)]"}`}><strong>{segment.speaker}：</strong>{segment.text}{showCitations(segment.citationIndexes)}</button>)}</div>
   </ArticleBlock>;
 }

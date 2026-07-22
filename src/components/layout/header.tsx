@@ -7,6 +7,7 @@ import { WorkspaceMenu } from "@/components/auth/workspace-menu";
 import { MODE_LIBRARY_CONFIG } from "@/lib/mode-libraries";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
 import { SyncIndicator } from "@/components/ui/sync-indicator";
+import { ThemeToggle } from "@/components/ui/theme-toggle";
 
 const MODES: { key: AppMode; label: string; emoji: string; tooltip: string }[] = [
   { key: "meeting", label: "会议助手", emoji: "🎯", tooltip: "整理会议记录，提取决议和行动项" },
@@ -76,7 +77,7 @@ export function Header() {
                 title={mode.tooltip}
                 className="relative flex items-center gap-1.5 px-3 py-1 rounded-[var(--radius-sm)] text-xs font-medium border-none bg-transparent cursor-pointer whitespace-nowrap group"
                 style={{
-                  color: currentMode === mode.key ? "#fff" : "var(--text-tertiary)",
+                  color: currentMode === mode.key ? "var(--primary-foreground)" : "var(--text-tertiary)",
                   background: currentMode === mode.key ? "var(--primary)" : "transparent",
                   boxShadow: currentMode === mode.key ? "0 1px 3px rgba(34,211,167,0.3)" : "none",
                 }}
@@ -105,6 +106,7 @@ export function Header() {
       {/* Right: Actions */}
       <div className="flex items-center gap-1">
         <SyncIndicator />
+        <ThemeToggle />
         <WorkspaceMenu />
         {/* Layout direction only belongs to the knowledge-map workspace. */}
         {!isMobile && currentMode === "knowledge" && (

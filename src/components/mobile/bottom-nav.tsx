@@ -45,7 +45,7 @@ export function MobileBottomNav({
         onClick={onCreate}
         aria-label={`在${MODE_LIBRARY_CONFIG[currentMode].label}中新建知识库`}
         data-testid="mobile-create-library"
-        className="absolute left-1/2 top-0 flex h-14 w-14 -translate-x-1/2 -translate-y-1/3 flex-col items-center justify-center rounded-full border-4 border-[var(--card)] bg-[var(--primary)] text-black shadow-[0_8px_24px_rgba(34,211,167,0.3)] transition-transform hover:scale-105 active:scale-95"
+        className="absolute left-1/2 top-0 flex h-14 w-14 -translate-x-1/2 -translate-y-1/3 flex-col items-center justify-center rounded-full border-4 border-[var(--card)] bg-[var(--primary)] text-[var(--primary-foreground)] shadow-[0_8px_24px_rgba(34,211,167,0.3)] transition-transform hover:scale-105 active:scale-95"
       >
         <span className="text-xl font-light leading-4" aria-hidden="true">＋</span>
         <span className="mt-0.5 text-[8px] font-bold">新建</span>
