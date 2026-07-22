@@ -169,10 +169,10 @@ function MindGrowNode({ data, selected }: NodeProps) {
     : (highlighted ? "#22d3a7" : undefined);
 
   const colorMap: Record<string, { bg: string; border: string; text: string; glow: string }> = {
-    topic: { bg: "#0f2922", border: "#22d3a7", text: "#e2fff5", glow: "rgba(34,211,167,0.15)" },
-    concept: { bg: "#0f1f2d", border: "#38bdf8", text: "#e0f2fe", glow: "rgba(56,189,248,0.15)" },
-    detail: { bg: "#14141f", border: "#818cf8", text: "#e0e7ff", glow: "rgba(129,140,248,0.15)" },
-    question: { bg: "#1f0f1f", border: "#f472b6", text: "#fce7f3", glow: "rgba(244,114,182,0.15)" },
+    topic: { bg: "var(--node-topic-bg)", border: "#22d3a7", text: "var(--node-topic-text)", glow: "rgba(34,211,167,0.15)" },
+    concept: { bg: "var(--node-concept-bg)", border: "#38bdf8", text: "var(--node-concept-text)", glow: "rgba(56,189,248,0.15)" },
+    detail: { bg: "var(--node-detail-bg)", border: "#818cf8", text: "var(--node-detail-text)", glow: "rgba(129,140,248,0.15)" },
+    question: { bg: "var(--node-question-bg)", border: "#f472b6", text: "var(--node-question-text)", glow: "rgba(244,114,182,0.15)" },
   };
 
   const colors = colorMap[nodeType] || colorMap.concept;
@@ -184,8 +184,8 @@ function MindGrowNode({ data, selected }: NodeProps) {
       className={`
         group relative rounded-xl ${compact ? "min-w-[150px] max-w-[190px] px-3 py-2" : "min-w-[170px] max-w-[230px] px-3.5 py-3"}
         text-left transition-all duration-200 cursor-grab active:cursor-grabbing
-        ${selected ? "ring-2 ring-offset-1 ring-offset-[#0a0a0f]" : ""}
-        ${highlighted ? "animate-pulse ring-2 ring-[#22d3a7] ring-offset-1 ring-offset-[#0a0a0f]" : ""}
+        ${selected ? "ring-2 ring-offset-1 ring-offset-[var(--selection-ring-offset)]" : ""}
+        ${highlighted ? "animate-pulse ring-2 ring-[#22d3a7] ring-offset-1 ring-offset-[var(--selection-ring-offset)]" : ""}
       `}
       style={{
         backgroundColor: colors.bg,
@@ -227,7 +227,7 @@ function MindGrowNode({ data, selected }: NodeProps) {
               type="button"
               onMouseDown={(event) => event.stopPropagation()}
               onClick={(event) => { event.stopPropagation(); (data.onFocusBranch as ((id: string) => void) | undefined)?.(data.nodeId as string); }}
-              className="nodrag rounded-full border border-white/10 bg-white/5 px-1.5 py-0.5 text-[9px] text-white/45 transition-colors hover:border-[#22d3a755] hover:text-[#7de8c9]"
+              className="nodrag rounded-full border border-[var(--border-default)] bg-[var(--bg-hover)] px-1.5 py-0.5 text-[9px] text-[var(--text-tertiary)] transition-colors hover:border-[#22d3a755] hover:text-[var(--primary-hover)]"
               aria-label={`聚焦分支 ${data.label as string}`}
               title="只看此分支，减少无关节点干扰"
             >◎</button>}
@@ -235,7 +235,7 @@ function MindGrowNode({ data, selected }: NodeProps) {
             type="button"
             onMouseDown={(event) => event.stopPropagation()}
             onClick={(event) => { event.stopPropagation(); (data.onToggleCollapse as ((id: string) => void) | undefined)?.(data.nodeId as string); }}
-            className={`nodrag rounded-full border px-2 py-0.5 text-[9px] font-semibold transition-colors ${collapsed ? "border-[#22d3a755] bg-[#22d3a722] text-[#7de8c9]" : "border-white/10 bg-white/5 text-white/50 hover:text-white"}`}
+            className={`nodrag rounded-full border px-2 py-0.5 text-[9px] font-semibold transition-colors ${collapsed ? "border-[#22d3a755] bg-[#22d3a722] text-[var(--primary-hover)]" : "border-[var(--border-default)] bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)]"}`}
             aria-label={collapsed ? `展开下一层 ${childCount} 个直接子节点` : `收起当前分支 ${descendantCount} 个后代节点`}
             title={collapsed ? `仅展开下一层：${childCount} 个直接子节点；分支共 ${descendantCount} 个后代节点` : `收起当前分支的 ${descendantCount} 个后代节点`}
           >{collapsed ? `＋${childCount}` : `−${childCount}`}</button>
@@ -260,9 +260,9 @@ function EntityNode({ data, selected }: NodeProps) {
     <div
       className={`group relative flex h-[86px] w-[86px] cursor-pointer items-center justify-center rounded-full border text-center transition-all duration-200 ${selected ? "scale-110" : "hover:scale-105"}`}
       style={{
-        color: "#f8fafc",
+        color: "var(--entity-node-text)",
         borderColor: selected ? color : `${color}aa`,
-        background: `radial-gradient(circle at 35% 30%, ${color}38, #0b1220 72%)`,
+        background: `radial-gradient(circle at 35% 30%, ${color}38, var(--entity-node-bg) 72%)`,
         boxShadow: selected ? `0 0 28px ${color}55` : `0 0 12px ${color}18`,
       }}
       data-testid="entity-network-node"
@@ -272,19 +272,19 @@ function EntityNode({ data, selected }: NodeProps) {
         <div className="line-clamp-2 break-words text-[11px] font-semibold leading-tight">{entity.canonicalName}</div>
         <div className="mt-1 text-[8px]" style={{ color }}>{ENTITY_TYPE_LABELS[entity.entityType] || entity.entityType}</div>
       </div>
-      <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full border border-white/10 bg-[#09090b] px-1 text-[8px] text-zinc-400">{neighborCount}</span>
-      <div className="pointer-events-none absolute left-[calc(100%+12px)] top-1/2 z-[120] hidden w-72 -translate-y-1/2 rounded-2xl border border-violet-300/25 bg-[#111116]/95 p-4 text-left shadow-2xl backdrop-blur-xl group-hover:block" data-testid="entity-hover-card">
+      <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full border border-[var(--border-default)] bg-[var(--bg-base)] px-1 text-[8px] text-[var(--text-tertiary)]">{neighborCount}</span>
+      <div className="pointer-events-none absolute left-[calc(100%+12px)] top-1/2 z-[120] hidden w-72 -translate-y-1/2 rounded-2xl border border-violet-400/30 bg-[var(--tooltip-bg)] p-4 text-left shadow-2xl backdrop-blur-xl group-hover:block" data-testid="entity-hover-card">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <div className="text-sm font-semibold text-white">{entity.canonicalName}</div>
+            <div className="text-sm font-semibold text-[var(--text-primary)]">{entity.canonicalName}</div>
             <div className="mt-1 text-[10px] font-medium" style={{ color }}>{ENTITY_TYPE_LABELS[entity.entityType] || entity.entityType}</div>
           </div>
-          <div className="rounded-full border border-white/10 px-2 py-1 text-[9px] text-zinc-400">{Math.round(entity.confidence * 100)}%</div>
+          <div className="rounded-full border border-[var(--border-default)] px-2 py-1 text-[9px] text-[var(--text-tertiary)]">{Math.round(entity.confidence * 100)}%</div>
         </div>
-        <p className="mt-3 text-[11px] leading-5 text-zinc-300">{entity.description || "当前来源只识别到实体名称，尚未提供明确概念解释。"}</p>
-        {entity.aliases.length > 0 && <p className="mt-2 text-[10px] text-zinc-500">别名：{entity.aliases.join("、")}</p>}
-        <div className="mt-3 border-t border-white/10 pt-2 text-[10px] text-violet-200">{neighborCount} 个直接关系 · {entity.citations.length} 条原文引用</div>
-        {descriptionCitation && <p className="mt-2 line-clamp-3 text-[10px] leading-4 text-zinc-400">[{descriptionCitation.index}] {descriptionCitation.locator || "原文"}：{descriptionCitation.quote}</p>}
+        <p className="mt-3 text-[11px] leading-5 text-[var(--text-secondary)]">{entity.description || "当前来源只识别到实体名称，尚未提供明确概念解释。"}</p>
+        {entity.aliases.length > 0 && <p className="mt-2 text-[10px] text-[var(--text-muted)]">别名：{entity.aliases.join("、")}</p>}
+        <div className="mt-3 border-t border-[var(--border-default)] pt-2 text-[10px] text-violet-500">{neighborCount} 个直接关系 · {entity.citations.length} 条原文引用</div>
+        {descriptionCitation && <p className="mt-2 line-clamp-3 text-[10px] leading-4 text-[var(--text-tertiary)]">[{descriptionCitation.index}] {descriptionCitation.locator || "原文"}：{descriptionCitation.quote}</p>}
       </div>
       <Handle type="source" position={Position.Bottom} className="!h-1.5 !w-1.5 !border-0 !bg-transparent" />
     </div>
@@ -408,8 +408,8 @@ function buildEntityNetworkGraph(
       target: entityViewNodeId(relation.targetId),
       type: "default",
       label: active ? relation.label : undefined,
-      labelStyle: active ? { fill: "#ddd6fe", fontSize: 9, fontWeight: 600 } : undefined,
-      labelBgStyle: active ? { fill: "#111116", fillOpacity: 0.94 } : undefined,
+      labelStyle: active ? { fill: "var(--canvas-label-accent)", fontSize: 9, fontWeight: 600 } : undefined,
+      labelBgStyle: active ? { fill: "var(--canvas-label-bg)", fillOpacity: 0.94 } : undefined,
       labelBgPadding: active ? [5, 3] as [number, number] : undefined,
       labelBgBorderRadius: active ? 6 : undefined,
       markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12, color: relation.status === "negated" ? "#ef4444" : "#a78bfa" },
@@ -710,7 +710,7 @@ function buildGraph(
     const isRelation = dbEdge.relation !== "contains";
     const isContradiction = dbEdge.relation === "contradicts";
     const bi = branchMap.get(dbEdge.sourceId);
-    const edgeColor = bi !== undefined ? BRANCH_COLORS[bi % BRANCH_COLORS.length] : "#ffffff10";
+    const edgeColor = bi !== undefined ? BRANCH_COLORS[bi % BRANCH_COLORS.length] : "var(--canvas-edge-muted)";
     return {
       id: dbEdge.id,
       source: dbEdge.sourceId,
@@ -792,7 +792,7 @@ function HelpPanel({ onClose }: { onClose: () => void }) {
     { keys: "右键拖拽", desc: "平移画布(备选)" },
   ];
   return (
-    <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
+    <div className="fixed inset-0 z-[300] flex items-center justify-center bg-[var(--overlay-bg)] backdrop-blur-sm" onClick={onClose}>
       <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-6 shadow-xl min-w-[300px] animate-fade-in-up" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-sm font-semibold text-[var(--foreground)]">⌨️ 快捷键</h3>
@@ -1110,7 +1110,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
   const onConnect = useCallback(
     (connection: Connection) => {
       setFlowEdges((eds) =>
-        addEdge({ ...connection, type: "bezier", style: { stroke: "#ffffff24", strokeWidth: 1.8 } }, eds)
+        addEdge({ ...connection, type: "bezier", style: { stroke: "var(--canvas-edge)", strokeWidth: 1.8 } }, eds)
       );
     },
     [setFlowEdges]
@@ -1310,7 +1310,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
     if (!viewportEl) return;
     import('html-to-image').then(({ toPng }) => {
       return toPng(viewportEl, {
-        backgroundColor: '#09090b',
+        backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--bg-base').trim() || '#09090b',
         pixelRatio: 2,
         width: viewportEl.scrollWidth,
         height: viewportEl.scrollHeight,
@@ -1345,7 +1345,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
     if (!viewportEl) return;
     import('html-to-image').then(({ toPng }) => {
       return toPng(viewportEl, {
-        backgroundColor: '#09090b',
+        backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--bg-base').trim() || '#09090b',
         pixelRatio: 2,
         width: viewportEl.scrollWidth,
         height: viewportEl.scrollHeight,
@@ -1638,7 +1638,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
 
       {/* Inline edit overlay */}
       {editingNode && (
-        <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/40 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[150] flex items-center justify-center bg-[var(--overlay-bg)] backdrop-blur-sm">
           <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-6 shadow-xl w-[min(92vw,480px)] animate-fade-in-up">
             <h3 className="text-sm font-semibold text-[var(--foreground)] mb-4">编辑节点内容</h3>
             <label className="mb-1.5 block text-[11px] font-medium text-[var(--muted-foreground)]" htmlFor="node-title-editor">大标题</label>
@@ -1711,10 +1711,10 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
         <aside className="absolute bottom-4 left-3 z-[70] w-[min(440px,calc(100%-24px))] rounded-2xl border border-violet-400/30 bg-[var(--card)]/95 p-4 shadow-2xl backdrop-blur" data-testid="relation-evidence-panel">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <div className="text-[10px] font-semibold uppercase tracking-wider text-violet-300">关系原文证据</div>
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--canvas-label-accent)]">关系原文证据</div>
               <div className="mt-1 flex items-center gap-2">
                 <h3 className="text-sm font-semibold text-[var(--foreground)]">{selectedRelation.shortLabel}</h3>
-                <span className="rounded-full border border-violet-300/25 bg-violet-400/10 px-2 py-0.5 text-[9px] font-semibold text-violet-200" data-testid="relation-status-chip">
+                <span className="rounded-full border border-violet-400/30 bg-violet-400/10 px-2 py-0.5 text-[9px] font-semibold text-[var(--canvas-label-accent)]" data-testid="relation-status-chip">
                   {RELATION_STATUS_LABELS[selectedRelation.status]}
                 </span>
               </div>
@@ -1722,15 +1722,15 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
             <button type="button" onClick={() => setSelectedRelationId(null)} className="rounded-lg border border-[var(--border)] px-2 py-1 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)]" aria-label="关闭关系证据">×</button>
           </div>
           <div className="mt-3 flex flex-wrap items-center gap-2 text-[10px] text-[var(--text-secondary)]">
-            <span className="rounded-lg bg-white/5 px-2 py-1">{selectedRelationSource?.canonicalName || "未知实体"}</span>
-            <span className="text-violet-300">{selectedRelation.shortLabel} →</span>
-            <span className="rounded-lg bg-white/5 px-2 py-1">{selectedRelationTarget?.canonicalName || "未知实体"}</span>
+            <span className="rounded-lg bg-[var(--bg-hover)] px-2 py-1">{selectedRelationSource?.canonicalName || "未知实体"}</span>
+            <span className="text-[var(--canvas-label-accent)]">{selectedRelation.shortLabel} →</span>
+            <span className="rounded-lg bg-[var(--bg-hover)] px-2 py-1">{selectedRelationTarget?.canonicalName || "未知实体"}</span>
           </div>
           <p className="mt-3 text-[11px] leading-5 text-[var(--text-secondary)]">{selectedRelation.explanation || "原文仅确认该关系，暂无补充解释。"}</p>
           <div className="mt-3 max-h-52 space-y-2 overflow-y-auto">
             {(selectedRelation.citations || []).map((citation) => (
-              <div key={`${citation.documentId || "source"}-${citation.index}`} className="rounded-xl border border-white/10 bg-black/20 p-3 text-[11px] leading-5 text-[var(--text-secondary)]">
-                <div className="mb-1 font-semibold text-violet-200">[{citation.index}] {citation.title || "来源文档"} · {citation.locator || "原文"}</div>
+              <div key={`${citation.documentId || "source"}-${citation.index}`} className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-base)] p-3 text-[11px] leading-5 text-[var(--text-secondary)]">
+                <div className="mb-1 font-semibold text-[var(--canvas-label-accent)]">[{citation.index}] {citation.title || "来源文档"} · {citation.locator || "原文"}</div>
                 <p>“{citation.quote}”</p>
               </div>
             ))}
@@ -1773,11 +1773,11 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
         zoomOnScroll={true}
         zoomOnPinch={true}
         zoomOnDoubleClick={false}
-        defaultEdgeOptions={{ type: "default", style: { stroke: "#ffffff24", strokeWidth: 1.8 } }}
+        defaultEdgeOptions={{ type: "default", style: { stroke: "var(--canvas-edge)", strokeWidth: 1.8 } }}
         proOptions={{ hideAttribution: true }}
         className={`!bg-[var(--background)] ${isMobile ? "!touch-none" : ""}`}
       >
-        <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="#151520" />
+        <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="var(--canvas-dot)" />
         <Controls
           className={`!bg-[var(--card)] !border !border-[var(--border)] !rounded-xl !shadow-lg !bottom-4 ${isMobile ? "!left-3 !right-auto" : "!left-auto !right-4"}`}
           showInteractive={false}
@@ -1796,7 +1796,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
             };
             return colorMap[type] || "#818cf8";
           }}
-          maskColor="rgba(10, 10, 15, 0.82)"
+          maskColor="var(--canvas-minimap-mask)"
         />
       </ReactFlow>
     </div>

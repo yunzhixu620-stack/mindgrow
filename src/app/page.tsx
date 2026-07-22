@@ -655,7 +655,7 @@ export default function Home() {
           <div className="mb-3 text-3xl">{modeConfig.emoji}</div>
           <h2 className="text-base font-semibold text-[var(--foreground)]">{modeLibraryError ? `${modeConfig.defaultName}暂时不可用` : `正在进入${modeConfig.defaultName}`}</h2>
           <p className="mt-2 text-xs leading-6 text-[var(--muted-foreground)]">{modeLibraryError || "首次进入会自动创建独立知识库，后续将直接恢复上次内容。"}</p>
-          {modeLibraryError && <button type="button" onClick={() => { setModeLibraryError(""); ++mapLoadRequestRef.current; setMapCatalogReady(false); void reloadAll(); }} className="mt-4 rounded-xl bg-[var(--primary)] px-4 py-2 text-xs font-semibold text-black">重新尝试</button>}
+          {modeLibraryError && <button type="button" onClick={() => { setModeLibraryError(""); ++mapLoadRequestRef.current; setMapCatalogReady(false); void reloadAll(); }} className="mt-4 rounded-xl bg-[var(--primary)] px-4 py-2 text-xs font-semibold text-[var(--primary-foreground)]">重新尝试</button>}
         </div>
       </div>
     )

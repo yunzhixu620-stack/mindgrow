@@ -68,8 +68,8 @@ export function AuthScreen() {
         </div>
 
         <div className="grid grid-cols-2 rounded-xl bg-[var(--bg-elevated)] p-1 mb-6">
-          <button onClick={() => setMode("signin")} className={`rounded-lg py-2 text-sm ${mode === "signin" ? "bg-[var(--primary)] text-black font-medium" : "text-[var(--text-secondary)]"}`}>登录</button>
-          <button onClick={() => setMode("signup")} className={`rounded-lg py-2 text-sm ${mode === "signup" ? "bg-[var(--primary)] text-black font-medium" : "text-[var(--text-secondary)]"}`}>注册</button>
+          <button onClick={() => setMode("signin")} className={`rounded-lg py-2 text-sm ${mode === "signin" ? "bg-[var(--primary)] text-[var(--primary-foreground)] font-medium" : "text-[var(--text-secondary)]"}`}>登录</button>
+          <button onClick={() => setMode("signup")} className={`rounded-lg py-2 text-sm ${mode === "signup" ? "bg-[var(--primary)] text-[var(--primary-foreground)] font-medium" : "text-[var(--text-secondary)]"}`}>注册</button>
         </div>
 
         <form onSubmit={submit} className="space-y-4">
@@ -82,7 +82,7 @@ export function AuthScreen() {
             <input type="password" required minLength={8} autoComplete={mode === "signin" ? "current-password" : "new-password"} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="至少 8 位" className="w-full rounded-xl border border-[var(--border)] bg-[var(--bg-base)] px-4 py-3 text-sm outline-none focus:border-[var(--primary)]" />
           </label>
           {(error || message) && <div role="status" className={`rounded-xl px-3 py-2 text-xs ${error ? "bg-red-500/10 text-red-300" : "bg-emerald-500/10 text-emerald-300"}`}>{error || message}</div>}
-          <button disabled={busy} className="w-full rounded-xl bg-[var(--primary)] py-3 text-sm font-semibold text-black disabled:opacity-50">{busy ? "请稍候…" : mode === "signin" ? "进入工作区" : "创建账号"}</button>
+          <button disabled={busy} className="w-full rounded-xl bg-[var(--primary)] py-3 text-sm font-semibold text-[var(--primary-foreground)] disabled:opacity-50">{busy ? "请稍候…" : mode === "signin" ? "进入工作区" : "创建账号"}</button>
           <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2.5 text-center">
             <p className="text-[11px] text-[var(--text-tertiary)]">确认链接失效，或没有收到邮件？</p>
             <button type="button" disabled={busy || resending} onClick={resend} className="mt-1 text-xs font-medium text-[var(--primary)] hover:underline disabled:opacity-50">

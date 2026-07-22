@@ -4,6 +4,8 @@
 
 /* ===== Design System Variables ===== */
 :root {
+  color-scheme: dark;
+
   /* Backgrounds */
   --bg-base: #09090b;
   --bg-surface: #111113;
@@ -19,8 +21,8 @@
   /* Text hierarchy */
   --text-primary: #fafafa;
   --text-secondary: #a1a1aa;
-  --text-tertiary: #71717a;
-  --text-muted: #52525b;
+  --text-tertiary: #90909b;
+  --text-muted: #80808b;
 
   /* Primary accent (green) */
   --primary: #22d3a7;
@@ -34,6 +36,37 @@
   --warning: #f59e0b;
   --danger: #ef4444;
   --danger-subtle: rgba(239,68,68,0.1);
+
+  /* Theme-aware graph and overlay surfaces */
+  --canvas-dot: #20202a;
+  --canvas-edge: rgba(255,255,255,0.14);
+  --canvas-edge-muted: rgba(255,255,255,0.075);
+  --canvas-node-stroke: rgba(255,255,255,0.69);
+  --canvas-label: #d4d4d8;
+  --canvas-label-strong: #fafafa;
+  --canvas-label-muted: #a1a1aa;
+  --canvas-label-accent: #ddd6fe;
+  --canvas-label-bg: #111116;
+  --canvas-minimap-mask: rgba(10,10,15,0.82);
+  --canvas-star: rgba(255,255,255,0.12);
+  --canvas-relation: rgba(244,114,182,0.34);
+  --canvas-cross-library: rgba(250,204,21,0.58);
+  --canvas-edge-hover: rgba(221,214,254,0.95);
+  --canvas-cross-label: #fde68a;
+  --node-topic-bg: #0f2922;
+  --node-topic-text: #e2fff5;
+  --node-concept-bg: #0f1f2d;
+  --node-concept-text: #e0f2fe;
+  --node-detail-bg: #14141f;
+  --node-detail-text: #e0e7ff;
+  --node-question-bg: #1f0f1f;
+  --node-question-text: #fce7f3;
+  --entity-node-bg: #0b1220;
+  --entity-node-text: #f8fafc;
+  --tooltip-bg: rgba(17,17,22,0.96);
+  --overlay-bg: rgba(9,9,11,0.82);
+  --nav-glass: rgba(9,9,11,0.90);
+  --selection-ring-offset: #0a0a0f;
 
   /* Radii */
   --radius-sm: 6px;
@@ -71,6 +104,73 @@
   --border: var(--border-default);
   --accent: var(--primary);
   --ring: var(--primary);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --bg-base: #f6f7f9;
+  --bg-surface: #ffffff;
+  --bg-elevated: #f0f2f5;
+  --bg-hover: #e7eaee;
+  --bg-active: #dce1e7;
+
+  --border-subtle: rgba(15,23,42,0.09);
+  --border-default: rgba(15,23,42,0.14);
+  --border-strong: rgba(15,23,42,0.23);
+
+  --text-primary: #111827;
+  --text-secondary: #445063;
+  --text-tertiary: #596579;
+  --text-muted: #667085;
+
+  --primary: #087a5b;
+  --primary-hover: #06694f;
+  --primary-subtle: rgba(8,122,91,0.10);
+  --primary-border: rgba(8,122,91,0.30);
+
+  --success: #15803d;
+  --success-subtle: rgba(21,128,61,0.10);
+  --warning: #a15c00;
+  --danger: #c62828;
+  --danger-subtle: rgba(198,40,40,0.08);
+
+  --shadow-sm: 0 1px 2px rgba(15,23,42,0.08);
+  --shadow-md: 0 4px 14px rgba(15,23,42,0.12);
+  --shadow-lg: 0 12px 36px rgba(15,23,42,0.16);
+
+  --canvas-dot: #cbd2dc;
+  --canvas-edge: rgba(15,23,42,0.23);
+  --canvas-edge-muted: rgba(15,23,42,0.14);
+  --canvas-node-stroke: rgba(15,23,42,0.55);
+  --canvas-label: #344054;
+  --canvas-label-strong: #101828;
+  --canvas-label-muted: #596579;
+  --canvas-label-accent: #5b21b6;
+  --canvas-label-bg: #ffffff;
+  --canvas-minimap-mask: rgba(240,242,245,0.82);
+  --canvas-star: rgba(15,23,42,0.12);
+  --canvas-relation: rgba(190,24,93,0.46);
+  --canvas-cross-library: rgba(161,92,0,0.62);
+  --canvas-edge-hover: rgba(91,33,182,0.90);
+  --canvas-cross-label: #7c4a00;
+  --node-topic-bg: #e6f7f1;
+  --node-topic-text: #064e3b;
+  --node-concept-bg: #e8f4fb;
+  --node-concept-text: #075985;
+  --node-detail-bg: #eef0ff;
+  --node-detail-text: #3730a3;
+  --node-question-bg: #fcecf5;
+  --node-question-text: #9d174d;
+  --entity-node-bg: #eef2ff;
+  --entity-node-text: #172033;
+  --tooltip-bg: rgba(255,255,255,0.97);
+  --overlay-bg: rgba(246,247,249,0.84);
+  --nav-glass: rgba(255,255,255,0.92);
+  --selection-ring-offset: #f6f7f9;
+
+  --primary-foreground: #ffffff;
+  --accent-foreground: #ffffff;
 }
 
 /* ===== Base Styles ===== */
@@ -136,6 +236,10 @@ button, a, input, textarea, select {
 .react-flow__minimap {
   border-radius: var(--radius-lg) !important;
   box-shadow: var(--shadow-md) !important;
+}
+
+html {
+  background: var(--bg-base);
 }
 .mindgrow-minimap {
   cursor: grab;

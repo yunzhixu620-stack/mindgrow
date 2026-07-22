@@ -105,6 +105,40 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     if (count !== 13) throw new Error(`Expected 13 stored seed nodes, got ${count}`);
   });
 
+  await check("theme toggle persists and updates the graph palette without a wrong-theme flash", async () => {
+    const before = await page.evaluate(() => ({
+      theme: document.documentElement.dataset.theme,
+      canvasDot: getComputedStyle(document.documentElement).getPropertyValue("--canvas-dot").trim(),
+      canvasBackground: getComputedStyle(document.querySelector(".react-flow__background")).backgroundColor,
+    }));
+    if (!before.theme || !before.canvasDot) throw new Error(`Initial theme was not applied before the app rendered: ${JSON.stringify(before)}`);
+    await page.waitForFunction((expected) => {
+      const toggle = document.querySelector('[data-testid="theme-toggle"]');
+      return toggle?.getAttribute("data-theme") === expected && toggle.getAttribute("data-theme-ready") === "true";
+    }, {}, before.theme);
+    await page.click('[data-testid="theme-toggle"]');
+    await page.waitForFunction((previous) => document.documentElement.dataset.theme !== previous, {}, before.theme);
+    const toggled = await page.evaluate(() => ({
+      theme: document.documentElement.dataset.theme,
+      saved: localStorage.getItem("mindgrow.theme.v1"),
+      canvasDot: getComputedStyle(document.documentElement).getPropertyValue("--canvas-dot").trim(),
+      canvasBackground: getComputedStyle(document.querySelector(".react-flow__background")).backgroundColor,
+    }));
+    if (toggled.saved !== toggled.theme) throw new Error("Theme preference was not persisted");
+    if (toggled.canvasDot === before.canvasDot || toggled.canvasBackground === before.canvasBackground) throw new Error("Graph canvas did not follow the selected theme");
+    await page.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
+    await page.waitForSelector('[data-testid="theme-toggle"]');
+    await page.waitForFunction((expected) => {
+      const toggle = document.querySelector('[data-testid="theme-toggle"]');
+      return toggle?.getAttribute("data-theme") === expected && toggle.getAttribute("data-theme-ready") === "true";
+    }, {}, toggled.theme);
+    const afterReload = await page.evaluate(() => ({ theme: document.documentElement.dataset.theme, saved: localStorage.getItem("mindgrow.theme.v1") }));
+    if (afterReload.theme !== toggled.theme || afterReload.saved !== toggled.theme) throw new Error("Saved theme flashed or reset during reload");
+    await page.click('[data-testid="theme-toggle"]');
+    await page.waitForFunction((expected) => document.documentElement.dataset.theme === expected, {}, before.theme);
+    await revealAllStoredNodes(page);
+  });
+
   await check("sync indicator reports current-map network state without cross-map leakage", async () => {
     const indicator = await page.waitForSelector('[data-testid="sync-indicator"]');
     const initial = await indicator.evaluate((element) => ({ state: element.getAttribute("data-sync-state"), mapId: element.getAttribute("data-sync-map-id") }));
