@@ -63,6 +63,11 @@ function expectStatus(result, status) {
   for (const [name, pathname, options] of [
     ["Anonymous bootstrap is denied", "/api/bootstrap", { authenticated: false }],
     ["Anonymous knowledge is denied", "/api/knowledge?action=maps", { authenticated: false }],
+    ["Anonymous node PATCH reaches application auth", "/api/knowledge", {
+      method: "PATCH",
+      body: JSON.stringify({ nodeId: "trigger-method-probe", content: "trigger-method-probe" }),
+      authenticated: false,
+    }],
     ["Anonymous workspace access is denied", "/api/workspaces", { authenticated: false }],
     ["Anonymous Audio Overview is denied", "/api/tools/audio-overview", { method: "POST", body: "{}", authenticated: false }],
   ]) {
