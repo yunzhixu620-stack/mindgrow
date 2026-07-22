@@ -54,7 +54,7 @@ function expectStatus(result, status) {
     && typeof health.body?.nodeEnv === "string" && health.body?.checks?.authConfiguration === "ok"
     && health.body?.checks?.modelConfigured === true && health.body?.checks?.knowledgeStore === "ok"
     && health.body?.checks?.hybridRetrieval === "ready" && health.body?.checks?.entityGraph === "ready"
-    && health.body?.checks?.nodeTimeline === "ready";
+    && health.body?.checks?.nodeTimeline === "ready" && health.body?.checks?.whiteboardLayout === "ready";
   if (!health.ok) {
     health.expectation = "Expected healthy authenticated API " + expectedApiVersion + " with knowledge, hybrid retrieval, and entity graph ready";
     console.error("FAIL Dependency health gate: received " + (health.body?.version || "unknown"));
@@ -83,6 +83,7 @@ function expectStatus(result, status) {
     if (!workspaceId || !Array.isArray(bootstrap.body?.workspaces) || !Array.isArray(bootstrap.body?.maps)
       || !Array.isArray(bootstrap.body?.categories) || !bootstrap.body?.defaultMap?.map?.id
       || !Array.isArray(bootstrap.body?.defaultMap?.nodes) || !Array.isArray(bootstrap.body?.defaultMap?.edges)
+      || !Array.isArray(bootstrap.body?.defaultMap?.layouts) || !Array.isArray(bootstrap.body?.defaultMap?.whiteboardGroups)
       || !Array.isArray(bootstrap.body?.defaultMap?.entityGraph?.entities)
       || bootstrap.body.defaultMap.map.id !== bootstrap.body.workspace?.defaultMapId) bootstrap.ok = false;
     if (bootstrap.body?.defaultMap?.nodes?.[0]?.id) {
@@ -123,8 +124,38 @@ function expectStatus(result, status) {
           });
           const nodeId = graph.body?.node?.id;
           if (!nodeId || graph.body?.totalCitations < 1) graph.ok = false;
+          const canvasView = await request("Enable temporary whiteboard view", "/api/knowledge", {
+            method: "POST",
+            body: JSON.stringify({ action: "setMapCanvasView", mapId, canvasView: "whiteboard" }),
+          });
+          if (canvasView.body?.canvasView !== "whiteboard") canvasView.ok = false;
+          const createdGroup = await request("Create temporary whiteboard group", "/api/knowledge", {
+            method: "POST",
+            body: JSON.stringify({ action: "createWhiteboardGroup", mapId, name: "Smoke evidence", color: "#38bdf8", positionX: 120, positionY: 80, width: 720, height: 480 }),
+          });
+          const groupId = createdGroup.body?.group?.id;
+          if (!groupId) createdGroup.ok = false;
+          const savedLayout = await request("Save temporary whiteboard card layout", "/api/knowledge", {
+            method: "PUT",
+            body: JSON.stringify({ mapId, nodeId, groupId, positionX: 160, positionY: 120, cardWidth: 320, cardHeight: 180, zoomLevel: 1 }),
+          });
+          if (savedLayout.body?.layout?.groupId !== groupId || savedLayout.body?.layout?.cardWidth !== 320) savedLayout.ok = false;
           const reloaded = await request("Verify cited graph reload", `/api/knowledge?mapId=${encodeURIComponent(mapId)}`);
-          if (!reloaded.body?.nodes?.some((node) => node.id === nodeId && node.citations?.length)) reloaded.ok = false;
+          if (!reloaded.body?.nodes?.some((node) => node.id === nodeId && node.citations?.length)
+            || !reloaded.body?.layouts?.some((layout) => layout.nodeId === nodeId && layout.groupId === groupId)
+            || !reloaded.body?.whiteboardGroups?.some((group) => group.id === groupId)) reloaded.ok = false;
+          const updatedGroup = await request("Update temporary whiteboard group", "/api/knowledge", {
+            method: "POST",
+            body: JSON.stringify({ action: "updateWhiteboardGroup", mapId, groupId, width: 840, collapsed: true }),
+          });
+          if (updatedGroup.body?.group?.width !== 840 || updatedGroup.body?.group?.collapsed !== true) updatedGroup.ok = false;
+          await request("Delete temporary whiteboard group", "/api/knowledge", {
+            method: "POST",
+            body: JSON.stringify({ action: "deleteWhiteboardGroup", mapId, groupId }),
+          });
+          const ungrouped = await request("Verify cards survive group deletion", `/api/knowledge?mapId=${encodeURIComponent(mapId)}`);
+          if (!ungrouped.body?.layouts?.some((layout) => layout.nodeId === nodeId && layout.groupId === null)
+            || ungrouped.body?.whiteboardGroups?.some((group) => group.id === groupId)) ungrouped.ok = false;
         } finally {
           for (const temporaryMapId of temporaryMapIds) {
             await request("Delete temporary map", "/api/knowledge", { method: "POST", body: JSON.stringify({ action: "deleteMap", mapId: temporaryMapId }) });

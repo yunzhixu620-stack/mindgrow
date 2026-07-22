@@ -12,6 +12,7 @@ const defaultMap: MindMap = {
   name: "默认知识库",
   description: "",
   mode: "knowledge",
+  canvasView: "mindmap",
   color: "#22d3a7",
   isDefault: true,
   categoryId: null,

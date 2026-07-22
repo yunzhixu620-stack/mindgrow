@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { flattenCommandGroups, searchLoadedKnowledge } from "@/lib/command-search";
+import { flattenCommandGroups, searchLoadedKnowledge, type CommandSearchSource } from "@/lib/command-search";
 import type { ChatMessage, GraphEntity, KnowledgeNode } from "@/types";
 
 const node = (id: string, content: string, desc = ""): KnowledgeNode => ({
@@ -34,8 +34,8 @@ const message = (id: string, content: string): ChatMessage => ({
 
 describe("U5 loaded knowledge search", () => {
   it("groups only loaded maps, current nodes/entities and the latest ten chat messages", () => {
-    const source = {
-      maps: [{ id: "map-a", name: "GraphRAG 研究", description: "检索计划", mode: "knowledge", color: "#fff", isDefault: false, categoryId: null, nodeCount: 1, createdAt: "", updatedAt: "" }],
+    const source: CommandSearchSource = {
+      maps: [{ id: "map-a", name: "GraphRAG 研究", description: "检索计划", mode: "knowledge", canvasView: "mindmap", color: "#fff", isDefault: false, categoryId: null, nodeCount: 1, createdAt: "", updatedAt: "" }],
       currentMapId: "map-a",
       nodes: [node("node-a", "可信检索")],
       entities: [entity("entity-a", "向量检索", ["Vector Retrieval"])],

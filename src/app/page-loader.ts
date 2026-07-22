@@ -47,10 +47,14 @@ export function graphSnapshotFromResponse(data: {
   nodes?: GraphSnapshot["nodes"];
   edges?: GraphSnapshot["edges"];
   entityGraph?: GraphSnapshot["entityGraph"];
+  layouts?: GraphSnapshot["layouts"];
+  whiteboardGroups?: GraphSnapshot["whiteboardGroups"];
 }): GraphSnapshot {
   return {
     nodes: data.nodes || [],
     edges: data.edges || [],
     entityGraph: data.entityGraph || { entities: [], relations: [] },
+    layouts: data.layouts || [],
+    whiteboardGroups: data.whiteboardGroups || [],
   };
 }

@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { enableMapSet, produce } from "immer";
-import { KnowledgeNode, KnowledgeEdge, ChatMessage, AISuggestion, AIMindMap, Category, MindMap, EntityGraph } from "@/types";
+import { KnowledgeNode, KnowledgeEdge, ChatMessage, AISuggestion, AIMindMap, Category, MindMap, EntityGraph, NodeLayout, WhiteboardGroup } from "@/types";
 import {
   tenantCache,
   tenantMapKey,
@@ -75,6 +75,10 @@ export interface MindGrowState {
   addEdge: (edge: KnowledgeEdge) => void;
   entityGraph: EntityGraph;
   setEntityGraph: (graph: EntityGraph) => void;
+  layouts: NodeLayout[];
+  setLayouts: (layouts: NodeLayout[]) => void;
+  whiteboardGroups: WhiteboardGroup[];
+  setWhiteboardGroups: (groups: WhiteboardGroup[]) => void;
 
   // Server hydration and local editing are separate causal channels. These
   // counters reject stale work; cache.localOverlay is the only dirty source.
@@ -191,6 +195,8 @@ export const useMindGrowStore = create<MindGrowState>((set, get) => ({
     nodes: [],
     edges: [],
     entityGraph: { entities: [], relations: [] },
+    layouts: [],
+    whiteboardGroups: [],
     searchResults: [],
     highlightedNodeId: null,
     collapsedNodes: new Set<string>(),
@@ -218,11 +224,16 @@ export const useMindGrowStore = create<MindGrowState>((set, get) => ({
   removeNode: (id) => set((state) => ({
     nodes: state.nodes.filter((n) => n.id !== id),
     edges: state.edges.filter((e) => e.sourceId !== id && e.targetId !== id),
+    layouts: state.layouts.filter((layout) => layout.nodeId !== id),
   })),
   setEdges: (edges) => set({ edges }),
   addEdge: (edge) => set((state) => ({ edges: [...state.edges, edge] })),
   entityGraph: { entities: [], relations: [] },
   setEntityGraph: (entityGraph) => set({ entityGraph }),
+  layouts: [],
+  setLayouts: (layouts) => set({ layouts }),
+  whiteboardGroups: [],
+  setWhiteboardGroups: (whiteboardGroups) => set({ whiteboardGroups }),
 
   hydrationEpochByMap: {},
   localEditVersionByMap: {},
@@ -248,6 +259,8 @@ export const useMindGrowStore = create<MindGrowState>((set, get) => ({
       draft.nodes = serverSnapshot.nodes;
       draft.edges = serverSnapshot.edges;
       draft.entityGraph = serverSnapshot.entityGraph;
+      draft.layouts = serverSnapshot.layouts;
+      draft.whiteboardGroups = serverSnapshot.whiteboardGroups;
     }));
     return hasLocalOverlay ? "rejected-local-dirty" : "applied";
   },
@@ -260,6 +273,8 @@ export const useMindGrowStore = create<MindGrowState>((set, get) => ({
       nodes: state.nodes,
       edges: state.edges,
       entityGraph: state.entityGraph,
+      layouts: state.layouts,
+      whiteboardGroups: state.whiteboardGroups,
     };
     const next = produce(base, recipe);
     const overlayToken = tenantCache.setLocalOverlay(scope, mapId, next);
@@ -267,6 +282,8 @@ export const useMindGrowStore = create<MindGrowState>((set, get) => ({
       draft.nodes = next.nodes;
       draft.edges = next.edges;
       draft.entityGraph = next.entityGraph;
+      draft.layouts = next.layouts;
+      draft.whiteboardGroups = next.whiteboardGroups;
       draft.localEditVersionByMap[mapId] = (draft.localEditVersionByMap[mapId] ?? 0) + 1;
       draft.localOverlayTokenByMap[mapId] = overlayToken;
     }));
@@ -345,6 +362,8 @@ export const useMindGrowStore = create<MindGrowState>((set, get) => ({
     draft.nodes = [];
     draft.edges = [];
     draft.entityGraph = { entities: [], relations: [] };
+    draft.layouts = [];
+    draft.whiteboardGroups = [];
     draft.history = [];
     draft.historyIndex = -1;
     draft.messages = [];
@@ -496,6 +515,8 @@ export const useMindGrowStore = create<MindGrowState>((set, get) => ({
       nodes: [],
       edges: [],
       entityGraph: { entities: [], relations: [] },
+      layouts: [],
+      whiteboardGroups: [],
       messages: [],
       messageMapId: null,
       chatHistory,

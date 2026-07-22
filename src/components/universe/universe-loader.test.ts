@@ -14,6 +14,7 @@ function map(id: string): MindMap {
     name: id,
     description: "",
     mode: "knowledge",
+    canvasView: "mindmap",
     color: "#14b8a6",
     isDefault: false,
     categoryId: null,
