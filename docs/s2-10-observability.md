@@ -15,6 +15,14 @@
 4. 运行公网 backend smoke，确认 API 版本、`gitSha`、部署身份、鉴权和依赖均通过。
 5. 运行 `Deployment fact` workflow，并分别填写前端与 API 的完整 SHA。
 
+## 生产验证记录（2026-07-23）
+
+- 后端源码提交：`5ee87d450af8dc4a75fde169064ef5e2d5c96fd8`；阿里云 `MINDGROW_GIT_SHA` 与该提交完全一致。
+- 阿里云运行环境已显式设置为 `NODE_ENV=production`，避免生产环境缺失部署身份时被误判为可用。
+- 公网 `/health` 返回 `status=ok`、`version=10.11.0`、`gitSha=5ee87d450af8dc4a75fde169064ef5e2d5c96fd8`、`authRequired=true`、`nodeEnv=production`、`deploymentIdentity=ready`。
+- 公网 backend smoke 7/7 通过：CORS、依赖、版本与部署身份正常；匿名 bootstrap、知识库、PATCH、workspace 与 Audio Overview 均被应用鉴权拒绝。
+- 本次发布未修改数据库、RLS、用户知识内容、外部依赖或网络出口。
+
 ## 回滚
 
 - 代码回滚：部署上一版 `fc-proxy/index.js`，同步把 `MINDGROW_GIT_SHA` 改回上一版实际源码提交，并恢复对应 `API_VERSION`。

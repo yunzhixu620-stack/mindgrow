@@ -2,7 +2,7 @@
 
 > 执行基线：`docs/codex-tasks-v4.md`
 > 更新规则：每个任务进入下一阶段前更新本表；“已有局部能力”不等于“任务已完成”。
-> 最近核对基线：`main@52a0e15`；S2.9 生产弹性策略已于 2026-07-23 生效。
+> 最近核对基线：`main@632b295`；S2.10 后端 API `10.11.0` 已于 2026-07-23 发布，前端与生产事实校验待 PR #52 合并后完成。
 
 ## 状态定义
 
@@ -54,7 +54,7 @@
 | S2.7 Obsidian 式实体网状图 | 已合并 | PR #45 / `6f0b72a`；默认强关系去噪、一跳、类型过滤、图内搜索、孤立实体开关和空状态已发布；GitHub Pages `66be48d`，真实账号固定文章样本与部署事实通过 |
 | S2.8 Heptabase 白板底座 | 已合并 | PR #50 / `52a0e15`；同一知识源的思维导图/白板、持久布局与空间分组，以及 80+ 卡视口裁剪、标题/摘要/Citation 渐进展示、键盘与移动端入口均已发布；固定 500 卡 E2E 与真实 107 节点账号通过 |
 | S2.9 阿里云常驻实例 | 已完成 | Owner 已授权；`mindgrow-api` 的 `LATEST` 弹性策略为实际 1 / 目标 1、运行正常；成本、延迟证据和回滚步骤见 `docs/s2-9-aliyun-min-instance.md` |
-| S2.10 观测/on-call | 局部已有 | 已有 runbook/health；缺 `git_sha`、部署断言、错误分级与值班闭环 |
+| S2.10 观测/on-call | 发布中 | PR #52 / 后端源码 `5ee87d4`；API `10.11.0` 已发布并暴露精确 `gitSha`，生产环境与部署身份 fail-closed，公网 smoke 7/7；待合并前端校验与运行 production fact |
 | S2.11 PDF Viewer + 原文高亮 | 待开发 | 当前只有文本抽取/locator，不宣称原文 Viewer 高亮 |
 | S2.12 查询时 GraphRAG 定位 | 待开发 | P2.1 只保证建图质量；仍需 entity linking、混合召回、路径重排、拒答与 Recall@5/MRR |
 | S2.13 一键整理知识库 | 局部已有 | 已有分级展开/展示能力；缺多策略、预览、撤销和默认不整理的完整闭环 |
@@ -110,3 +110,12 @@
 4. [x] 轻量 CORS 预检连续 10 次均为 204：首个 168ms，后续 36–52ms；深度 `/health` 连续 10 次均为 200、`version=10.10.1`、`authRequired=true`，约 3.1–3.8s（包含 Supabase 等依赖探测，不能直接视为冷启动）。
 5. [x] 常驻策略生效后公网后端 smoke 7/7 通过；未修改函数代码、环境变量、数据库或用户知识内容。
 6. [x] 已记录闲置保活费用估算、账单边界与回滚路径；回滚为把最小实例数改回 0 或删除该策略，并确认实际/目标实例数回到 0。
+
+## S2.10 发布检查点
+
+1. [x] `/health` 新增后端源码 `gitSha` 与 `deploymentIdentity`；生产环境缺失或使用非法 40 位 SHA 时健康状态 fail-closed。
+2. [x] 生产校验脚本与 `Deployment fact` workflow 支持独立断言前端 SHA 和 API SHA；本地身份回归、backend local、unit、lint 与 build 均通过。
+3. [x] 阿里云环境变量 `MINDGROW_GIT_SHA` 已设置为后端源码提交 `5ee87d450af8dc4a75fde169064ef5e2d5c96fd8`，并显式设置 `NODE_ENV=production`。
+4. [x] 阿里云 API `10.11.0` 已发布；公网 `/health` 返回 `status=ok`、精确 `gitSha`、`authRequired=true`、`nodeEnv=production`、`deploymentIdentity=ready`。
+5. [x] 公网 backend smoke 7/7 通过；匿名 bootstrap、知识库、PATCH、workspace 与 Audio Overview 均返回应用层 `401`。
+6. [ ] PR #52 合并、GitHub Pages 发布与精确前端/API SHA 的 production fact 待完成。
