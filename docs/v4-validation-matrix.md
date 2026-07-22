@@ -46,7 +46,7 @@
 | 任务 | 状态 | 当前结论 / 下一门禁 |
 |---|---|---|
 | S2.1 maps.mode 数据迁移 | 已合并 | PR #36 / `a1a988a`；Supabase V12、阿里云 API `10.6.0`、GitHub Pages 均已发布；真实账号三种 mode 的创建、刷新读取、板块隔离与清理全部通过 |
-| S2.2 `/api/bootstrap` 首屏聚合 | 开发中 | 后端聚合 workspace/maps/categories/defaultMap graph；前端登录首屏消费同一快照，避免首屏重复目录与默认图请求 |
+| S2.2 `/api/bootstrap` 首屏聚合 | 发布中 | PR #37；阿里云 API `10.7.0` health 正常，匿名拒绝公网 smoke 6/6、带认证本地聚合 smoke 7/7 通过；待前端合并后验证真实登录首屏请求序列 |
 | S2.3 CI 部署事实校验 | 待开发 | 需增加 `git_sha`、线上 health 与静态前端对应断言 |
 | S2.4 Backlinks + 时间轴 | 待开发 | 当前 citation 不等于可反查 backlinks |
 | S2.5 canonical ID + 真 createdAt | 待开发 | 依赖统一实体数据模型与可撤销迁移 |
