@@ -2141,6 +2141,7 @@ const ENTITY_DESCRIPTION_STOP_TERMS = new Set([
   'a', 'an', 'of', 'to', 'in', 'on', 'by', 'as', 'it', 'its', 'using', 'used', 'provides', 'describes',
   'system', 'framework', 'technique', 'concept', 'entity', 'approach', 'research',
 ]);
+const ENTITY_DESCRIPTION_COVERAGE_THRESHOLD = 0.34;
 
 const RELATION_SHORT_LABELS = {
   uses: '使用',
@@ -2245,7 +2246,7 @@ function entityDescriptionGroundingStats(description, rows) {
     .map((row) => String((row && (row.quote || row.content)) || ''))
     .join(' ');
   const normalizedEvidence = normalizeForExactMatch(evidenceText);
-  const matchedAnchors = anchors.filter((anchor) => normalizedEvidence.includes(normalizeForExactMatch(anchor)));
+  const matchedAnchors = anchors.filter((anchor) => normalizedTextMentions(normalizedEvidence, anchor));
   const numericFacts = graphNumericFacts(description);
   const missingNumericFacts = numericFacts.filter((fact) => !normalizedEvidence.includes(normalizeForExactMatch(fact)));
   const descriptionNegated = graphTextIsNegated(description);
@@ -2257,6 +2258,8 @@ function entityDescriptionGroundingStats(description, rows) {
     numericFacts,
     missingNumericFacts,
     supportedByMinimumAnchors: matchedAnchors.length >= 2,
+    supportedByCoverageThreshold: matchedAnchors.length >= 1
+      && (anchors.length ? matchedAnchors.length / anchors.length : 0) >= ENTITY_DESCRIPTION_COVERAGE_THRESHOLD,
     numbersSupported: missingNumericFacts.length === 0,
     descriptionNegated,
     evidenceNegated,
@@ -2342,7 +2345,7 @@ function normalizedEntityGraph(value, allowedIndexes, citations) {
     const description = descriptionLength >= 30 && descriptionLength <= 80
       && descriptionEvidence.length > 0
       && evidenceMentionsEntity(descriptionRows, entityCandidate)
-      && grounding.supportedByMinimumAnchors
+      && (grounding.supportedByMinimumAnchors || grounding.supportedByCoverageThreshold)
       && grounding.numbersSupported
       && grounding.polaritySupported
       ? rawDescription : '';
@@ -4514,6 +4517,7 @@ module.exports = {
   citationAudit,
   normalizedMindMap,
   normalizedEntityGraph,
+  ENTITY_DESCRIPTION_COVERAGE_THRESHOLD,
   entityDescriptionGroundingStats,
   relationEvidenceSupports,
   deterministicEvidenceEntityGraph,

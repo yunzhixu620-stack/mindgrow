@@ -10,6 +10,7 @@ const {
   citationAudit,
   normalizeCitationIndexes,
   normalizedEntityGraph,
+  ENTITY_DESCRIPTION_COVERAGE_THRESHOLD,
   entityDescriptionGroundingStats,
   deterministicEvidenceEntityGraph,
   sourcePages,
@@ -166,6 +167,40 @@ check("entity descriptions reject copied ids, weak anchors and fabricated number
     citations,
   );
   assert(stats.matchedAnchors.length < 2);
+});
+
+check("confirmed description coverage threshold accepts 0.5 and rejects 0.333", () => {
+  assert.strictEqual(ENTITY_DESCRIPTION_COVERAGE_THRESHOLD, 0.34);
+  const citation = {
+    index: 1,
+    quote: "This paper presents the RAG model for this research.",
+    content: "This paper presents the RAG model for this research.",
+    locator: "page 1",
+    sourceType: "pdf",
+  };
+  const normalize = (description) => normalizedEntityGraph({
+    entities: [{
+      tempId: "E1",
+      name: "RAG",
+      type: "model",
+      description,
+      descriptionEvidence: [1],
+      citationIndexes: [1],
+      confidence: 0.9,
+    }],
+    relations: [],
+  }, new Set([1]), [citation]);
+
+  const acceptedDescription = "RAG is the model in this paper and this research.";
+  const rejectedDescription = "RAG is the core model in this paper and research.";
+  const acceptedStats = entityDescriptionGroundingStats(acceptedDescription, [citation]);
+  const rejectedStats = entityDescriptionGroundingStats(rejectedDescription, [citation]);
+  assert.strictEqual(acceptedStats.matchedAnchors.length, 1);
+  assert.strictEqual(acceptedStats.coverage, 0.5);
+  assert.strictEqual(normalize(acceptedDescription).entities.length, 1);
+  assert.strictEqual(rejectedStats.matchedAnchors.length, 1);
+  assert(Math.abs(rejectedStats.coverage - (1 / 3)) < 0.0001);
+  assert.strictEqual(normalize(rejectedDescription).entities.length, 0);
 });
 
 check("relations require predicate direction and use safe labels and complete explanations", () => {
