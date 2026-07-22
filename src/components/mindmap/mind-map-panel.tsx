@@ -30,6 +30,7 @@ import { entityGraphToKnowledgeGraph, entityViewNodeId, formalEntityGraph, isEnt
 import { MindMapSkeleton } from "@/components/mindmap/mind-map-skeleton";
 import { EntityDetailPanel } from "@/components/entity/entity-detail-panel";
 import { graphEdgeFocusOpacity, graphNodeFocusOpacity, oneHopNodeIds } from "@/lib/graph-hover";
+import { COMMAND_ENTITY_FOCUS_EVENT } from "@/lib/command-search";
 
 // ============================================================
 // Branch color palette
@@ -892,6 +893,21 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
   const showingEntityGraph = graphLayer === "entity" && entityDisplayGraph.nodes.length > 0;
   const activeNodes = showingEntityGraph ? entityDisplayGraph.nodes : storeNodes;
   const activeEdges = showingEntityGraph ? entityDisplayGraph.edges : storeEdges;
+
+  useEffect(() => {
+    const handleCommandEntityFocus = (event: Event) => {
+      const entityId = (event as CustomEvent<{ entityId?: string }>).detail?.entityId;
+      if (!entityId || !officialEntityGraph.entities.some((entity) => entity.id === entityId)) return;
+      setGraphLayer("entity");
+      setSelectedRelationId(null);
+      window.requestAnimationFrame(() => {
+        setEntityViewMode("local");
+        setSelectedEntityId(entityViewNodeId(entityId));
+      });
+    };
+    window.addEventListener(COMMAND_ENTITY_FOCUS_EVENT, handleCommandEntityFocus);
+    return () => window.removeEventListener(COMMAND_ENTITY_FOCUS_EVENT, handleCommandEntityFocus);
+  }, [officialEntityGraph.entities]);
 
   useEffect(() => {
     if (graphLayer === "entity" && entityDisplayGraph.nodes.length === 0) setGraphLayer("concept");

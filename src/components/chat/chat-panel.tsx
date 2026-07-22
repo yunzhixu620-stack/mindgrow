@@ -97,7 +97,7 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
   if (msg.role === "system") return null;
   const isUser = msg.role === "user";
   return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"} animate-fade-in-up`}>
+    <div data-chat-message-id={msg.id} className={`flex ${isUser ? "justify-end" : "justify-start"} animate-fade-in-up`}>
       <div
         className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
           isUser
