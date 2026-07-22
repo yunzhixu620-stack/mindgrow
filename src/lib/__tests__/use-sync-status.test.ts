@@ -43,6 +43,14 @@ describe("deriveSyncStatus", () => {
     }, now)).toMatchObject({ state: "dirty", error: null });
   });
 
+  it("keeps HTTP client errors online and reports them as write errors", () => {
+    expect(deriveSyncStatus({
+      ...base,
+      networkOnline: true,
+      lastError: { code: "HTTP_401", message: "写入失败（HTTP 401）", at: now - 100 },
+    }, now)).toMatchObject({ state: "error", error: "写入失败（HTTP 401）" });
+  });
+
   it("uses local overlay existence as the dirty signal", () => {
     expect(deriveSyncStatus({ ...base, dirty: true }, now).state).toBe("dirty");
   });

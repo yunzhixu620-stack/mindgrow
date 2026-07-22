@@ -105,6 +105,20 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     if (count !== 13) throw new Error(`Expected 13 stored seed nodes, got ${count}`);
   });
 
+  await check("sync indicator reports current-map network state without cross-map leakage", async () => {
+    const indicator = await page.waitForSelector('[data-testid="sync-indicator"]');
+    const initial = await indicator.evaluate((element) => ({ state: element.getAttribute("data-sync-state"), mapId: element.getAttribute("data-sync-map-id") }));
+    if (initial.state !== "idle" || !initial.mapId) throw new Error(`Initial sync status is invalid: ${JSON.stringify(initial)}`);
+    await page.setOfflineMode(true);
+    await page.waitForFunction(() => document.querySelector('[data-testid="sync-indicator"]')?.getAttribute("data-sync-state") === "offline");
+    const offlineLabel = await page.$eval('[data-testid="sync-indicator"]', (element) => element.getAttribute("aria-label"));
+    if (offlineLabel !== "离线，改动仅在本地") throw new Error(`Offline sync label is misleading: ${offlineLabel}`);
+    await page.setOfflineMode(false);
+    await page.waitForFunction(() => document.querySelector('[data-testid="sync-indicator"]')?.getAttribute("data-sync-state") !== "offline");
+    const recoveredMapId = await page.$eval('[data-testid="sync-indicator"]', (element) => element.getAttribute("data-sync-map-id"));
+    if (recoveredMapId !== initial.mapId) throw new Error("Network recovery leaked sync state into another map");
+  });
+
   await check("graph hover keeps one-hop neighbors readable and dims unrelated nodes", async () => {
     const nodeCount = await page.$$eval(".react-flow__node", (nodes) => nodes.length);
     if (nodeCount < 3) throw new Error("Hover focus fixture needs at least three visible nodes");
@@ -620,9 +634,9 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     if (previewCategoryCount < 1) throw new Error("Organizer preview did not create any directory");
     await page.screenshot({ path: path.join(artifactDir, "desktop-organizer-preview.png") });
     await page.click('[data-testid="organize-apply"]');
-    await page.waitForFunction(() => document.querySelector('[role="status"]')?.textContent.includes("已整理"));
+    await page.waitForFunction(() => document.querySelector('[data-testid="organize-status"]')?.textContent.includes("已整理"));
     await page.click('[data-testid="organize-undo"]');
-    await page.waitForFunction(() => document.querySelector('[role="status"]')?.textContent.includes("已恢复"));
+    await page.waitForFunction(() => document.querySelector('[data-testid="organize-status"]')?.textContent.includes("已恢复"));
     const afterAssignments = await page.evaluate(() => {
       const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
       return Object.fromEntries(state.maps.filter((map) => !(map.description || "").includes("[MindGrow:")).map((map) => [map.id, map.categoryId || null]));
