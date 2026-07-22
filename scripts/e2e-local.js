@@ -205,6 +205,7 @@ const expandOneVisibleLevel = async (page, previousCount) => {
       if (!guide) throw new Error("Usage guide link is missing");
       await guide.click();
       await page.waitForFunction(() => window.location.pathname.endsWith("/guide") || window.location.pathname.endsWith("/guide/"));
+      await page.waitForSelector("h1");
       const heading = await page.$eval("h1", (element) => element.textContent.trim());
       if (!heading.includes("可追溯的知识网络")) throw new Error("Usage guide did not render after clicking");
       const timeline = await page.$('[data-testid="guide-timeline"]');
@@ -664,6 +665,11 @@ const expandOneVisibleLevel = async (page, previousCount) => {
       await page.waitForFunction(() => !document.querySelector('[data-testid="entity-network-tools"]'));
     });
     await entityStage("Ctrl+K 实体定位", async () => {
+      await page.evaluate(() => {
+        window.__mindgrowEntityCommandEvents = [];
+        window.addEventListener("mindgrow:command-navigate", (event) => window.__mindgrowEntityCommandEvents.push({ type: "navigate", detail: event.detail }), { once: true });
+        window.addEventListener("mindgrow:command-entity-focus", (event) => window.__mindgrowEntityCommandEvents.push({ type: "focus", detail: event.detail }), { once: true });
+      });
       await entityStage("Ctrl+K 打开", async () => {
         await page.keyboard.down("Control");
         await page.keyboard.press("k");
@@ -680,7 +686,17 @@ const expandOneVisibleLevel = async (page, previousCount) => {
       });
       await entityStage("Ctrl+K 详情定位", async () => {
         await page.click('[data-result-group="entities"] [data-result-kind="entity"]');
-        await page.waitForSelector('[data-testid="entity-detail-panel"]');
+        try {
+          await page.waitForSelector('[data-testid="entity-detail-panel"]', { timeout: 6000 });
+        } catch (error) {
+          const diagnostic = await page.evaluate(() => ({
+            events: window.__mindgrowEntityCommandEvents,
+            layer: document.querySelector('[data-testid="graph-layer-switch"]')?.textContent,
+            network: document.querySelector('[data-testid="entity-network-summary"]')?.textContent,
+            paletteOpen: Boolean(document.querySelector('[data-testid="command-palette"]')),
+          }));
+          throw new Error(`${error.message}; diagnostic=${JSON.stringify(diagnostic)}`);
+        }
         const commandEntityTitle = await page.$eval('[data-testid="entity-detail-panel"]', (panel) => panel.textContent);
         if (!commandEntityTitle.includes(entityQuery)) throw new Error("Command palette did not focus the selected entity");
         await page.keyboard.press("Escape");

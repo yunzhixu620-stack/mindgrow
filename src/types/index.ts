@@ -99,9 +99,29 @@ export interface AIEntityGraph {
 
 export interface NodeLayout {
   nodeId: string;
+  mapId: string;
   positionX: number;
   positionY: number;
   zoomLevel: number;
+  groupId: string | null;
+  cardWidth: number;
+  cardHeight: number;
+  updatedAt: string;
+}
+
+export interface WhiteboardGroup {
+  id: string;
+  mapId: string;
+  name: string;
+  color: string;
+  positionX: number;
+  positionY: number;
+  width: number;
+  height: number;
+  collapsed: boolean;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
 }
 
 // Category / Folder for organizing knowledge maps
@@ -115,12 +135,14 @@ export interface Category {
 }
 
 export type MapMode = "knowledge" | "meeting" | "article";
+export type CanvasView = "mindmap" | "whiteboard";
 
 export interface MindMap {
   id: string;
   name: string;
   description: string;
   mode: MapMode;
+  canvasView: CanvasView;
   color: string;
   isDefault: boolean;
   categoryId: string | null;

@@ -11,6 +11,7 @@ function library(): LibraryGraph {
       name: "论文库",
       description: "论文阅读",
       mode: "article",
+      canvasView: "mindmap",
       color: "#a78bfa",
       isDefault: false,
       categoryId: null,
@@ -65,6 +66,8 @@ function library(): LibraryGraph {
         citations: [{ index: 3, quote: "GraphRAG uses the knowledge graph.", locator: "Section 3" }],
       }],
     },
+    layouts: [],
+    whiteboardGroups: [],
   };
 }
 

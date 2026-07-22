@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS maps (
   name TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
   mode TEXT NOT NULL CHECK (mode IN ('knowledge', 'meeting', 'article')),
+  canvas_view TEXT NOT NULL DEFAULT 'mindmap' CHECK (canvas_view IN ('mindmap', 'whiteboard')),
   color TEXT NOT NULL DEFAULT '#22d3a7',
   is_default BOOLEAN NOT NULL DEFAULT FALSE,
   node_count INTEGER NOT NULL DEFAULT 0 CHECK (node_count >= 0),
@@ -100,6 +101,23 @@ CREATE TABLE IF NOT EXISTS edges (
   CHECK (source_id <> target_id)
 );
 
+CREATE TABLE IF NOT EXISTS whiteboard_groups (
+  id TEXT PRIMARY KEY,
+  map_id TEXT NOT NULL REFERENCES maps(id) ON DELETE CASCADE,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  name TEXT NOT NULL CHECK (char_length(name) BETWEEN 1 AND 80),
+  color TEXT NOT NULL DEFAULT '#22d3a7',
+  position_x REAL NOT NULL DEFAULT 0,
+  position_y REAL NOT NULL DEFAULT 0,
+  width REAL NOT NULL DEFAULT 720 CHECK (width BETWEEN 240 AND 2400),
+  height REAL NOT NULL DEFAULT 480 CHECK (height BETWEEN 160 AND 2000),
+  collapsed BOOLEAN NOT NULL DEFAULT FALSE,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (id, map_id)
+);
+
 CREATE TABLE IF NOT EXISTS node_layouts (
   node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
   map_id TEXT NOT NULL REFERENCES maps(id) ON DELETE CASCADE,
@@ -107,6 +125,11 @@ CREATE TABLE IF NOT EXISTS node_layouts (
   position_x REAL NOT NULL DEFAULT 0,
   position_y REAL NOT NULL DEFAULT 0,
   zoom_level REAL NOT NULL DEFAULT 1 CHECK (zoom_level > 0),
+  group_id TEXT,
+  card_width REAL NOT NULL DEFAULT 280 CHECK (card_width BETWEEN 180 AND 800),
+  card_height REAL NOT NULL DEFAULT 168 CHECK (card_height BETWEEN 96 AND 640),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  FOREIGN KEY (group_id) REFERENCES whiteboard_groups(id) ON DELETE SET NULL,
   PRIMARY KEY (node_id, map_id)
 );
 
@@ -159,6 +182,8 @@ CREATE INDEX IF NOT EXISTS idx_nodes_desc_trgm ON nodes USING GIN ("desc" gin_tr
 CREATE INDEX IF NOT EXISTS idx_edges_workspace_map ON edges(workspace_id, map_id);
 CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id);
 CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id);
+CREATE INDEX IF NOT EXISTS idx_whiteboard_groups_workspace_map_sort ON whiteboard_groups(workspace_id, map_id, sort_order, created_at);
+CREATE INDEX IF NOT EXISTS idx_node_layouts_workspace_map_group ON node_layouts(workspace_id, map_id, group_id);
 CREATE INDEX IF NOT EXISTS idx_documents_workspace_map ON source_documents(workspace_id, map_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_citations_workspace_map ON node_citations(workspace_id, map_id, node_id);
 CREATE INDEX IF NOT EXISTS idx_citations_document ON node_citations(document_id, citation_index);
@@ -215,6 +240,7 @@ ALTER TABLE categories ENABLE ROW LEVEL SECURITY;
 ALTER TABLE maps ENABLE ROW LEVEL SECURITY;
 ALTER TABLE nodes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE edges ENABLE ROW LEVEL SECURITY;
+ALTER TABLE whiteboard_groups ENABLE ROW LEVEL SECURITY;
 ALTER TABLE node_layouts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE source_documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE node_citations ENABLE ROW LEVEL SECURITY;
@@ -227,10 +253,10 @@ DROP POLICY IF EXISTS "Allow all on nodes" ON nodes;
 DROP POLICY IF EXISTS "Allow all on edges" ON edges;
 DROP POLICY IF EXISTS "Allow all on node_layouts" ON node_layouts;
 
-REVOKE ALL ON TABLE workspaces, workspace_members, categories, maps, nodes, edges, node_layouts, source_documents, node_citations, node_revisions FROM anon, authenticated;
+REVOKE ALL ON TABLE workspaces, workspace_members, categories, maps, nodes, edges, whiteboard_groups, node_layouts, source_documents, node_citations, node_revisions FROM anon, authenticated;
 REVOKE ALL ON FUNCTION search_knowledge_nodes(TEXT, TEXT, TEXT, INTEGER) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION normalize_map_mode_from_legacy_marker() FROM PUBLIC, anon, authenticated;
-GRANT ALL ON TABLE workspaces, workspace_members, categories, maps, nodes, edges, node_layouts, source_documents, node_citations, node_revisions TO service_role;
+GRANT ALL ON TABLE workspaces, workspace_members, categories, maps, nodes, edges, whiteboard_groups, node_layouts, source_documents, node_citations, node_revisions TO service_role;
 GRANT EXECUTE ON FUNCTION search_knowledge_nodes(TEXT, TEXT, TEXT, INTEGER) TO service_role;
 GRANT EXECUTE ON FUNCTION normalize_map_mode_from_legacy_marker() TO service_role;
 

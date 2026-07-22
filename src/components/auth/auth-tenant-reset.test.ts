@@ -22,6 +22,8 @@ function graph(label: string): GraphSnapshot {
     }],
     edges: [],
     entityGraph: { entities: [], relations: [] },
+    layouts: [],
+    whiteboardGroups: [],
   };
 }
 

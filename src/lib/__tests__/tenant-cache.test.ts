@@ -28,6 +28,8 @@ function graph(label: string): GraphSnapshot {
     }],
     edges: [],
     entityGraph: { entities: [], relations: [] },
+    layouts: [],
+    whiteboardGroups: [],
   };
 }
 
@@ -39,6 +41,7 @@ function universe(label: string): UniverseSnapshot {
         name: label,
         description: "",
         mode: "knowledge",
+        canvasView: "mindmap",
         color: "#14b8a6",
         isDefault: false,
         categoryId: null,

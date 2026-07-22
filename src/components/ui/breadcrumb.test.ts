@@ -4,9 +4,9 @@ import type { MindMap } from "@/types";
 
 const createdAt = "2026-07-22T00:00:00.000Z";
 const maps: MindMap[] = [
-  { id: "knowledge", name: "个人知识库", description: "", mode: "knowledge", color: "#22d3a7", isDefault: true, categoryId: null, nodeCount: 3, createdAt, updatedAt: createdAt },
-  { id: "meeting", name: "会议知识库", description: "会议结论", mode: "meeting", color: "#38bdf8", isDefault: false, categoryId: null, nodeCount: 2, createdAt, updatedAt: createdAt },
-  { id: "article", name: "文章知识库", description: "论文阅读", mode: "article", color: "#a78bfa", isDefault: false, categoryId: null, nodeCount: 4, createdAt, updatedAt: createdAt },
+  { id: "knowledge", name: "个人知识库", description: "", mode: "knowledge", canvasView: "mindmap", color: "#22d3a7", isDefault: true, categoryId: null, nodeCount: 3, createdAt, updatedAt: createdAt },
+  { id: "meeting", name: "会议知识库", description: "会议结论", mode: "meeting", canvasView: "mindmap", color: "#38bdf8", isDefault: false, categoryId: null, nodeCount: 2, createdAt, updatedAt: createdAt },
+  { id: "article", name: "文章知识库", description: "论文阅读", mode: "article", canvasView: "mindmap", color: "#a78bfa", isDefault: false, categoryId: null, nodeCount: 4, createdAt, updatedAt: createdAt },
 ];
 
 describe("product breadcrumb", () => {

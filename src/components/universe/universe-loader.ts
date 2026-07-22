@@ -89,11 +89,13 @@ export async function fetchUniverseLibraries(
         nodes: graph.nodes || [],
         edges: graph.edges || [],
         entityGraph: graph.entityGraph || { entities: [], relations: [] },
+        layouts: [],
+        whiteboardGroups: [],
       } as LibraryGraph;
     } catch (error) {
       if (signal.aborted || (error instanceof Error && error.name === "AbortError")) throw error;
       failedGraphs += 1;
-      return { map, nodes: [], edges: [], entityGraph: { entities: [], relations: [] } } as LibraryGraph;
+      return { map, nodes: [], edges: [], entityGraph: { entities: [], relations: [] }, layouts: [], whiteboardGroups: [] } as LibraryGraph;
     }
   }));
   if (failedGraphs === libraries.length && libraries.length > 0) {

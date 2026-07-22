@@ -4,7 +4,7 @@ import { aiEntityGraphToEntityGraph } from "@/lib/entity-graph";
 import { migrateLegacyMapMode, normalizeMapMode } from "@/lib/mode-libraries";
 import type { TenantScope } from "@/lib/tenant-cache";
 import { useMindGrowStore, type WriteRequestToken } from "@/store/mindgrow-store";
-import type { AIEntityGraph, AIMindMap, Category, Citation, EntityGraph, KnowledgeEdge, KnowledgeNode, MindMap } from "@/types";
+import type { AIEntityGraph, AIMindMap, Category, Citation, EntityGraph, KnowledgeEdge, KnowledgeNode, MindMap, NodeLayout, WhiteboardGroup } from "@/types";
 
 const STORAGE_KEY = "mindgrow.local.v2";
 let activeUserId: string | null = null;
@@ -25,7 +25,8 @@ type LocalState = {
   nodes: Record<string, KnowledgeNode[]>;
   edges: Record<string, KnowledgeEdge[]>;
   entityGraphs: Record<string, EntityGraph>;
-  layouts: Record<string, { x: number; y: number }>;
+  layouts: Record<string, NodeLayout>;
+  whiteboardGroups: Record<string, WhiteboardGroup[]>;
 };
 
 const now = () => new Date().toISOString();
@@ -69,6 +70,7 @@ function seedState(): LocalState {
       name: "MindGrow 入门",
       description: "可直接编辑的本地示例知识库",
       mode: "knowledge",
+      canvasView: "mindmap",
       color: "#22d3a7",
       isDefault: true,
       categoryId: null,
@@ -81,6 +83,7 @@ function seedState(): LocalState {
     edges: { map_default: edges },
     entityGraphs: { map_default: { entities: [], relations: [] } },
     layouts: {},
+    whiteboardGroups: { map_default: [] },
   };
 }
 
@@ -108,6 +111,12 @@ function loadState(): LocalState {
     const upgraded = upgradedMaps.some((map, index) => map.mode !== legacyMaps[index].mode);
     parsed.maps = upgradedMaps;
     parsed.entityGraphs ||= {};
+    parsed.layouts ||= {};
+    parsed.whiteboardGroups ||= {};
+    parsed.layouts = Object.fromEntries(Object.entries(parsed.layouts).filter(([nodeId, layout]) => (
+      layout && layout.nodeId === nodeId && typeof layout.mapId === "string"
+    )));
+    parsed.maps = parsed.maps.map((map) => ({ ...map, canvasView: map.canvasView === "whiteboard" ? "whiteboard" : "mindmap" }));
     if (upgraded) saveState(parsed);
     return parsed;
   } catch {
@@ -262,6 +271,8 @@ function handleKnowledge(path: string, init?: RequestInit): Response {
           nodes: state.nodes[map.id] || [],
           edges: state.edges[map.id] || [],
           entityGraph: state.entityGraphs[map.id] || { entities: [], relations: [] },
+          layouts: Object.values(state.layouts).filter((layout) => layout.mapId === map.id),
+          whiteboardGroups: state.whiteboardGroups[map.id] || [],
         })),
         generatedAt: now(),
       });
@@ -282,7 +293,13 @@ function handleKnowledge(path: string, init?: RequestInit): Response {
       return json({ query, results, total: results.length });
     }
     const mapId = url.searchParams.get("mapId") || "map_default";
-    return json({ nodes: state.nodes[mapId] || [], edges: state.edges[mapId] || [], entityGraph: state.entityGraphs[mapId] || { entities: [], relations: [] } });
+    return json({
+      nodes: state.nodes[mapId] || [],
+      edges: state.edges[mapId] || [],
+      entityGraph: state.entityGraphs[mapId] || { entities: [], relations: [] },
+      layouts: Object.values(state.layouts).filter((layout) => layout.mapId === mapId),
+      whiteboardGroups: state.whiteboardGroups[mapId] || [],
+    });
   }
 
   if (method === "DELETE") {
@@ -291,6 +308,7 @@ function handleKnowledge(path: string, init?: RequestInit): Response {
     for (const map of state.maps) {
       state.nodes[map.id] = (state.nodes[map.id] || []).filter((item) => item.id !== nodeId);
       state.edges[map.id] = (state.edges[map.id] || []).filter((item) => item.sourceId !== nodeId && item.targetId !== nodeId);
+      delete state.layouts[nodeId];
       updateMapCount(state, map.id);
     }
     saveState(state);
@@ -299,9 +317,29 @@ function handleKnowledge(path: string, init?: RequestInit): Response {
 
   const body = bodyOf(init);
   if (method === "PUT") {
-    if (body.nodeId) state.layouts[body.nodeId] = { x: body.positionX || 0, y: body.positionY || 0 };
+    const mapId = String(body.mapId || "map_default");
+    const nodeId = String(body.nodeId || "");
+    const nodeExists = (state.nodes[mapId] || []).some((node) => node.id === nodeId);
+    const groupId = body.groupId ? String(body.groupId) : null;
+    const groupExists = !groupId || (state.whiteboardGroups[mapId] || []).some((group) => group.id === groupId);
+    const values = [Number(body.positionX ?? 0), Number(body.positionY ?? 0), Number(body.zoomLevel ?? 1), Number(body.cardWidth ?? 280), Number(body.cardHeight ?? 168)];
+    if (!nodeExists || !groupExists || values.some((value) => !Number.isFinite(value))
+      || Math.abs(values[0]) > 100000 || Math.abs(values[1]) > 100000
+      || values[2] < 0.05 || values[2] > 8 || values[3] < 180 || values[3] > 800
+      || values[4] < 96 || values[4] > 640) return json({ error: "Invalid whiteboard layout" }, 400);
+    state.layouts[nodeId] = {
+      nodeId,
+      mapId,
+      positionX: values[0],
+      positionY: values[1],
+      zoomLevel: values[2],
+      groupId,
+      cardWidth: values[3],
+      cardHeight: values[4],
+      updatedAt: now(),
+    };
     saveState(state);
-    return json({ success: true });
+    return json({ success: true, layout: state.layouts[nodeId] });
   }
 
   if (method === "PATCH") {
@@ -320,16 +358,82 @@ function handleKnowledge(path: string, init?: RequestInit): Response {
 
   if (method !== "POST") return json({ error: "Method not allowed" }, 405);
   const action = body.action;
+  if (action === "setMapCanvasView") {
+    const map = state.maps.find((item) => item.id === (body.mapId || "map_default"));
+    if (!map || !["mindmap", "whiteboard"].includes(body.canvasView)) return json({ error: "Invalid canvas view" }, 400);
+    map.canvasView = body.canvasView;
+    map.updatedAt = now();
+    saveState(state);
+    return json({ success: true, canvasView: map.canvasView });
+  }
+  if (action === "createWhiteboardGroup") {
+    const mapId = String(body.mapId || "map_default");
+    if (!state.maps.some((map) => map.id === mapId) || !String(body.name || "").trim()) return json({ error: "Invalid whiteboard group" }, 400);
+    if (body.collapsed !== undefined && typeof body.collapsed !== "boolean") return json({ error: "Invalid whiteboard group" }, 400);
+    if (!/^#[0-9a-f]{6}$/i.test(String(body.color || "#22d3a7"))) return json({ error: "Invalid whiteboard group" }, 400);
+    const timestamp = now();
+    const group: WhiteboardGroup = {
+      id: makeId("wbg"), mapId, name: String(body.name).trim().slice(0, 80), color: String(body.color || "#22d3a7"),
+      positionX: Number(body.positionX ?? 0), positionY: Number(body.positionY ?? 0),
+      width: Math.min(2400, Math.max(240, Number(body.width ?? 720))), height: Math.min(2000, Math.max(160, Number(body.height ?? 480))),
+      collapsed: body.collapsed ?? false, sortOrder: Math.trunc(Number(body.sortOrder ?? (state.whiteboardGroups[mapId] || []).length)),
+      createdAt: timestamp, updatedAt: timestamp,
+    };
+    if (![group.positionX, group.positionY, group.width, group.height, group.sortOrder].every(Number.isFinite)
+      || Math.abs(group.positionX) > 100000 || Math.abs(group.positionY) > 100000
+      || Number(body.width ?? 720) < 240 || Number(body.width ?? 720) > 2400
+      || Number(body.height ?? 480) < 160 || Number(body.height ?? 480) > 2000
+      || group.sortOrder < -10000 || group.sortOrder > 10000) return json({ error: "Invalid whiteboard group" }, 400);
+    state.whiteboardGroups[mapId] ||= [];
+    state.whiteboardGroups[mapId].push(group);
+    saveState(state);
+    return json({ group }, 201);
+  }
+  if (action === "updateWhiteboardGroup") {
+    const mapId = String(body.mapId || "map_default");
+    const group = (state.whiteboardGroups[mapId] || []).find((item) => item.id === body.groupId);
+    if (!group) return json({ error: "Whiteboard group not found" }, 404);
+    if (body.name !== undefined && !String(body.name).trim()) return json({ error: "Invalid whiteboard group" }, 400);
+    if (body.name !== undefined) group.name = String(body.name).trim().slice(0, 80);
+    if (body.color !== undefined) {
+      if (!/^#[0-9a-f]{6}$/i.test(String(body.color))) return json({ error: "Invalid whiteboard group" }, 400);
+      group.color = String(body.color);
+    }
+    for (const [key, min, max] of [["positionX", -100000, 100000], ["positionY", -100000, 100000], ["width", 240, 2400], ["height", 160, 2000], ["sortOrder", -10000, 10000]] as const) {
+      if (body[key] === undefined) continue;
+      const value = Number(body[key]);
+      if (!Number.isFinite(value)) return json({ error: "Invalid whiteboard group" }, 400);
+      if (value < min || value > max) return json({ error: "Invalid whiteboard group" }, 400);
+      group[key] = key === "sortOrder" ? Math.trunc(value) : value;
+    }
+    if (body.collapsed !== undefined) {
+      if (typeof body.collapsed !== "boolean") return json({ error: "Invalid whiteboard group" }, 400);
+      group.collapsed = body.collapsed;
+    }
+    group.updatedAt = now();
+    saveState(state);
+    return json({ group });
+  }
+  if (action === "deleteWhiteboardGroup") {
+    const mapId = String(body.mapId || "map_default");
+    const groups = state.whiteboardGroups[mapId] || [];
+    if (!groups.some((group) => group.id === body.groupId)) return json({ error: "Whiteboard group not found" }, 404);
+    state.whiteboardGroups[mapId] = groups.filter((group) => group.id !== body.groupId);
+    Object.values(state.layouts).forEach((layout) => { if (layout.mapId === mapId && layout.groupId === body.groupId) layout.groupId = null; });
+    saveState(state);
+    return json({ success: true });
+  }
   if (action === "createMap") {
     const timestamp = now();
     const description = body.description || "";
     const map: MindMap = {
       id: makeId("map"), name: body.name || "新知识库", description,
       mode: normalizeMapMode(body.mode, description),
+      canvasView: "mindmap",
       color: body.color || "#22d3a7", isDefault: false, categoryId: body.categoryId || null,
       nodeCount: 0, createdAt: timestamp, updatedAt: timestamp,
     };
-    state.maps.unshift(map); state.nodes[map.id] = []; state.edges[map.id] = []; state.entityGraphs[map.id] = { entities: [], relations: [] };
+    state.maps.unshift(map); state.nodes[map.id] = []; state.edges[map.id] = []; state.entityGraphs[map.id] = { entities: [], relations: [] }; state.whiteboardGroups[map.id] = [];
     saveState(state);
     return json({ map });
   }
@@ -340,10 +444,11 @@ function handleKnowledge(path: string, init?: RequestInit): Response {
     const map: MindMap = {
       id: makeId("map"), name: body.name || body.template.root, description,
       mode: normalizeMapMode(body.mode, description),
+      canvasView: "mindmap",
       color: body.color || "#22d3a7", isDefault: false, categoryId: body.categoryId || null,
       nodeCount: 0, createdAt: timestamp, updatedAt: timestamp,
     };
-    state.maps.unshift(map); state.nodes[map.id] = []; state.edges[map.id] = []; state.entityGraphs[map.id] = { entities: [], relations: [] };
+    state.maps.unshift(map); state.nodes[map.id] = []; state.edges[map.id] = []; state.entityGraphs[map.id] = { entities: [], relations: [] }; state.whiteboardGroups[map.id] = [];
     addMindMap(state, map.id, body.template, "ai_generated");
     saveState(state);
     return json({ map });
@@ -352,12 +457,15 @@ function handleKnowledge(path: string, init?: RequestInit): Response {
     const map = state.maps.find((item) => item.id === body.mapId);
     if (!map || map.isDefault) return json({ error: "Cannot delete default map" }, 400);
     state.maps = state.maps.filter((item) => item.id !== body.mapId);
-    delete state.nodes[body.mapId]; delete state.edges[body.mapId]; delete state.entityGraphs[body.mapId];
+    delete state.nodes[body.mapId]; delete state.edges[body.mapId]; delete state.entityGraphs[body.mapId]; delete state.whiteboardGroups[body.mapId];
+    Object.keys(state.layouts).forEach((nodeId) => { if (state.layouts[nodeId].mapId === body.mapId) delete state.layouts[nodeId]; });
     saveState(state);
     return json({ success: true });
   }
   if (action === "clearMap") {
-    state.nodes[body.mapId] = []; state.edges[body.mapId] = []; state.entityGraphs[body.mapId] = { entities: [], relations: [] }; updateMapCount(state, body.mapId);
+    state.nodes[body.mapId] = []; state.edges[body.mapId] = []; state.entityGraphs[body.mapId] = { entities: [], relations: [] }; state.whiteboardGroups[body.mapId] = [];
+    Object.keys(state.layouts).forEach((nodeId) => { if (state.layouts[nodeId].mapId === body.mapId) delete state.layouts[nodeId]; });
+    updateMapCount(state, body.mapId);
     saveState(state);
     return json({ success: true });
   }

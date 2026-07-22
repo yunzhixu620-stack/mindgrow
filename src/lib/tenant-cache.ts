@@ -1,5 +1,5 @@
 import { freeze } from "immer";
-import type { EntityGraph, KnowledgeEdge, KnowledgeNode, MindMap } from "@/types";
+import type { EntityGraph, KnowledgeEdge, KnowledgeNode, MindMap, NodeLayout, WhiteboardGroup } from "@/types";
 
 export interface TenantScope {
   userId: string;
@@ -10,6 +10,8 @@ export interface GraphSnapshot {
   nodes: KnowledgeNode[];
   edges: KnowledgeEdge[];
   entityGraph: EntityGraph;
+  layouts: NodeLayout[];
+  whiteboardGroups: WhiteboardGroup[];
 }
 
 export interface CachedMapGraph {
@@ -104,6 +106,8 @@ function cloneGraphSnapshot(snapshot: GraphSnapshot): GraphSnapshot {
         citations: relation.citations.map((citation) => ({ ...citation })),
       })),
     },
+    layouts: snapshot.layouts.map((layout) => ({ ...layout })),
+    whiteboardGroups: snapshot.whiteboardGroups.map((group) => ({ ...group })),
   }, true);
 }
 

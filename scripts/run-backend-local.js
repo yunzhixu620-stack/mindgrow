@@ -46,6 +46,8 @@ function startSupabaseStub() {
         categories: [],
         nodes: [{ id: "node_bootstrap", map_id: defaultMapId, content: "Bootstrap ready", desc: "one-request graph", type: "concept", status: "active", source: "manual", confidence: 1, created_at: "2026-07-22T00:00:00.000Z", updated_at: "2026-07-22T00:00:00.000Z" }],
         edges: [],
+        node_layouts: [],
+        whiteboard_groups: [],
         graph_entities: [],
         graph_relations: [],
         graph_evidence: [],
