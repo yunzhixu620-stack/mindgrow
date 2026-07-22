@@ -16,6 +16,13 @@ import { IS_LOCAL_MODE } from "@/lib/client-api";
 import { MODE_LIBRARY_CONFIG, isMapForMode, modeLibraryDescription } from "@/lib/mode-libraries";
 import { tenantCache, tenantMapKey, tenantScopeKey, type TenantScope } from "@/lib/tenant-cache";
 import { commitPageGraphResponse, graphSnapshotFromResponse, type PageGraphRequest } from "@/app/page-loader";
+import {
+  NewUserEmptyState,
+  PERSONAL_NOTES_TEMPLATE,
+  onboardingStorageKey,
+  shouldShowNewUserEmptyState,
+  type OnboardingState,
+} from "@/components/onboarding/new-user-empty-state";
 
 const LOCAL_TENANT_SCOPE: TenantScope = { userId: "local-user", workspaceId: "local-workspace" };
 
@@ -43,6 +50,7 @@ export default function Home() {
     setCategories,
     currentMode,
     setCurrentMode,
+    nodes,
   } = useMindGrowStore();
   const mapsSignature = useMemo(() => maps.map((map) => `${map.id}:${map.updatedAt}`).join("|"), [maps]);
   const [mobileTab, setMobileTab] = useState<"chat" | "map">("chat");
@@ -63,6 +71,11 @@ export default function Home() {
   const [modeLibraryBusy, setModeLibraryBusy] = useState(false);
   const [modeLibraryError, setModeLibraryError] = useState("");
   const [mapCatalogReady, setMapCatalogReady] = useState(false);
+  const [confirmedGraphKey, setConfirmedGraphKey] = useState<string | null>(null);
+  const [onboardingState, setOnboardingState] = useState<OnboardingState>("loading");
+  const [onboardingBusy, setOnboardingBusy] = useState(false);
+  const [onboardingError, setOnboardingError] = useState("");
+  const [onboardingFocusTarget, setOnboardingFocusTarget] = useState<"article" | null>(null);
   const createRef = useRef<HTMLInputElement>(null);
   const catCreateRef = useRef<HTMLInputElement>(null);
   const activeModeRef = useRef<AppMode>("knowledge");
@@ -74,6 +87,26 @@ export default function Home() {
   const prefetchedMapKeysRef = useRef(new Set<string>());
   const activeTenantScopeKeyRef = useRef<string | null>(activeTenantScopeKey);
   activeTenantScopeKeyRef.current = activeTenantScopeKey;
+
+  const persistOnboardingState = useCallback((next: "dismissed" | "completed") => {
+    if (activeTenantScopeKey) {
+      try { window.localStorage.setItem(onboardingStorageKey(activeTenantScopeKey), next); } catch { /* Local preference persistence is best effort. */ }
+    }
+    setOnboardingState(next);
+  }, [activeTenantScopeKey]);
+
+  useEffect(() => {
+    setOnboardingBusy(false);
+    setOnboardingError("");
+    setOnboardingFocusTarget(null);
+    if (!activeTenantScopeKey) {
+      setOnboardingState("loading");
+      return;
+    }
+    let stored: string | null = null;
+    try { stored = window.localStorage.getItem(onboardingStorageKey(activeTenantScopeKey)); } catch { /* Treat unavailable storage as a pending onboarding. */ }
+    setOnboardingState(stored === "completed" || stored === "dismissed" ? stored : "pending");
+  }, [activeTenantScopeKey]);
 
   // Detect mobile
   useEffect(() => {
@@ -156,6 +189,7 @@ export default function Home() {
     activeModeRef.current = "knowledge";
     lastMapByModeRef.current = { knowledge: currentWorkspaceDefaultMapId };
     setMapCatalogReady(false);
+    setConfirmedGraphKey(null);
     setModeLibraryBusy(false);
     setModeLibraryError("");
     setCurrentMapId(currentWorkspaceDefaultMapId);
@@ -223,6 +257,41 @@ export default function Home() {
       if (prefetchKey) prefetchedMapKeysRef.current.delete(prefetchKey);
     }
   }, [handleSwitchMap, reloadAll, tenantScope]);
+
+  const createPersonalNotes = useCallback(async () => {
+    if (onboardingBusy) return;
+    setOnboardingBusy(true);
+    setOnboardingError("");
+    try {
+      const response = await apiFetch("/api/knowledge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "createFromTemplate",
+          name: PERSONAL_NOTES_TEMPLATE.root,
+          description: PERSONAL_NOTES_TEMPLATE.rootDesc,
+          color: "#22d3a7",
+          template: PERSONAL_NOTES_TEMPLATE,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.map?.id) throw new Error(data.error || "个人笔记创建失败");
+      await handleCreatedMap(data.map.id);
+      persistOnboardingState("completed");
+    } catch (error) {
+      setOnboardingError(error instanceof Error ? error.message : "个人笔记创建失败，请稍后重试。");
+    } finally {
+      setOnboardingBusy(false);
+    }
+  }, [handleCreatedMap, onboardingBusy, persistOnboardingState]);
+
+  const enterOnboardingMode = useCallback((mode: "article" | "meeting") => {
+    persistOnboardingState("completed");
+    setOnboardingError("");
+    setOnboardingFocusTarget(mode === "article" ? "article" : null);
+    setCurrentMode(mode);
+    setMobileTab("chat");
+  }, [persistOnboardingState, setCurrentMode]);
 
   // Switching product boards also switches to a board-owned knowledge library.
   // Meeting and article libraries are provisioned once, then reused on later visits.
@@ -390,14 +459,17 @@ export default function Home() {
       baseHydrationEpoch: useMindGrowStore.getState().getHydrationEpoch(currentMapId),
       cacheReadToken: tenantCache.beginMapRead(tenantScope, currentMapId),
     };
+    const graphKey = tenantMapKey(tenantScope, currentMapId);
     const cached = tenantCache.getMapGraph(tenantScope, currentMapId);
     if (cached) {
       setNodes(cached.snapshot.nodes);
       setEdges(cached.snapshot.edges);
       setEntityGraph(cached.snapshot.entityGraph);
       setModeLibraryBusy(false);
+      setConfirmedGraphKey(graphKey);
     } else {
       setModeLibraryBusy(true);
+      setConfirmedGraphKey(null);
     }
     mapLoadAbortRef.current?.abort();
     const controller = new AbortController();
@@ -416,7 +488,10 @@ export default function Home() {
           mapId: latest.currentMapId,
           mode: latest.currentMode,
         }, graph);
-        if (result === "applied" || result === "rejected-local-dirty") setModeLibraryError("");
+        if (result === "applied" || result === "rejected-local-dirty") {
+          setModeLibraryError("");
+          setConfirmedGraphKey(graphKey);
+        }
       })
       .catch((error) => {
         if (error instanceof DOMException && error.name === "AbortError") return;
@@ -484,6 +559,46 @@ export default function Home() {
   const FOLDER_ICONS = ["📁", "📂", "📚", "🎯", "💡", "🔬", "🎨", "💼", "🏠", "🧪", "📖", "🌍", "💻", "🧠", "🎮", "📝"];
   const modeConfig = MODE_LIBRARY_CONFIG[currentMode];
   const selectedModeMap = maps.find((map) => map.id === currentMapId && isMapForMode(map, currentMode));
+  const selectedGraphKey = tenantScope && currentMapId ? tenantMapKey(tenantScope, currentMapId) : null;
+  const currentGraphReady = Boolean(selectedGraphKey && confirmedGraphKey === selectedGraphKey);
+  const showNewUserEmptyState = shouldShowNewUserEmptyState({
+    mapCatalogReady,
+    modeLibraryBusy,
+    currentGraphReady,
+    currentMode,
+    maps,
+    currentMapId,
+    defaultMapId: currentWorkspaceDefaultMapId,
+    nodeCount: nodes.length,
+    onboardingState,
+  });
+
+  useEffect(() => {
+    if (onboardingState !== "pending" || !mapCatalogReady) return;
+    if (maps.length > 1 || (currentGraphReady && nodes.length > 0)) persistOnboardingState("completed");
+  }, [currentGraphReady, mapCatalogReady, maps.length, nodes.length, onboardingState, persistOnboardingState]);
+
+  useEffect(() => {
+    if (onboardingFocusTarget !== "article" || currentMode !== "article" || modeLibraryBusy || !selectedModeMap) return;
+    const frame = window.requestAnimationFrame(() => {
+      const input = document.querySelector<HTMLInputElement>('input[type="url"]');
+      if (!input) return;
+      input.focus();
+      setOnboardingFocusTarget(null);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [currentMode, modeLibraryBusy, onboardingFocusTarget, selectedModeMap]);
+
+  const onboardingPanel = (
+    <NewUserEmptyState
+      busy={onboardingBusy}
+      error={onboardingError}
+      onPersonalNotes={() => void createPersonalNotes()}
+      onArticleReading={() => enterOnboardingMode("article")}
+      onMeetingNotes={() => enterOnboardingMode("meeting")}
+      onDismiss={() => persistOnboardingState("dismissed")}
+    />
+  );
   const activeModePanel = currentMode !== "knowledge" && (!selectedModeMap || modeLibraryError)
     ? (
       <div className="flex h-full w-full items-center justify-center bg-[var(--background)] px-6" data-testid="mode-library-state">
@@ -874,7 +989,7 @@ export default function Home() {
         {/* Content */}
         <div className="flex-1 overflow-hidden flex flex-col">
           {mobileTab === "chat" ? (
-            activeModePanel
+            showNewUserEmptyState ? onboardingPanel : activeModePanel
           ) : (
             <MindMapPanel showSkeleton={!mapCatalogReady || modeLibraryBusy} />
           )}
@@ -915,10 +1030,12 @@ export default function Home() {
   return (
     <main className="flex h-full w-full overflow-hidden" data-testid={`${currentMode}-workspace`} data-current-map-id={currentMapId} data-library-busy={modeLibraryBusy ? "true" : "false"}>
       <Sidebar onSwitchMap={handleSwitchMap} onMapCreated={handleCreatedMap} />
-      <div className={currentMode === "knowledge" ? "flex h-full shrink-0" : "h-full w-[clamp(360px,36vw,520px)] shrink-0 border-r border-[var(--border)]"}>
-        {activeModePanel}
-      </div>
-      <MindMapPanel showSkeleton={!mapCatalogReady || modeLibraryBusy} />
+      {showNewUserEmptyState ? onboardingPanel : <>
+        <div className={currentMode === "knowledge" ? "flex h-full shrink-0" : "h-full w-[clamp(360px,36vw,520px)] shrink-0 border-r border-[var(--border)]"}>
+          {activeModePanel}
+        </div>
+        <MindMapPanel showSkeleton={!mapCatalogReady || modeLibraryBusy} />
+      </>}
     </main>
   );
 }
