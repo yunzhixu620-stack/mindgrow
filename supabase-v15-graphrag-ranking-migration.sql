@@ -101,4 +101,3 @@ GRANT EXECUTE ON FUNCTION hybrid_search_document_chunks_v2(TEXT, TEXT, TEXT, VEC
   TO service_role;
 
 COMMIT;
-
