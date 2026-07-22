@@ -401,9 +401,16 @@ const expandOneVisibleLevel = async (page, previousCount) => {
       node.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
     });
     await page.waitForSelector('[data-testid="entity-detail-panel"]');
+    const entityDetailText = await page.$eval('[data-testid="entity-detail-panel"]', (panel) => panel.textContent);
+    if (!entityDetailText.includes("说明专属证据") || !entityDetailText.includes("相关关系")) throw new Error("Entity detail does not separate definition evidence from relations");
+    if (!entityDetailText.includes("在本图定位") || !entityDetailText.includes("进入所属知识库")) throw new Error("Entity detail actions are not distinct");
+    const dedicatedEvidenceCount = await page.$$eval('[data-testid="entity-detail-panel"] blockquote', (quotes) => quotes.length);
+    if (dedicatedEvidenceCount < 1) throw new Error("Entity description has no dedicated evidence quote");
     const localNodeCount = await page.$$eval('[data-testid="entity-network-node"]', (nodes) => nodes.length);
     if (localNodeCount > globalNodeCount) throw new Error("One-hop entity view expanded beyond the global graph");
     await page.screenshot({ path: path.join(artifactDir, "desktop-entity-network.png") });
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector('[data-testid="entity-detail-panel"]'));
     await clickByText(page, '[data-testid="entity-view-modes"] button', "证据链");
     await page.waitForFunction(() => {
       const evidenceButton = Array.from(document.querySelectorAll('[data-testid="entity-view-modes"] button'))
@@ -411,6 +418,9 @@ const expandOneVisibleLevel = async (page, previousCount) => {
       return evidenceButton?.className.includes("bg-violet-400");
     });
     await page.waitForSelector(".react-flow__edge-interaction");
+    await page.hover(".react-flow__edge-interaction");
+    await page.waitForFunction(() => Boolean(document.querySelector(".react-flow__edge-text")?.textContent.trim()));
+    if (await page.$('[data-testid="relation-evidence-panel"]')) throw new Error("Relation hover opened the evidence card before click");
     await page.$eval(".react-flow__edge-interaction", (edgeInteraction) => {
       edgeInteraction.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
     });

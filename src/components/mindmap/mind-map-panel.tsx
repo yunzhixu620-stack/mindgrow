@@ -28,6 +28,7 @@ import type { TenantScope } from "@/lib/tenant-cache";
 import { MODE_LIBRARY_CONFIG } from "@/lib/mode-libraries";
 import { entityGraphToKnowledgeGraph, entityViewNodeId, formalEntityGraph, isEntityViewNode } from "@/lib/entity-graph";
 import { MindMapSkeleton } from "@/components/mindmap/mind-map-skeleton";
+import { EntityDetailPanel } from "@/components/entity/entity-detail-panel";
 
 // ============================================================
 // Branch color palette
@@ -253,6 +254,7 @@ function EntityNode({ data, selected }: NodeProps) {
   const color = ENTITY_TYPE_COLORS[entity.entityType] || ENTITY_TYPE_COLORS.other;
   const dimmed = data.dimmed as boolean;
   const neighborCount = data.neighborCount as number;
+  const descriptionCitation = (entity.descriptionCitations || [])[0];
   return (
     <div
       className={`group relative flex h-[86px] w-[86px] cursor-pointer items-center justify-center rounded-full border text-center transition-all duration-200 ${selected ? "scale-110" : "hover:scale-105"}`}
@@ -282,7 +284,7 @@ function EntityNode({ data, selected }: NodeProps) {
         <p className="mt-3 text-[11px] leading-5 text-zinc-300">{entity.description || "当前来源只识别到实体名称，尚未提供明确概念解释。"}</p>
         {entity.aliases.length > 0 && <p className="mt-2 text-[10px] text-zinc-500">别名：{entity.aliases.join("、")}</p>}
         <div className="mt-3 border-t border-white/10 pt-2 text-[10px] text-violet-200">{neighborCount} 个直接关系 · {entity.citations.length} 条原文引用</div>
-        {entity.citations[0] && <p className="mt-2 line-clamp-3 text-[10px] leading-4 text-zinc-400">[{entity.citations[0].index}] {entity.citations[0].locator || "原文"}：{entity.citations[0].quote}</p>}
+        {descriptionCitation && <p className="mt-2 line-clamp-3 text-[10px] leading-4 text-zinc-400">[{descriptionCitation.index}] {descriptionCitation.locator || "原文"}：{descriptionCitation.quote}</p>}
       </div>
       <Handle type="source" position={Position.Bottom} className="!h-1.5 !w-1.5 !border-0 !bg-transparent" />
     </div>
@@ -828,6 +830,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
     nodes: storeNodes,
     edges: storeEdges,
     entityGraph,
+    maps,
     highlightedNodeId,
     removeNode,
     setNodes: setStoreNodes,
@@ -1023,12 +1026,19 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
   const isOverviewCollapsed = Boolean(overviewNodeId && collapsedNodes.has(overviewNodeId));
   const relationCount = activeEdges.filter((edge) => edge.relation !== "contains").length;
   const citedNodeCount = activeNodes.filter((node) => (node.citations || []).length > 0).length;
-  const selectedRelation = selectedRelationId ? activeEdges.find((edge) => edge.id === selectedRelationId) || null : null;
-  const hoveredRelation = hoveredRelationId ? activeEdges.find((edge) => edge.id === hoveredRelationId) || null : null;
-  const explainedRelation = selectedRelation || hoveredRelation;
+  const selectedRelation = selectedRelationId
+    ? officialEntityGraph.relations.find((relation) => entityViewNodeId(relation.id) === selectedRelationId) || null
+    : null;
+  const selectedRelationSource = selectedRelation
+    ? officialEntityGraph.entities.find((entity) => entity.id === selectedRelation.sourceId) || null
+    : null;
+  const selectedRelationTarget = selectedRelation
+    ? officialEntityGraph.entities.find((entity) => entity.id === selectedRelation.targetId) || null
+    : null;
   const selectedEntity = selectedEntityId
     ? officialEntityGraph.entities.find((entity) => entityViewNodeId(entity.id) === selectedEntityId) || null
     : null;
+  const currentMapName = maps.find((map) => map.id === currentMapId)?.name;
 
   const [flowNodes, setFlowNodes, onNodesChange] = useNodesState(graph.nodes);
   const [flowEdges, setFlowEdges, onEdgesChange] = useEdgesState(graph.edges);
@@ -1037,6 +1047,31 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
     setFlowNodes(graph.nodes);
     setFlowEdges(graph.edges);
   }, [graph.nodes, graph.edges, setFlowNodes, setFlowEdges]);
+
+  const closeEntityDetail = useCallback(() => {
+    setSelectedEntityId(null);
+    setEntityViewMode("global");
+    refitGraph();
+  }, [refitGraph]);
+
+  const locateSelectedEntity = useCallback(() => {
+    if (!selectedEntityId) return;
+    setEntityViewMode("local");
+    const node = flowNodes.find((item) => item.id === selectedEntityId);
+    if (node) {
+      reactFlowInstance.current?.setCenter(node.position.x + 43, node.position.y + 43, { zoom: 1.1, duration: 320 });
+    } else {
+      refitGraph();
+    }
+  }, [flowNodes, refitGraph, selectedEntityId]);
+
+  const openCurrentLibrary = useCallback(() => {
+    setGraphLayer("concept");
+    setSelectedEntityId(null);
+    setSelectedRelationId(null);
+    setEntityViewMode("global");
+    refitGraph();
+  }, [refitGraph]);
 
   const onConnect = useCallback(
     (connection: Connection) => {
@@ -1103,6 +1138,8 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
       if ((e.ctrlKey || e.metaKey) && (e.key === "y" || (e.shiftKey && e.key === "Z"))) { e.preventDefault(); redo(); }
       if (e.key === "?") { e.preventDefault(); setShowHelp(true); }
       if (e.key === "Escape") {
+        if (selectedRelationId) { setSelectedRelationId(null); return; }
+        if (selectedEntityId) { closeEntityDetail(); return; }
         if (editingNode) { setEditingNode(null); return; }
         if (focusedNodeId) {
           setFocusedNodeId(null);
@@ -1119,7 +1156,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [flowNodes, removeNode, currentMapId, setStoreNodes, setStoreEdges, setSearchResults, editingNode, focusedNodeId, refitGraph, pushHistory, undo, redo, setContextMenu, setShowHelp]);
+  }, [flowNodes, removeNode, currentMapId, setStoreNodes, setStoreEdges, setSearchResults, editingNode, focusedNodeId, selectedEntityId, selectedRelationId, closeEntityDetail, refitGraph, pushHistory, undo, redo, setContextMenu, setShowHelp]);
 
   // Reload after edit/delete from context menu
   const reloadMap = useCallback(() => {
@@ -1625,40 +1662,39 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
       )}
 
       {showingEntityGraph && selectedEntity && (
-        <aside className="absolute right-4 top-28 z-[70] w-[min(340px,calc(100%-24px))] rounded-2xl border border-sky-400/25 bg-[var(--card)]/95 p-4 shadow-2xl backdrop-blur" data-testid="entity-detail-panel">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <div className="text-[10px] font-semibold uppercase tracking-wider text-sky-300">实体概念解释</div>
-              <h3 className="mt-1 text-sm font-semibold text-[var(--foreground)]">{selectedEntity.canonicalName}</h3>
-              <div className="mt-1 text-[10px] text-sky-200">{ENTITY_TYPE_LABELS[selectedEntity.entityType] || selectedEntity.entityType} · 置信度 {Math.round(selectedEntity.confidence * 100)}%</div>
-            </div>
-            <button type="button" onClick={() => { setSelectedEntityId(null); setEntityViewMode("global"); refitGraph(); }} className="rounded-lg border border-[var(--border)] px-2 py-1 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)]" aria-label="关闭实体解释">×</button>
-          </div>
-          <p className="mt-3 text-[11px] leading-5 text-[var(--text-secondary)]">{selectedEntity.description || "当前来源只识别到实体名称，尚未提供明确概念解释。"}</p>
-          {selectedEntity.aliases.length > 0 && <p className="mt-2 text-[10px] text-[var(--text-muted)]">别名：{selectedEntity.aliases.join("、")}</p>}
-          <div className="mt-3 flex items-center justify-between border-t border-white/10 pt-3">
-            <span className="text-[10px] text-[var(--muted-foreground)]">{selectedEntity.citations.length} 条可核验引用</span>
-            <button type="button" onClick={() => { setEntityViewMode("local"); refitGraph(); }} className="rounded-lg bg-violet-400/15 px-2.5 py-1.5 text-[10px] font-semibold text-violet-200 hover:bg-violet-400/25">只看一跳关系</button>
-          </div>
-        </aside>
+        <EntityDetailPanel
+          entity={selectedEntity}
+          entities={officialEntityGraph.entities}
+          relations={officialEntityGraph.relations}
+          mapName={currentMapName}
+          onClose={closeEntityDetail}
+          onLocate={locateSelectedEntity}
+          onOpenLibrary={openCurrentLibrary}
+        />
       )}
 
-      {explainedRelation && (explainedRelation.citations || []).length > 0 && (
+      {showingEntityGraph && selectedRelation && (
         <aside className="absolute bottom-4 left-3 z-[70] w-[min(440px,calc(100%-24px))] rounded-2xl border border-violet-400/30 bg-[var(--card)]/95 p-4 shadow-2xl backdrop-blur" data-testid="relation-evidence-panel">
           <div className="flex items-start justify-between gap-3">
             <div>
               <div className="text-[10px] font-semibold uppercase tracking-wider text-violet-300">关系原文证据</div>
               <div className="mt-1 flex items-center gap-2">
-                <h3 className="text-sm font-semibold text-[var(--foreground)]">{explainedRelation.relationLabel || "实体关系"}</h3>
+                <h3 className="text-sm font-semibold text-[var(--foreground)]">{selectedRelation.shortLabel}</h3>
                 <span className="rounded-full border border-violet-300/25 bg-violet-400/10 px-2 py-0.5 text-[9px] font-semibold text-violet-200" data-testid="relation-status-chip">
-                  {RELATION_STATUS_LABELS[explainedRelation.relationStatus || "asserted"]}
+                  {RELATION_STATUS_LABELS[selectedRelation.status]}
                 </span>
               </div>
             </div>
             <button type="button" onClick={() => setSelectedRelationId(null)} className="rounded-lg border border-[var(--border)] px-2 py-1 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)]" aria-label="关闭关系证据">×</button>
           </div>
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-[10px] text-[var(--text-secondary)]">
+            <span className="rounded-lg bg-white/5 px-2 py-1">{selectedRelationSource?.canonicalName || "未知实体"}</span>
+            <span className="text-violet-300">{selectedRelation.shortLabel} →</span>
+            <span className="rounded-lg bg-white/5 px-2 py-1">{selectedRelationTarget?.canonicalName || "未知实体"}</span>
+          </div>
+          <p className="mt-3 text-[11px] leading-5 text-[var(--text-secondary)]">{selectedRelation.explanation || "原文仅确认该关系，暂无补充解释。"}</p>
           <div className="mt-3 max-h-52 space-y-2 overflow-y-auto">
-            {(explainedRelation.citations || []).map((citation) => (
+            {(selectedRelation.citations || []).map((citation) => (
               <div key={`${citation.documentId || "source"}-${citation.index}`} className="rounded-xl border border-white/10 bg-black/20 p-3 text-[11px] leading-5 text-[var(--text-secondary)]">
                 <div className="mb-1 font-semibold text-violet-200">[{citation.index}] {citation.title || "来源文档"} · {citation.locator || "原文"}</div>
                 <p>“{citation.quote}”</p>
@@ -1675,7 +1711,9 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onEdgeClick={(_, edge) => {
-          if (showingEntityGraph) setSelectedRelationId(edge.id);
+          if (!showingEntityGraph) return;
+          setSelectedEntityId(null);
+          setSelectedRelationId(edge.id);
         }}
         onNodeClick={(_, node) => {
           if (!showingEntityGraph || !isEntityViewNode(node.id)) return;
