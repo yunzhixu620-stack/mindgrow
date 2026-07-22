@@ -873,7 +873,7 @@ export default function Home() {
           {mobileTab === "chat" ? (
             activeModePanel
           ) : (
-            <MindMapPanel />
+            <MindMapPanel showSkeleton={!mapCatalogReady || modeLibraryBusy} />
           )}
         </div>
         {/* Mobile Template Browser */}
@@ -915,7 +915,7 @@ export default function Home() {
       <div className={currentMode === "knowledge" ? "flex h-full shrink-0" : "h-full w-[clamp(360px,36vw,520px)] shrink-0 border-r border-[var(--border)]"}>
         {activeModePanel}
       </div>
-      <MindMapPanel />
+      <MindMapPanel showSkeleton={!mapCatalogReady || modeLibraryBusy} />
     </main>
   );
 }
