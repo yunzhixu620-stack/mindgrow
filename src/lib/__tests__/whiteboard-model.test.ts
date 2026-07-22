@@ -7,6 +7,7 @@ const { __whiteboardInternal, __mapModeInternal } = require("../../../fc-proxy/i
     convertNodeLayout: (row: Record<string, unknown>) => Record<string, unknown>;
     convertWhiteboardGroup: (row: Record<string, unknown>) => Record<string, unknown>;
     normalizedNodeLayoutInput: (body: Record<string, unknown>, workspaceId: string, defaultMapId: string) => Record<string, unknown> | null;
+    normalizedNodeLayoutBatchInput: (body: Record<string, unknown>, workspaceId: string, defaultMapId: string) => Record<string, unknown>[] | null;
     normalizedWhiteboardGroupInput: (body: Record<string, unknown>, workspaceId: string, defaultMapId: string, existing: Record<string, unknown> | null) => Record<string, unknown> | null;
   };
 };
@@ -53,8 +54,26 @@ describe("S2.8.1 whiteboard persistence model", () => {
     expect(__whiteboardInternal.normalizedNodeLayoutInput({ nodeId: "node-a", cardWidth: 120 }, "workspace-a", "map-a")).toBeNull();
   });
 
+  it("normalizes an atomic batch of layouts for one map", () => {
+    const rows = __whiteboardInternal.normalizedNodeLayoutBatchInput({
+      mapId: "map-a",
+      layouts: [
+        { nodeId: "node-a", positionX: 24, positionY: 32, groupId: null },
+        { nodeId: "node-b", positionX: 80, positionY: 96, groupId: "group-a" },
+      ],
+    }, "workspace-a", "map-default");
+    expect(rows).toHaveLength(2);
+    expect(rows?.map((row) => row.map_id)).toEqual(["map-a", "map-a"]);
+    expect(__whiteboardInternal.normalizedNodeLayoutBatchInput({
+      mapId: "map-a",
+      layouts: [{ nodeId: "node-a" }, { nodeId: "node-a" }],
+    }, "workspace-a", "map-default")).toBeNull();
+    expect(__whiteboardInternal.normalizedNodeLayoutBatchInput({ mapId: "map-a", layouts: [] }, "workspace-a", "map-default")).toBeNull();
+  });
+
   it("creates and updates a bounded spatial group while preserving identity", () => {
     const created = __whiteboardInternal.normalizedWhiteboardGroupInput({
+      id: "wbg_client_group_a",
       mapId: "map-a",
       name: "检索方法",
       color: "#38bdf8",
@@ -64,6 +83,7 @@ describe("S2.8.1 whiteboard persistence model", () => {
       height: 560,
     }, "workspace-a", "map-default", null);
     expect(created).toMatchObject({
+      id: "wbg_client_group_a",
       workspace_id: "workspace-a",
       map_id: "map-a",
       name: "检索方法",
@@ -91,6 +111,7 @@ describe("S2.8.1 whiteboard persistence model", () => {
     expect(__whiteboardInternal.normalizedWhiteboardGroupInput({ name: "A", width: 120 }, "workspace-a", "map-a", null)).toBeNull();
     expect(__whiteboardInternal.normalizedWhiteboardGroupInput({ name: "A", color: "red" }, "workspace-a", "map-a", null)).toBeNull();
     expect(__whiteboardInternal.normalizedWhiteboardGroupInput({ name: "A", collapsed: "false" }, "workspace-a", "map-a", null)).toBeNull();
+    expect(__whiteboardInternal.normalizedWhiteboardGroupInput({ id: "unsafe", name: "A" }, "workspace-a", "map-a", null)).toBeNull();
   });
 
   it("converts storage rows to the stable frontend contract", () => {

@@ -1,6 +1,6 @@
 # S2.8 Heptabase 白板底座
 
-状态：开发中
+状态：S2.8.1–S2.8.3 已实现，S2.8.4 待后续迭代
 产品边界：卡片、空间分组、可视化编排；知识节点与 Citation 仍是唯一内容源。
 
 ## 1. 产品原则
@@ -28,9 +28,11 @@
 
 卡片布局禁止保存 `content`、`desc` 或 Citation 副本。
 
+未分组卡片保存画布绝对坐标；已分组卡片保存相对分组左上角的坐标。移动分组时只更新一条分组记录，不批量改写卡片；删除分组时服务端把相对坐标转换回绝对坐标，再解除 `group_id`。
+
 ### 空间分组
 
-`whiteboard_groups` 保存分组标题、颜色、坐标、尺寸、折叠状态和排序。删除分组时卡片保留，只解除 `group_id`。
+`whiteboard_groups` 保存分组标题、颜色、坐标、尺寸、折叠状态和排序。删除分组时卡片与节点、关系、Citation 全部保留；前端也为已归组卡片提供“移出”入口，便于触控设备使用。
 
 ## 3. 分阶段交付
 
@@ -44,7 +46,7 @@
 ## 4. API 契约
 
 - `GET /api/bootstrap` 与 `GET /api/knowledge?mapId=...`：返回 `layouts[]`、`whiteboardGroups[]`。
-- `PUT /api/knowledge`：保存单张卡片位置、尺寸和分组；节点、map、group 三者必须同租户同知识库。
+- `PUT /api/knowledge`：保存单张卡片，或用 `{ mapId, layouts[] }` 一次保存最多 500 张卡片的位置、尺寸和分组；节点、map、group 三者必须同租户同知识库。
 - `POST action=setMapCanvasView`：保存默认视图。
 - `POST action=createWhiteboardGroup | updateWhiteboardGroup | deleteWhiteboardGroup`：管理空间分组。
 - `/health.checks.whiteboardLayout`：只有 V14 字段与表均可读才为 `ready`。
@@ -56,11 +58,11 @@
 发布顺序：
 
 1. 执行 `supabase-v14-whiteboard-migration.sql`；
-2. 部署 API `10.10.0`；
+2. 部署 API `10.10.1`；
 3. 验证 `/health` 的 `whiteboardLayout=ready`；
 4. 合并并发布前端白板视图。
 
-回滚顺序：先把 API 回退到 `10.9.2`，再执行 `supabase-v14-whiteboard-rollback.sql`。V14 只增加视图数据，不修改知识节点、边、实体或 Citation。
+本次 S2.8.3 前端或 API 如需回滚，先回退到 API `10.10.0`；只有决定整体撤销白板底座时，才继续回退到 `10.9.2` 并执行 `supabase-v14-whiteboard-rollback.sql`。V14 只增加视图数据，不修改知识节点、边、实体或 Citation。
 
 ## 6. 不属于 S2.8
 

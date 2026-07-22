@@ -21,7 +21,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.10.0';
+const API_VERSION = '10.10.1';
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
 const DASHSCOPE_AUDIO_ENDPOINT = process.env.DASHSCOPE_AUDIO_ENDPOINT || 'https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer';
 const ALLOWED_ORIGINS = new Set(
@@ -3736,7 +3736,18 @@ function normalizedNodeLayoutInput(body, workspaceId, defaultMapId) {
   };
 }
 
+function normalizedNodeLayoutBatchInput(body, workspaceId, defaultMapId) {
+  const rows = Array.isArray(body.layouts) ? body.layouts : [body];
+  if (rows.length === 0 || rows.length > 500) return null;
+  const requestedMapId = String(body.mapId || defaultMapId);
+  const normalized = rows.map((row) => normalizedNodeLayoutInput({ ...row, mapId: row.mapId || requestedMapId }, workspaceId, defaultMapId));
+  if (normalized.some((row) => !row) || normalized.some((row) => row.map_id !== requestedMapId)) return null;
+  if (new Set(normalized.map((row) => row.node_id)).size !== normalized.length) return null;
+  return normalized;
+}
+
 function normalizedWhiteboardGroupInput(body, workspaceId, defaultMapId, existing) {
+  const requestedId = existing ? existing.id : String(body.id || `wbg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
   const name = body.name === undefined ? existing && existing.name : String(body.name || '').trim();
   const color = body.color === undefined ? (existing && existing.color) || '#22d3a7' : String(body.color || '').trim();
   const positionX = boundedWhiteboardNumber(body.positionX, existing ? Number(existing.position_x || 0) : 0, -100000, 100000);
@@ -3744,12 +3755,13 @@ function normalizedWhiteboardGroupInput(body, workspaceId, defaultMapId, existin
   const width = boundedWhiteboardNumber(body.width, existing ? Number(existing.width || 720) : 720, 240, 2400);
   const height = boundedWhiteboardNumber(body.height, existing ? Number(existing.height || 480) : 480, 160, 2000);
   const sortOrder = boundedWhiteboardNumber(body.sortOrder, existing ? Number(existing.sort_order || 0) : 0, -10000, 10000);
-  if (!name || name.length > 80 || !/^#[0-9a-f]{6}$/i.test(color)
+  if (!/^wbg_[a-z0-9_-]{3,88}$/i.test(requestedId)
+    || !name || name.length > 80 || !/^#[0-9a-f]{6}$/i.test(color)
     || (body.collapsed !== undefined && typeof body.collapsed !== 'boolean')
     || [positionX, positionY, width, height, sortOrder].some((value) => value === null)) return null;
   const now = new Date().toISOString();
   return {
-    id: existing ? existing.id : `wbg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    id: requestedId,
     workspace_id: workspaceId,
     map_id: String(body.mapId || defaultMapId),
     name,
@@ -4611,17 +4623,33 @@ async function handleKnowledge(req, context) {
 
   if (req.method === 'PUT') {
     const body = await readBody(req);
-    if (!body.nodeId) return { status: 400, data: { error: 'nodeId is required', code: 'INVALID_INPUT' } };
-    const layout = normalizedNodeLayoutInput(body, workspaceId, context.defaultMapId);
-    if (!layout) return { status: 400, data: { error: 'Invalid whiteboard layout', code: 'INVALID_INPUT' } };
-    const nodeRows = await supabaseRequest('GET', `nodes?workspace_id=eq.${workspace}&id=eq.${encodeURIComponent(layout.node_id)}&select=id,map_id&limit=1`);
-    if (!Array.isArray(nodeRows) || !nodeRows[0] || nodeRows[0].map_id !== layout.map_id) return { status: 404, data: { error: 'Node not found in this map', code: 'NOT_FOUND' } };
-    if (layout.group_id) {
-      const groupRows = await supabaseRequest('GET', `whiteboard_groups?workspace_id=eq.${workspace}&map_id=eq.${encodeURIComponent(layout.map_id)}&id=eq.${encodeURIComponent(layout.group_id)}&select=id&limit=1`);
-      if (!Array.isArray(groupRows) || !groupRows[0]) return { status: 404, data: { error: 'Whiteboard group not found in this map', code: 'NOT_FOUND' } };
+    const layouts = normalizedNodeLayoutBatchInput(body, workspaceId, context.defaultMapId);
+    if (!layouts) return { status: 400, data: { error: 'Invalid whiteboard layout', code: 'INVALID_INPUT' } };
+    const mapId = layouts[0].map_id;
+    await assertOwnedMap(workspaceId, mapId);
+
+    const nodeIds = layouts.map((layout) => layout.node_id);
+    const nodeRows = [];
+    for (let index = 0; index < nodeIds.length; index += 100) {
+      const batch = nodeIds.slice(index, index + 100);
+      const rows = await supabaseRequest('GET', `nodes?workspace_id=eq.${workspace}&map_id=eq.${encodeURIComponent(mapId)}&id=in.${inFilter(batch)}&select=id&limit=${batch.length}`);
+      if (!Array.isArray(rows)) throw dependencyError('knowledge_store');
+      nodeRows.push(...rows);
     }
-    await supabaseRequest('POST', 'node_layouts?on_conflict=node_id,map_id', layout, 'resolution=merge-duplicates,return=minimal');
-    return { status: 200, data: { success: true, layout: convertNodeLayout(layout) } };
+    if (new Set(nodeRows.map((row) => row.id)).size !== nodeIds.length) return { status: 404, data: { error: 'Node not found in this map', code: 'NOT_FOUND' } };
+
+    const groupIds = Array.from(new Set(layouts.map((layout) => layout.group_id).filter(Boolean)));
+    if (groupIds.length) {
+      const groupRows = await supabaseRequest('GET', `whiteboard_groups?workspace_id=eq.${workspace}&map_id=eq.${encodeURIComponent(mapId)}&id=in.${inFilter(groupIds)}&select=id&limit=${groupIds.length}`);
+      if (!Array.isArray(groupRows)) throw dependencyError('knowledge_store');
+      if (new Set(groupRows.map((row) => row.id)).size !== groupIds.length) return { status: 404, data: { error: 'Whiteboard group not found in this map', code: 'NOT_FOUND' } };
+    }
+
+    await supabaseRequest('POST', 'node_layouts?on_conflict=node_id,map_id', layouts.length === 1 ? layouts[0] : layouts, 'resolution=merge-duplicates,return=minimal');
+    const converted = layouts.map(convertNodeLayout);
+    return layouts.length === 1
+      ? { status: 200, data: { success: true, layout: converted[0] } }
+      : { status: 200, data: { success: true, layouts: converted } };
   }
 
   if (req.method === 'PATCH') {
@@ -4710,9 +4738,33 @@ async function handleKnowledge(req, context) {
     const mapId = String(body.mapId || context.defaultMapId);
     const groupId = String(body.groupId || '');
     if (!groupId) return { status: 400, data: { error: 'groupId is required', code: 'INVALID_INPUT' } };
-    const rows = await supabaseRequest('GET', `whiteboard_groups?workspace_id=eq.${workspace}&map_id=eq.${encodeURIComponent(mapId)}&id=eq.${encodeURIComponent(groupId)}&select=id&limit=1`);
-    if (!Array.isArray(rows) || !rows[0]) return { status: 404, data: { error: 'Whiteboard group not found', code: 'NOT_FOUND' } };
-    await supabaseRequest('DELETE', `whiteboard_groups?workspace_id=eq.${workspace}&map_id=eq.${encodeURIComponent(mapId)}&id=eq.${encodeURIComponent(groupId)}`);
+    const rows = await supabaseRequest('GET', `whiteboard_groups?workspace_id=eq.${workspace}&map_id=eq.${encodeURIComponent(mapId)}&id=eq.${encodeURIComponent(groupId)}&select=*&limit=1`);
+    const group = Array.isArray(rows) ? rows[0] : null;
+    if (!group) return { status: 404, data: { error: 'Whiteboard group not found', code: 'NOT_FOUND' } };
+    const memberRows = await supabaseRequest('GET', `node_layouts?workspace_id=eq.${workspace}&map_id=eq.${encodeURIComponent(mapId)}&group_id=eq.${encodeURIComponent(groupId)}&select=*&limit=500`);
+    if (!Array.isArray(memberRows)) throw dependencyError('knowledge_store');
+    const ungroupedRows = memberRows.map((layout) => ({
+      ...layout,
+      position_x: Number(group.position_x || 0) + Number(layout.position_x || 0),
+      position_y: Number(group.position_y || 0) + Number(layout.position_y || 0),
+      group_id: null,
+      updated_at: new Date().toISOString(),
+    }));
+    if (ungroupedRows.length) {
+      await supabaseRequest('POST', 'node_layouts?on_conflict=node_id,map_id', ungroupedRows, 'resolution=merge-duplicates,return=minimal');
+    }
+    try {
+      await supabaseRequest('DELETE', `whiteboard_groups?workspace_id=eq.${workspace}&map_id=eq.${encodeURIComponent(mapId)}&id=eq.${encodeURIComponent(groupId)}`);
+    } catch (error) {
+      if (memberRows.length) {
+        try {
+          await supabaseRequest('POST', 'node_layouts?on_conflict=node_id,map_id', memberRows, 'resolution=merge-duplicates,return=minimal');
+        } catch (rollbackError) {
+          console.error('Whiteboard group delete rollback failed', { code: rollbackError.publicCode || rollbackError.code || 'ROLLBACK_FAILED' });
+        }
+      }
+      throw error;
+    }
     return { status: 200, data: { success: true } };
   }
 
@@ -5041,6 +5093,7 @@ module.exports = {
     convertNodeLayout,
     convertWhiteboardGroup,
     normalizedNodeLayoutInput,
+    normalizedNodeLayoutBatchInput,
     normalizedWhiteboardGroupInput,
   },
   __bootstrapInternal: { selectBootstrapWorkspace, selectBootstrapDefaultMap },

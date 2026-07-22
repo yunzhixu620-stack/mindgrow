@@ -144,6 +144,20 @@ function expectStatus(result, status) {
           if (!reloaded.body?.nodes?.some((node) => node.id === nodeId && node.citations?.length)
             || !reloaded.body?.layouts?.some((layout) => layout.nodeId === nodeId && layout.groupId === groupId)
             || !reloaded.body?.whiteboardGroups?.some((group) => group.id === groupId)) reloaded.ok = false;
+          const secondNodeId = reloaded.body?.nodes?.find((node) => node.id !== nodeId)?.id;
+          if (secondNodeId) {
+            const batchLayout = await request("Save temporary whiteboard layout batch", "/api/knowledge", {
+              method: "PUT",
+              body: JSON.stringify({
+                mapId,
+                layouts: [
+                  { nodeId, groupId, positionX: 160, positionY: 120, cardWidth: 320, cardHeight: 180, zoomLevel: 1 },
+                  { nodeId: secondNodeId, groupId: null, positionX: 40, positionY: 60, cardWidth: 280, cardHeight: 168, zoomLevel: 1 },
+                ],
+              }),
+            });
+            if (batchLayout.body?.layouts?.length !== 2) batchLayout.ok = false;
+          }
           const updatedGroup = await request("Update temporary whiteboard group", "/api/knowledge", {
             method: "POST",
             body: JSON.stringify({ action: "updateWhiteboardGroup", mapId, groupId, width: 840, collapsed: true }),
@@ -154,7 +168,7 @@ function expectStatus(result, status) {
             body: JSON.stringify({ action: "deleteWhiteboardGroup", mapId, groupId }),
           });
           const ungrouped = await request("Verify cards survive group deletion", `/api/knowledge?mapId=${encodeURIComponent(mapId)}`);
-          if (!ungrouped.body?.layouts?.some((layout) => layout.nodeId === nodeId && layout.groupId === null)
+          if (!ungrouped.body?.layouts?.some((layout) => layout.nodeId === nodeId && layout.groupId === null && layout.positionX === 280 && layout.positionY === 200)
             || ungrouped.body?.whiteboardGroups?.some((group) => group.id === groupId)) ungrouped.ok = false;
         } finally {
           for (const temporaryMapId of temporaryMapIds) {

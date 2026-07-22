@@ -1,7 +1,9 @@
-import type { NodeLayout } from "@/types";
+import type { NodeLayout, WhiteboardGroup } from "@/types";
 
 export const WHITEBOARD_CARD_WIDTH = 280;
 export const WHITEBOARD_CARD_HEIGHT = 168;
+export const WHITEBOARD_GROUP_COLLAPSED_HEIGHT = 76;
+export const WHITEBOARD_GROUP_NODE_PREFIX = "__mindgrow_whiteboard_group__";
 
 export interface WhiteboardCardGeometry {
   position: { x: number; y: number };
@@ -9,6 +11,81 @@ export interface WhiteboardCardGeometry {
   height: number;
   groupId: string | null;
   persisted: boolean;
+}
+
+export interface WhiteboardDropGeometry {
+  positionX: number;
+  positionY: number;
+  groupId: string | null;
+}
+
+export function whiteboardGroupNodeId(groupId: string) {
+  return `${WHITEBOARD_GROUP_NODE_PREFIX}${groupId}`;
+}
+
+export function whiteboardGroupIdFromNodeId(nodeId: string) {
+  return nodeId.startsWith(WHITEBOARD_GROUP_NODE_PREFIX)
+    ? nodeId.slice(WHITEBOARD_GROUP_NODE_PREFIX.length)
+    : null;
+}
+
+export function isWhiteboardGroupNode(nodeId: string) {
+  return whiteboardGroupIdFromNodeId(nodeId) !== null;
+}
+
+export function whiteboardGroupHeight(group: WhiteboardGroup) {
+  return group.collapsed ? WHITEBOARD_GROUP_COLLAPSED_HEIGHT : group.height;
+}
+
+export function findWhiteboardGroupForCard(
+  position: { x: number; y: number },
+  width: number,
+  height: number,
+  groups: WhiteboardGroup[],
+  mapId: string,
+) {
+  const centerX = position.x + width / 2;
+  const centerY = position.y + height / 2;
+  return groups
+    .filter((group) => group.mapId === mapId && !group.collapsed)
+    .filter((group) => (
+      centerX >= group.positionX
+      && centerX <= group.positionX + group.width
+      && centerY >= group.positionY
+      && centerY <= group.positionY + group.height
+    ))
+    .sort((left, right) => right.sortOrder - left.sortOrder || right.updatedAt.localeCompare(left.updatedAt))[0] || null;
+}
+
+/**
+ * Ungrouped cards persist absolute whiteboard coordinates. Grouped cards use
+ * coordinates relative to their group, so moving a group only needs one
+ * durable write and never rewrites the knowledge graph.
+ */
+export function whiteboardDropGeometry(
+  position: { x: number; y: number },
+  width: number,
+  height: number,
+  groups: WhiteboardGroup[],
+  mapId: string,
+): WhiteboardDropGeometry {
+  const group = findWhiteboardGroupForCard(position, width, height, groups, mapId);
+  if (!group) return { positionX: position.x, positionY: position.y, groupId: null };
+  return {
+    positionX: position.x - group.positionX,
+    positionY: position.y - group.positionY,
+    groupId: group.id,
+  };
+}
+
+export function absoluteWhiteboardPosition(layout: NodeLayout, groups: WhiteboardGroup[]) {
+  if (!layout.groupId) return { x: layout.positionX, y: layout.positionY };
+  const group = groups.find((candidate) => candidate.mapId === layout.mapId && candidate.id === layout.groupId);
+  if (!group) return { x: layout.positionX, y: layout.positionY };
+  return {
+    x: group.positionX + layout.positionX,
+    y: group.positionY + layout.positionY,
+  };
 }
 
 export function previewWhiteboardPosition(index: number, columns = 3) {
@@ -28,6 +105,7 @@ export function buildWhiteboardCardGeometry(
   layouts: NodeLayout[],
   mapId: string,
   columns = 3,
+  groups: WhiteboardGroup[] = [],
 ) {
   const layoutByNodeId = new Map(
     layouts
@@ -47,7 +125,7 @@ export function buildWhiteboardCardGeometry(
       }];
     }
     return [nodeId, {
-      position: { x: layout.positionX, y: layout.positionY },
+      position: absoluteWhiteboardPosition(layout, groups),
       width: layout.cardWidth,
       height: layout.cardHeight,
       groupId: layout.groupId,
