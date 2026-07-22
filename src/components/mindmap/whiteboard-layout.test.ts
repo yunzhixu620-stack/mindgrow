@@ -9,8 +9,10 @@ import {
   whiteboardDropGeometry,
   whiteboardGroupIdFromNodeId,
   whiteboardGroupNodeId,
+  whiteboardDetailLevel,
   WHITEBOARD_CARD_HEIGHT,
   WHITEBOARD_CARD_WIDTH,
+  WHITEBOARD_LARGE_MAP_THRESHOLD,
 } from "./whiteboard-layout";
 
 const savedLayout: NodeLayout = {
@@ -112,5 +114,24 @@ describe("whiteboard card geometry", () => {
       position: previewWhiteboardPosition(0),
       persisted: false,
     });
+  });
+
+  it("progressively reveals large-card details without changing small boards", () => {
+    expect(whiteboardDetailLevel(WHITEBOARD_LARGE_MAP_THRESHOLD - 1, 0.2)).toBe("full");
+    expect(whiteboardDetailLevel(500, 0.6)).toBe("title");
+    expect(whiteboardDetailLevel(500, 0.88)).toBe("summary");
+    expect(whiteboardDetailLevel(500, 1.1)).toBe("full");
+    expect(whiteboardDetailLevel(500, 0.88, true)).toBe("title");
+    expect(whiteboardDetailLevel(500, 1, true)).toBe("summary");
+  });
+
+  it("builds 500 stable card geometries within the interaction budget", () => {
+    const nodeIds = Array.from({ length: 500 }, (_, index) => `node-${index}`);
+    const startedAt = performance.now();
+    const geometry = buildWhiteboardCardGeometry(nodeIds, [], "map-a", 12);
+    const duration = performance.now() - startedAt;
+    expect(geometry.size).toBe(500);
+    expect(geometry.get("node-499")?.position).toEqual(previewWhiteboardPosition(499, 12));
+    expect(duration).toBeLessThan(250);
   });
 });
