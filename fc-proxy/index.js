@@ -2786,7 +2786,15 @@ function normalizedCitedTexts(value, allowedIndexes) {
   })).filter((item) => item.text);
 }
 
-const ENTITY_GRAPH_SCHEMA_PROMPT = '同时返回 entityGraph：{"entities":[{"tempId":"E1","name":"规范名称","type":"person|organization|model|method|dataset|metric|task|event|decision|time|concept|claim|other","aliases":[],"description":"","citationIndexes":[1],"confidence":0.9}],"relations":[{"source":"E1","target":"E2","type":"uses|proposes|evaluated_on|achieves|depends_on|retrieves_from|has_metric|part_of|contains|contradicts|responsible_for|due_on|is|related_to","label":"中文关系标签","status":"asserted|historical|negated|proposed","citationIndexes":[1],"confidence":0.9}]}。实体最多 24 个、关系最多 36 条；每个实体和每条关系都必须有直接支持它的 C 编号。关系必须有明确方向，不能仅因语义相似生成；没有逐字证据的关系不要输出。实体名称保留论文/会议中的规范原名，中英文别名放 aliases。';
+const ENTITY_GRAPH_SCHEMA_PROMPT = [
+  '同时返回 entityGraph：{"entities":[{"tempId":"E1","name":"规范名称","type":"person|organization|model|method|dataset|metric|task|event|decision|time|concept|claim|other","aliases":["原文别名或可靠缩写"],"description":"本文语境下 30-80 字的一句话解释","descriptionEvidence":[1],"citationIndexes":[1],"confidence":0.9}],',
+  '"relations":[{"source":"E1","target":"E2","type":"uses|proposes|evaluated_on|achieves|depends_on|retrieves_from|has_metric|part_of|contains|contradicts|responsible_for|due_on|is|related_to","shortLabel":"中文 2-10 字关系词","explanation":"20-60 字说明关系方向和具体含义","status":"asserted|historical|negated|proposed","citationIndexes":[1],"confidence":0.9}]}。',
+  '实体最多 24 个、关系最多 36 条；每个实体和每条关系都必须有直接支持它的 C 编号。',
+  'description 必须是原文在当前文档语境下直接支持的 30-80 字单句解释；非空 description 的 descriptionEvidence 至少包含 1 个直接支持该解释的 C 编号，且 descriptionEvidence 与证明实体出现或其他事实的 citationIndexes 职责不同。原文不能支持解释时，description 输出空字符串且 descriptionEvidence 输出空数组，不得编造。',
+  '实体名称保留论文或会议中的规范原名；aliases 只输出原文出现的别名，或能够可靠推断的常识性缩写，不强制生成中英文双别名。',
+  '每条关系必须有明确方向、直接证据和 20-60 字 explanation，不能仅因语义相似生成；证据必须同时支持 source、target 以及关系谓词和方向，没有直接证据的关系不要输出。',
+  'shortLabel 中文为 2-10 字，其他语言为 2-20 字，只概括关系谓词，不得包含状态、证据数或实体名称；label 仅用于旧数据兼容，新输出以 shortLabel 为准。',
+].join('');
 
 function deterministicEvidenceEntityGraph(citations, allowedIndexes) {
   const entities = [];
