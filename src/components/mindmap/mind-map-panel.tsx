@@ -22,9 +22,9 @@ import ReactFlow, {
 import "reactflow/dist/style.css";
 import { useAuth } from "@/components/auth/auth-provider";
 import { useMindGrowStore } from "@/store/mindgrow-store";
-import { EntityGraph, GraphEntity, KnowledgeNode, KnowledgeEdge, NodeContext } from "@/types";
+import { EntityGraph, GraphEntity, KnowledgeNode, KnowledgeEdge, NodeContext, NodeLayout, WhiteboardGroup } from "@/types";
 import { apiFetch, IS_LOCAL_MODE } from "@/lib/client-api";
-import type { TenantScope } from "@/lib/tenant-cache";
+import type { GraphSnapshot, TenantScope } from "@/lib/tenant-cache";
 import { MODE_LIBRARY_CONFIG } from "@/lib/mode-libraries";
 import { entityGraphToKnowledgeGraph, entityViewNodeId, formalEntityGraph, isEntityViewNode } from "@/lib/entity-graph";
 import { MindMapSkeleton } from "@/components/mindmap/mind-map-skeleton";
@@ -37,9 +37,15 @@ import { buildLocalNodeContext } from "@/lib/node-context";
 import { searchEntityNetwork, selectEntityNetwork, type EntityNetworkMode } from "@/lib/entity-network";
 import {
   buildWhiteboardCardGeometry,
+  isWhiteboardGroupNode,
+  whiteboardDropGeometry,
+  whiteboardGroupHeight,
+  whiteboardGroupIdFromNodeId,
+  whiteboardGroupNodeId,
   WHITEBOARD_CARD_HEIGHT,
   WHITEBOARD_CARD_WIDTH,
 } from "@/components/mindmap/whiteboard-layout";
+import { WhiteboardGroupNode, type WhiteboardGroupNodeData } from "@/components/mindmap/whiteboard-group-node";
 
 // ============================================================
 // Branch color palette
@@ -52,6 +58,21 @@ const BRANCH_COLORS = [
 const DISPLAY_OVERVIEW_PREFIX = "__mindgrow_overview__";
 const MAX_UNGROUPED_ROOTS = 5;
 const LOCAL_TENANT_SCOPE: TenantScope = { userId: "local-user", workspaceId: "local-workspace" };
+const WHITEBOARD_GROUP_COLORS = ["#22d3a7", "#38bdf8", "#818cf8", "#a78bfa", "#f59e0b", "#f472b6"];
+
+type WhiteboardGroupEditor = {
+  mode: "create" | "rename";
+  groupId: string | null;
+  name: string;
+  color: string;
+  positionX: number;
+  positionY: number;
+};
+
+type WhiteboardGroupDragSnapshot = {
+  group: WhiteboardGroup;
+  memberPositions: Map<string, { x: number; y: number }>;
+};
 
 const ENTITY_TYPE_LABELS: Record<string, string> = {
   person: "人物", organization: "组织", model: "模型", method: "方法",
@@ -173,6 +194,7 @@ function MindGrowNode({ data, selected }: NodeProps) {
   const branchIndex = data.branchIndex as number || 0;
   const citations = (data.citations || []) as KnowledgeNode["citations"];
   const whiteboard = data.whiteboard as boolean;
+  const whiteboardGroupId = String(data.whiteboardGroupId || "");
   const isOverview = isDisplayOverviewNode(data.nodeId as string);
   const borderColor = branchIndex > 0
     ? BRANCH_COLORS[branchIndex % BRANCH_COLORS.length]
@@ -206,6 +228,20 @@ function MindGrowNode({ data, selected }: NodeProps) {
         boxShadow: highlighted || selected ? `0 0 20px ${colors.glow}` : undefined,
       }}
     >
+      {whiteboard && whiteboardGroupId && (
+        <button
+          type="button"
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            (data.onLeaveWhiteboardGroup as ((nodeId: string) => void) | undefined)?.(data.nodeId as string);
+          }}
+          className="nodrag nopan absolute right-2 top-2 z-10 rounded-md border border-[var(--border-default)] bg-[var(--card)]/90 px-1.5 py-0.5 text-[9px] text-[var(--muted-foreground)] shadow-sm transition-colors hover:text-[var(--foreground)]"
+          aria-label={`移出分组 ${data.label as string}`}
+          data-testid="leave-whiteboard-group"
+          title="移到当前分组旁边，知识内容不会改变"
+        >移出</button>
+      )}
       <Handle
         type="target"
         position={horizontal ? Position.Left : Position.Top}
@@ -303,7 +339,7 @@ function EntityNode({ data, selected }: NodeProps) {
   );
 }
 
-const nodeTypes = { mindGrowNode: MindGrowNode, entityNode: EntityNode };
+const nodeTypes = { mindGrowNode: MindGrowNode, entityNode: EntityNode, whiteboardGroup: WhiteboardGroupNode };
 
 function entityForcePositions(entityIds: string[], relations: EntityGraph["relations"]) {
   const positions = new Map<string, { x: number; y: number }>();
@@ -825,6 +861,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
     entityGraph,
     maps,
     layouts,
+    whiteboardGroups,
     highlightedNodeId,
     removeNode,
     setNodes: setStoreNodes,
@@ -840,6 +877,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
     showHelp, setShowHelp,
     currentMode,
     mutateGraphLocally,
+    rollbackGraphLocally,
   } = useMindGrowStore();
 
   const [direction, setDirection] = useState<"vertical" | "horizontal">("vertical");
@@ -868,11 +906,15 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
   const [nodeContextLoading, setNodeContextLoading] = useState(false);
   const [nodeContextError, setNodeContextError] = useState("");
   const [canvasViewError, setCanvasViewError] = useState("");
+  const [groupEditor, setGroupEditor] = useState<WhiteboardGroupEditor | null>(null);
+  const [groupDeleteId, setGroupDeleteId] = useState<string | null>(null);
+  const [groupBusyId, setGroupBusyId] = useState<string | null>(null);
   const reactFlowInstance = useRef<ReactFlowInstance | null>(null);
   const editInputRef = useRef<HTMLInputElement>(null);
   const initializedLargeMapRef = useRef<string | null>(null);
   const selectedEntityIdRef = useRef<string | null>(null);
   const whiteboardFocusKeyRef = useRef("");
+  const whiteboardGroupDragRef = useRef<WhiteboardGroupDragSnapshot | null>(null);
   selectedEntityIdRef.current = selectedEntityId;
 
   // Detect mobile
@@ -904,6 +946,10 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
     setNodeContextLoading(false);
     setNodeContextError("");
     setCanvasViewError("");
+    setGroupEditor(null);
+    setGroupDeleteId(null);
+    setGroupBusyId(null);
+    whiteboardGroupDragRef.current = null;
   }, [currentMapId]);
 
   const officialEntityGraph = useMemo(() => formalEntityGraph(entityGraph), [entityGraph]);
@@ -915,6 +961,12 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
   const canvasView = currentMap?.canvasView || "mindmap";
   const showingEntityGraph = graphLayer === "entity" && entityDisplayGraph.nodes.length > 0;
   const isWhiteboard = !showingEntityGraph && canvasView === "whiteboard";
+  const activeWhiteboardGroups = useMemo(
+    () => whiteboardGroups
+      .filter((group) => group.mapId === currentMapId)
+      .sort((left, right) => left.sortOrder - right.sortOrder || left.createdAt.localeCompare(right.createdAt)),
+    [currentMapId, whiteboardGroups],
+  );
   const activeNodes = showingEntityGraph ? entityDisplayGraph.nodes : storeNodes;
   const activeEdges = showingEntityGraph ? entityDisplayGraph.edges : storeEdges;
 
@@ -1065,6 +1117,210 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
     refitGraph();
   }, [currentMapId, activeNodes, activeEdges, displayHierarchy, isMobile, showingEntityGraph, isWhiteboard, graphLayer, setCollapsedNodes, refitGraph, viewMode, collapsedNodes.size]);
 
+  const runWhiteboardMutation = useCallback(async (
+    recipe: (draft: GraphSnapshot) => void,
+    request: () => Promise<Response>,
+    failureMessage: string,
+  ) => {
+    if (!tenantScope || !currentMapId) return null;
+    const state = useMindGrowStore.getState();
+    const previous: GraphSnapshot = {
+      nodes: state.nodes,
+      edges: state.edges,
+      entityGraph: state.entityGraph,
+      layouts: state.layouts,
+      whiteboardGroups: state.whiteboardGroups,
+    };
+    const overlay = mutateGraphLocally(currentMapId, tenantScope, recipe);
+    if (!overlay) return null;
+    try {
+      const response = await request();
+      if (!response.ok) throw new Error(`Whiteboard mutation failed (${response.status})`);
+      setCanvasViewError("");
+      return await response.json();
+    } catch (error) {
+      console.error("Whiteboard mutation failed:", error);
+      rollbackGraphLocally(currentMapId, tenantScope, previous);
+      setCanvasViewError(failureMessage);
+      return null;
+    }
+  }, [currentMapId, mutateGraphLocally, rollbackGraphLocally, tenantScope]);
+
+  const updateWhiteboardGroup = useCallback(async (
+    groupId: string,
+    patch: Partial<Pick<WhiteboardGroup, "name" | "color" | "positionX" | "positionY" | "width" | "height" | "collapsed" | "sortOrder">>,
+    failureMessage: string,
+  ) => {
+    const current = useMindGrowStore.getState().whiteboardGroups.find((group) => group.mapId === currentMapId && group.id === groupId);
+    if (!current) return false;
+    const next = { ...current, ...patch, updatedAt: new Date().toISOString() };
+    const result = await runWhiteboardMutation(
+      (draft) => {
+        draft.whiteboardGroups = draft.whiteboardGroups.map((group) => group.id === groupId ? next : group);
+      },
+      () => apiFetch("/api/knowledge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        writeForMapId: currentMapId,
+        body: JSON.stringify({ action: "updateWhiteboardGroup", mapId: currentMapId, groupId, ...patch }),
+      }),
+      failureMessage,
+    );
+    return Boolean(result);
+  }, [currentMapId, runWhiteboardMutation]);
+
+  const openCreateWhiteboardGroup = useCallback(() => {
+    const center = reactFlowInstance.current?.screenToFlowPosition({
+      x: typeof window === "undefined" ? 640 : window.innerWidth * 0.64,
+      y: typeof window === "undefined" ? 360 : window.innerHeight * 0.5,
+    }) || { x: 160, y: 160 };
+    setGroupEditor({
+      mode: "create",
+      groupId: null,
+      name: `新分组 ${activeWhiteboardGroups.length + 1}`,
+      color: WHITEBOARD_GROUP_COLORS[activeWhiteboardGroups.length % WHITEBOARD_GROUP_COLORS.length],
+      positionX: Math.round(center.x - 360),
+      positionY: Math.round(center.y - 240),
+    });
+  }, [activeWhiteboardGroups.length]);
+
+  const openRenameWhiteboardGroup = useCallback((groupId: string) => {
+    const group = useMindGrowStore.getState().whiteboardGroups.find((candidate) => candidate.id === groupId && candidate.mapId === currentMapId);
+    if (!group) return;
+    setGroupEditor({
+      mode: "rename",
+      groupId,
+      name: group.name,
+      color: group.color,
+      positionX: group.positionX,
+      positionY: group.positionY,
+    });
+  }, [currentMapId]);
+
+  const submitWhiteboardGroupEditor = useCallback(async () => {
+    if (!groupEditor || !groupEditor.name.trim()) return;
+    if (groupEditor.mode === "rename" && groupEditor.groupId) {
+      setGroupBusyId(groupEditor.groupId);
+      const saved = await updateWhiteboardGroup(
+        groupEditor.groupId,
+        { name: groupEditor.name.trim().slice(0, 80), color: groupEditor.color },
+        "分组名称暂未保存，已恢复原名称",
+      );
+      setGroupBusyId(null);
+      if (saved) setGroupEditor(null);
+      return;
+    }
+
+    const timestamp = new Date().toISOString();
+    const group: WhiteboardGroup = {
+      id: `wbg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      mapId: currentMapId,
+      name: groupEditor.name.trim().slice(0, 80),
+      color: groupEditor.color,
+      positionX: groupEditor.positionX,
+      positionY: groupEditor.positionY,
+      width: 720,
+      height: 480,
+      collapsed: false,
+      sortOrder: activeWhiteboardGroups.length,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    setGroupBusyId(group.id);
+    const created = await runWhiteboardMutation(
+      (draft) => { draft.whiteboardGroups.push(group); },
+      () => apiFetch("/api/knowledge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        writeForMapId: currentMapId,
+        body: JSON.stringify({ action: "createWhiteboardGroup", ...group }),
+      }),
+      "分组创建失败，画布已恢复",
+    );
+    setGroupBusyId(null);
+    if (created) {
+      setGroupEditor(null);
+      window.setTimeout(() => reactFlowInstance.current?.setCenter(group.positionX + group.width / 2, group.positionY + group.height / 2, { zoom: 0.9, duration: 320 }), 80);
+    }
+  }, [activeWhiteboardGroups.length, currentMapId, groupEditor, runWhiteboardMutation, updateWhiteboardGroup]);
+
+  const toggleWhiteboardGroup = useCallback(async (groupId: string) => {
+    const group = useMindGrowStore.getState().whiteboardGroups.find((candidate) => candidate.id === groupId && candidate.mapId === currentMapId);
+    if (!group) return;
+    setGroupBusyId(groupId);
+    await updateWhiteboardGroup(groupId, { collapsed: !group.collapsed }, "分组折叠状态暂未保存，已恢复原状态");
+    setGroupBusyId(null);
+  }, [currentMapId, updateWhiteboardGroup]);
+
+  const resizeWhiteboardGroup = useCallback(async (
+    groupId: string,
+    geometry: { positionX: number; positionY: number; width: number; height: number },
+  ) => {
+    setGroupBusyId(groupId);
+    await updateWhiteboardGroup(groupId, geometry, "分组尺寸暂未保存，已恢复原大小");
+    setGroupBusyId(null);
+  }, [updateWhiteboardGroup]);
+
+  const deleteWhiteboardGroup = useCallback(async () => {
+    const groupId = groupDeleteId;
+    const group = useMindGrowStore.getState().whiteboardGroups.find((candidate) => candidate.id === groupId && candidate.mapId === currentMapId);
+    if (!groupId || !group) return;
+    setGroupBusyId(groupId);
+    const deleted = await runWhiteboardMutation(
+      (draft) => {
+        draft.whiteboardGroups = draft.whiteboardGroups.filter((candidate) => candidate.id !== groupId);
+        draft.layouts = draft.layouts.map((layout) => layout.mapId === currentMapId && layout.groupId === groupId
+          ? {
+            ...layout,
+            positionX: group.positionX + layout.positionX,
+            positionY: group.positionY + layout.positionY,
+            groupId: null,
+            updatedAt: new Date().toISOString(),
+          }
+          : layout);
+      },
+      () => apiFetch("/api/knowledge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        writeForMapId: currentMapId,
+        body: JSON.stringify({ action: "deleteWhiteboardGroup", mapId: currentMapId, groupId }),
+      }),
+      "分组删除失败，卡片和分组已恢复",
+    );
+    setGroupBusyId(null);
+    if (deleted) setGroupDeleteId(null);
+  }, [currentMapId, groupDeleteId, runWhiteboardMutation]);
+
+  const leaveWhiteboardGroup = useCallback(async (nodeId: string) => {
+    const state = useMindGrowStore.getState();
+    const layout = state.layouts.find((candidate) => candidate.mapId === currentMapId && candidate.nodeId === nodeId);
+    const group = layout?.groupId
+      ? state.whiteboardGroups.find((candidate) => candidate.mapId === currentMapId && candidate.id === layout.groupId)
+      : null;
+    if (!layout || !group) return;
+    const nextLayout: NodeLayout = {
+      ...layout,
+      positionX: group.positionX - layout.cardWidth - 48,
+      positionY: group.positionY + 96,
+      groupId: null,
+      updatedAt: new Date().toISOString(),
+    };
+    await runWhiteboardMutation(
+      (draft) => {
+        draft.layouts = draft.layouts.map((candidate) => (
+          candidate.mapId === currentMapId && candidate.nodeId === nodeId ? nextLayout : candidate
+        ));
+      },
+      () => apiFetch("/api/knowledge", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        writeForMapId: currentMapId,
+        body: JSON.stringify(nextLayout),
+      }),
+      "卡片暂未移出分组，已恢复原位置",
+    );
+  }, [currentMapId, runWhiteboardMutation]);
+
   const whiteboardGraph = useMemo(() => {
     const conceptGraph = buildGraph(
       storeNodes,
@@ -1085,31 +1341,59 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
       layouts,
       currentMapId,
       isMobile ? 1 : 2,
+      activeWhiteboardGroups,
     );
+    const collapsedGroupIds = new Set(activeWhiteboardGroups.filter((group) => group.collapsed).map((group) => group.id));
+    const cardNodes = conceptGraph.nodes.map((node) => {
+      const card = geometry.get(node.id);
+      if (!card) return node;
+      return {
+        ...node,
+        position: card.position,
+        zIndex: 20,
+        style: { ...node.style, width: card.width, height: card.height },
+        data: {
+          ...node.data,
+          childCount: 0,
+          collapsed: false,
+          compact: false,
+          direction: "horizontal",
+          showDetails: true,
+          whiteboard: true,
+          whiteboardGroupId: card.groupId,
+          whiteboardPersisted: card.persisted,
+          onLeaveWhiteboardGroup: leaveWhiteboardGroup,
+        },
+      };
+    }).filter((node) => !collapsedGroupIds.has(String(node.data.whiteboardGroupId || "")));
+    const visibleCardIds = new Set(cardNodes.map((node) => node.id));
+    const groupNodes: Node<WhiteboardGroupNodeData>[] = activeWhiteboardGroups.map((group) => ({
+      id: whiteboardGroupNodeId(group.id),
+      type: "whiteboardGroup",
+      position: { x: group.positionX, y: group.positionY },
+      draggable: groupBusyId !== group.id,
+      selectable: true,
+      connectable: false,
+      dragHandle: ".whiteboard-group-drag",
+      zIndex: 30,
+      className: "pointer-events-none",
+      style: { width: group.width, height: whiteboardGroupHeight(group), pointerEvents: "none" },
+      data: {
+        group,
+        cardCount: layouts.filter((layout) => layout.mapId === currentMapId && layout.groupId === group.id).length,
+        busy: groupBusyId === group.id,
+        onRename: openRenameWhiteboardGroup,
+        onToggleCollapsed: toggleWhiteboardGroup,
+        onDelete: setGroupDeleteId,
+        onResize: resizeWhiteboardGroup,
+      },
+    }));
     return {
       ...conceptGraph,
-      nodes: conceptGraph.nodes.map((node) => {
-        const card = geometry.get(node.id);
-        if (!card) return node;
-        return {
-          ...node,
-          position: card.position,
-          style: { ...node.style, width: card.width, height: card.height },
-          data: {
-            ...node.data,
-            childCount: 0,
-            collapsed: false,
-            compact: false,
-            direction: "horizontal",
-            showDetails: true,
-            whiteboard: true,
-            whiteboardGroupId: card.groupId,
-            whiteboardPersisted: card.persisted,
-          },
-        };
-      }),
+      nodes: [...groupNodes, ...cardNodes],
+      edges: conceptGraph.edges.filter((edge) => visibleCardIds.has(edge.source) && visibleCardIds.has(edge.target)),
     };
-  }, [currentMapId, handleFocusBranch, handleToggleBranch, highlightedNodeId, isMobile, layouts, searchResults, storeEdges, storeNodes, sv]);
+  }, [activeWhiteboardGroups, currentMapId, groupBusyId, handleFocusBranch, handleToggleBranch, highlightedNodeId, isMobile, layouts, leaveWhiteboardGroup, openRenameWhiteboardGroup, resizeWhiteboardGroup, searchResults, storeEdges, storeNodes, sv, toggleWhiteboardGroup]);
 
   const baseGraph = useMemo(
     () => showingEntityGraph
@@ -1157,7 +1441,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
   }, [baseGraph, hoveredEntityId]);
 
   const visibleStoredNodeCount = isWhiteboard
-    ? graph.nodes.length
+    ? graph.nodes.filter((node) => !isWhiteboardGroupNode(node.id)).length
     : Math.max(0, graph.nodes.length - displayHierarchy.syntheticNodeCount);
   const hiddenNodeCount = isWhiteboard ? 0 : Math.max(0, activeNodes.length - visibleStoredNodeCount);
   const overviewNodeId = displayHierarchy.syntheticNodeCount
@@ -1179,6 +1463,10 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
     ? officialEntityGraph.entities.find((entity) => entityViewNodeId(entity.id) === selectedEntityId) || null
     : null;
   const currentMapName = currentMap?.name;
+  const groupPendingDelete = activeWhiteboardGroups.find((group) => group.id === groupDeleteId) || null;
+  const groupPendingDeleteCardCount = groupPendingDelete
+    ? layouts.filter((layout) => layout.mapId === currentMapId && layout.groupId === groupPendingDelete.id).length
+    : 0;
 
   const [flowNodes, setFlowNodes, onNodesChange] = useNodesState(graph.nodes);
   const [flowEdges, setFlowEdges, onEdgesChange] = useEdgesState(graph.edges);
@@ -1269,41 +1557,79 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
   );
 
   const persistWhiteboardNodePosition = useCallback(async (node: Node) => {
-    if (!isWhiteboard) return;
+    if (!isWhiteboard || isWhiteboardGroupNode(node.id)) return;
     const currentLayout = layouts.find((layout) => layout.mapId === currentMapId && layout.nodeId === node.id);
+    const width = Number(node.width || node.style?.width || currentLayout?.cardWidth || WHITEBOARD_CARD_WIDTH);
+    const height = Number(node.height || node.style?.height || currentLayout?.cardHeight || WHITEBOARD_CARD_HEIGHT);
+    const drop = whiteboardDropGeometry(node.position, width, height, activeWhiteboardGroups, currentMapId);
     const nextLayout = {
       nodeId: node.id,
       mapId: currentMapId,
-      positionX: node.position.x,
-      positionY: node.position.y,
+      positionX: drop.positionX,
+      positionY: drop.positionY,
       zoomLevel: currentLayout?.zoomLevel || 1,
-      groupId: currentLayout?.groupId || null,
-      cardWidth: currentLayout?.cardWidth || WHITEBOARD_CARD_WIDTH,
-      cardHeight: currentLayout?.cardHeight || WHITEBOARD_CARD_HEIGHT,
+      groupId: drop.groupId,
+      cardWidth: width,
+      cardHeight: height,
       updatedAt: new Date().toISOString(),
     };
-    if (tenantScope) {
-      mutateGraphLocally(currentMapId, tenantScope, (draft) => {
+    await runWhiteboardMutation(
+      (draft) => {
         draft.layouts = [
           ...draft.layouts.filter((layout) => layout.nodeId !== node.id),
           nextLayout,
         ];
-      });
-    }
-    try {
-      const response = await apiFetch("/api/knowledge", {
+      },
+      () => apiFetch("/api/knowledge", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         writeForMapId: currentMapId,
         body: JSON.stringify(nextLayout),
-      });
-      if (!response.ok) throw new Error("Whiteboard position update failed");
-      setCanvasViewError("");
-    } catch (error) {
-      console.error("Failed to save whiteboard position:", error);
-      setCanvasViewError("卡片位置暂未保存，请稍后重试");
+      }),
+      "卡片位置或分组暂未保存，已恢复原位置",
+    );
+  }, [activeWhiteboardGroups, currentMapId, isWhiteboard, layouts, runWhiteboardMutation]);
+
+  const onWhiteboardNodeDragStart = useCallback((_: React.MouseEvent, node: Node) => {
+    const groupId = whiteboardGroupIdFromNodeId(node.id);
+    if (!isWhiteboard || !groupId) return;
+    const group = activeWhiteboardGroups.find((candidate) => candidate.id === groupId);
+    if (!group) return;
+    whiteboardGroupDragRef.current = {
+      group,
+      memberPositions: new Map(flowNodes
+        .filter((candidate) => String(candidate.data?.whiteboardGroupId || "") === groupId)
+        .map((candidate) => [candidate.id, { ...candidate.position }])),
+    };
+  }, [activeWhiteboardGroups, flowNodes, isWhiteboard]);
+
+  const onWhiteboardNodeDrag = useCallback((_: React.MouseEvent, node: Node) => {
+    const groupId = whiteboardGroupIdFromNodeId(node.id);
+    const snapshot = whiteboardGroupDragRef.current;
+    if (!isWhiteboard || !groupId || !snapshot || snapshot.group.id !== groupId) return;
+    const deltaX = node.position.x - snapshot.group.positionX;
+    const deltaY = node.position.y - snapshot.group.positionY;
+    setFlowNodes((current) => current.map((candidate) => {
+      const start = snapshot.memberPositions.get(candidate.id);
+      return start ? { ...candidate, position: { x: start.x + deltaX, y: start.y + deltaY } } : candidate;
+    }));
+  }, [isWhiteboard, setFlowNodes]);
+
+  const onWhiteboardNodeDragStop = useCallback(async (_: React.MouseEvent, node: Node) => {
+    const groupId = whiteboardGroupIdFromNodeId(node.id);
+    if (!groupId) {
+      await persistWhiteboardNodePosition(node);
+      return;
     }
-  }, [currentMapId, isWhiteboard, layouts, mutateGraphLocally, tenantScope]);
+    whiteboardGroupDragRef.current = null;
+    setGroupBusyId(groupId);
+    await updateWhiteboardGroup(
+      groupId,
+      { positionX: node.position.x, positionY: node.position.y },
+      "分组位置暂未保存，整组已恢复原位置",
+    );
+    setGroupBusyId(null);
+  }, [persistWhiteboardNodePosition, updateWhiteboardGroup]);
 
   // Node changes keep the canvas responsive; whiteboard persistence is tied
   // to the explicit drag-stop event so pointer implementations behave alike.
@@ -1312,7 +1638,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
       onNodesChange(changes);
       if (showingEntityGraph) return;
       for (const change of changes) {
-        if ("id" in change && isDisplayOverviewNode(change.id)) continue;
+        if ("id" in change && (isDisplayOverviewNode(change.id) || isWhiteboardGroupNode(change.id))) continue;
         if (change.type === "remove") {
           try { await apiFetch("/api/knowledge?nodeId=" + change.id, { method: "DELETE", writeForMapId: currentMapId }); }
           catch (e) { console.error("Failed to delete node:", e); }
@@ -1328,7 +1654,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
       if (e.key === "Delete" || e.key === "Backspace") {
         const active = document.activeElement;
         if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA")) return;
-        const selected = flowNodes.filter((n) => n.selected && !isDisplayOverviewNode(n.id) && !isEntityViewNode(n.id));
+        const selected = flowNodes.filter((n) => n.selected && !isDisplayOverviewNode(n.id) && !isEntityViewNode(n.id) && !isWhiteboardGroupNode(n.id));
         if (selected.length === 0) return;
         e.preventDefault();
         pushHistory();
@@ -1443,7 +1769,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
       if (!nodeEl) return;
       const nodeId = nodeEl.getAttribute('data-id');
       if (!nodeId) return;
-      if (isDisplayOverviewNode(nodeId) || isEntityViewNode(nodeId)) return;
+      if (isDisplayOverviewNode(nodeId) || isEntityViewNode(nodeId) || isWhiteboardGroupNode(nodeId)) return;
       e.preventDefault();
       setContextMenu({ nodeId, x: e.clientX, y: e.clientY });
     };
@@ -1636,6 +1962,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
       data-graph-view-mode={viewMode}
       data-canvas-view={canvasView}
       data-visible-node-count={visibleStoredNodeCount}
+      data-whiteboard-group-count={activeWhiteboardGroups.length}
     >
       {/* Top toolbar */}
       <div className={`absolute z-50 flex gap-1.5 ${isMobile ? 'right-3 flex-col items-end' : 'left-3 right-3 flex-wrap'}`} style={{ top: isMobile ? "max(calc(env(safe-area-inset-top) + 12px), 32px)" : "12px" }}>
@@ -1694,6 +2021,14 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
                   className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-all ${isWhiteboard ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"}`}
                 >白板</button>
               </div>
+            )}
+            {isWhiteboard && (
+              <button
+                type="button"
+                onClick={openCreateWhiteboardGroup}
+                className="rounded-xl border border-[var(--primary-border)] bg-[var(--primary-subtle)] px-3 py-2 text-xs font-semibold text-[var(--primary-hover)] transition-colors hover:bg-[var(--primary)] hover:text-[var(--primary-foreground)]"
+                data-testid="create-whiteboard-group"
+              >＋ 空间分组{activeWhiteboardGroups.length ? ` ${activeWhiteboardGroups.length}` : ""}</button>
             )}
             <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/5 px-3 py-2 text-[10px] font-medium text-emerald-200" title="新增内容会成为节点；层级、关联与冲突关系会持续连接旧知识">
               🌱 生长中 · {activeNodes.length} 节点 · {activeEdges.length} 条连接{relationCount > 0 ? ` · ${relationCount} 条${showingEntityGraph ? "有向" : "语义"}关系` : ""}{citedNodeCount > 0 ? ` · ${citedNodeCount} 个可追溯节点` : ""}
@@ -1961,6 +2296,80 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
         </div>
       )}
 
+      {groupEditor && (
+        <div className="fixed inset-0 z-[220] flex items-center justify-center bg-[var(--overlay-bg)] p-4 backdrop-blur-sm" data-testid="whiteboard-group-editor">
+          <div className="w-[min(92vw,420px)] rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-semibold text-[var(--foreground)]">{groupEditor.mode === "create" ? "新建空间分组" : "编辑空间分组"}</h3>
+                <p className="mt-1 text-[11px] leading-5 text-[var(--muted-foreground)]">分组只改变白板布局，不会改写知识关系或 Citation。</p>
+              </div>
+              <button type="button" onClick={() => setGroupEditor(null)} className="rounded-lg border border-[var(--border)] px-2 py-1 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)]" aria-label="关闭分组编辑">×</button>
+            </div>
+            <label className="mt-4 block text-[11px] font-medium text-[var(--muted-foreground)]" htmlFor="whiteboard-group-name">分组名称</label>
+            <input
+              id="whiteboard-group-name"
+              value={groupEditor.name}
+              onChange={(event) => setGroupEditor((current) => current ? { ...current, name: event.target.value } : current)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && groupEditor.name.trim()) void submitWhiteboardGroupEditor();
+                if (event.key === "Escape") setGroupEditor(null);
+              }}
+              maxLength={80}
+              autoFocus
+              className="mt-1.5 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2.5 text-sm text-[var(--foreground)] outline-none focus:border-[var(--primary)]"
+              data-testid="whiteboard-group-name"
+            />
+            <div className="mt-4 text-[11px] font-medium text-[var(--muted-foreground)]">识别颜色</div>
+            <div className="mt-2 flex flex-wrap gap-2" data-testid="whiteboard-group-colors">
+              {WHITEBOARD_GROUP_COLORS.map((color) => (
+                <button
+                  key={color}
+                  type="button"
+                  aria-label={`选择颜色 ${color}`}
+                  aria-pressed={groupEditor.color === color}
+                  onClick={() => setGroupEditor((current) => current ? { ...current, color } : current)}
+                  className={`h-8 w-8 rounded-full border-2 transition-transform hover:scale-105 ${groupEditor.color === color ? "scale-110 border-white" : "border-transparent"}`}
+                  style={{ backgroundColor: color }}
+                  data-group-color={color}
+                />
+              ))}
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={() => setGroupEditor(null)} className="rounded-xl px-4 py-2 text-xs text-[var(--muted-foreground)] hover:bg-[var(--bg-hover)] hover:text-[var(--foreground)]">取消</button>
+              <button
+                type="button"
+                onClick={() => { void submitWhiteboardGroupEditor(); }}
+                disabled={!groupEditor.name.trim() || Boolean(groupBusyId)}
+                className="rounded-xl bg-[var(--primary)] px-4 py-2 text-xs font-semibold text-[var(--primary-foreground)] disabled:cursor-not-allowed disabled:opacity-50"
+                data-testid="save-whiteboard-group"
+              >{groupBusyId ? "保存中…" : groupEditor.mode === "create" ? "创建分组" : "保存修改"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {groupPendingDelete && (
+        <div className="fixed inset-0 z-[225] flex items-center justify-center bg-[var(--overlay-bg)] p-4 backdrop-blur-sm" data-testid="whiteboard-group-delete-confirm">
+          <div className="w-[min(92vw,420px)] rounded-2xl border border-red-400/25 bg-[var(--card)] p-5 shadow-2xl">
+            <h3 className="text-sm font-semibold text-[var(--foreground)]">删除空间分组“{groupPendingDelete.name}”？</h3>
+            <p className="mt-2 text-[11px] leading-5 text-[var(--muted-foreground)]">
+              分组框会删除，{groupPendingDeleteCardCount} 张卡片会保留在当前位置并移出分组；知识节点、关系和引用不会删除。
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={() => setGroupDeleteId(null)} className="rounded-xl px-4 py-2 text-xs text-[var(--muted-foreground)] hover:bg-[var(--bg-hover)] hover:text-[var(--foreground)]">取消</button>
+              <button
+                type="button"
+                onClick={() => { void deleteWhiteboardGroup(); }}
+                disabled={groupBusyId === groupPendingDelete.id}
+                className="rounded-xl bg-red-500 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                data-testid="confirm-delete-whiteboard-group"
+              >{groupBusyId === groupPendingDelete.id ? "处理中…" : "仅删除分组"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Inline edit overlay */}
       {editingNode && (
         <div className="fixed inset-0 z-[150] flex items-center justify-center bg-[var(--overlay-bg)] backdrop-blur-sm">
@@ -2033,7 +2442,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
 
       {isWhiteboard && (
         <div className="pointer-events-none absolute bottom-4 left-3 z-40 rounded-xl border border-[var(--primary-border)] bg-[var(--card)]/95 px-3 py-2 text-[11px] text-[var(--primary-hover)] shadow-lg backdrop-blur" data-testid="whiteboard-status">
-          白板模式 · 拖动卡片后自动保存位置 · 内容与引用保持完整
+          白板模式 · {activeWhiteboardGroups.length} 个空间分组 · 卡片拖入/拖出自动归组 · 内容与引用保持完整
         </div>
       )}
 
@@ -2102,7 +2511,9 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
         nodes={flowNodes}
         edges={flowEdges}
         onNodesChange={onNodesChangeHandler}
-        onNodeDragStop={(_, node) => { void persistWhiteboardNodePosition(node); }}
+        onNodeDragStart={onWhiteboardNodeDragStart}
+        onNodeDrag={onWhiteboardNodeDrag}
+        onNodeDragStop={(event, node) => { void onWhiteboardNodeDragStop(event, node); }}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onEdgeClick={(_, edge) => {
@@ -2149,6 +2560,8 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
           pannable
           zoomable
           nodeColor={(n) => {
+            const groupId = whiteboardGroupIdFromNodeId(n.id);
+            if (groupId) return activeWhiteboardGroups.find((group) => group.id === groupId)?.color || "#22d3a7";
             const type = n.data?.nodeType as string;
             const bi = n.data?.branchIndex as number;
             if (bi && bi > 0) return BRANCH_COLORS[bi % BRANCH_COLORS.length];

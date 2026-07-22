@@ -99,6 +99,7 @@ export interface MindGrowState {
     scope: TenantScope,
     recipe: (draft: GraphSnapshot) => void,
   ) => LocalOverlayToken | null;
+  rollbackGraphLocally: (mapId: string, scope: TenantScope, snapshot: GraphSnapshot) => boolean;
   resetTenantContext: () => void;
 
   // Map-scoped write lifecycle. Reads and model-only requests never enter it.
@@ -288,6 +289,23 @@ export const useMindGrowStore = create<MindGrowState>((set, get) => ({
       draft.localOverlayTokenByMap[mapId] = overlayToken;
     }));
     return overlayToken;
+  },
+  rollbackGraphLocally: (mapId, scope, snapshot) => {
+    const state = get();
+    if (state.currentMapId !== mapId) return false;
+    tenantMapKey(scope, mapId);
+    const overlayToken = state.localOverlayTokenByMap[mapId];
+    if (overlayToken && !tenantCache.discardLocalOverlay(overlayToken)) return false;
+    set(produce((draft: MindGrowState) => {
+      draft.nodes = snapshot.nodes;
+      draft.edges = snapshot.edges;
+      draft.entityGraph = snapshot.entityGraph;
+      draft.layouts = snapshot.layouts;
+      draft.whiteboardGroups = snapshot.whiteboardGroups;
+      draft.localEditVersionByMap[mapId] = (draft.localEditVersionByMap[mapId] ?? 0) + 1;
+      delete draft.localOverlayTokenByMap[mapId];
+    }));
+    return true;
   },
   pendingWritesByMap: {},
   activeWriteRequests: {},

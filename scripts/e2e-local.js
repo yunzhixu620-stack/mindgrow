@@ -6,6 +6,7 @@ const { jsPDF } = require("jspdf");
 const BASE_URL = process.env.MINDGROW_BASE_URL || "http://localhost:3000";
 const BASE_PATH = new URL(BASE_URL).pathname.replace(/\/$/, "");
 const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+const E2E_FILTER = String(process.env.MINDGROW_E2E_FILTER || "").trim().toLocaleLowerCase();
 const artifactDir = path.join(__dirname, "..", "artifacts");
 fs.mkdirSync(artifactDir, { recursive: true });
 const pdfPath = path.join(artifactDir, "mindgrow-citation-sample.pdf");
@@ -22,6 +23,7 @@ const results = [];
 let meetingLibraryId = "";
 let articleLibraryId = "";
 const check = async (name, task) => {
+  if (E2E_FILTER && !name.toLocaleLowerCase().includes(E2E_FILTER)) return;
   try {
     await task();
     results.push({ name, ok: true });
@@ -29,6 +31,7 @@ const check = async (name, task) => {
   } catch (error) {
     results.push({ name, ok: false, error: error.message });
     console.error(`FAIL ${name}: ${error.message}`);
+    if (E2E_FILTER && error.stack) console.error(error.stack);
   }
 };
 
@@ -106,6 +109,7 @@ const expandOneVisibleLevel = async (page, previousCount) => {
   });
 
   await check("whiteboard view persists card positions and returns to the mind map", async () => {
+    await page.waitForSelector('[data-testid="canvas-view-whiteboard"]', { timeout: 30000 });
     const activeMapId = await page.$eval('[data-testid="knowledge-workspace"]', (element) => element.getAttribute("data-current-map-id"));
     if (!activeMapId) throw new Error("Active map id is missing");
     await page.click('[data-testid="canvas-view-whiteboard"]');
@@ -148,6 +152,154 @@ const expandOneVisibleLevel = async (page, previousCount) => {
         && layout?.positionX === x
         && layout?.positionY === y;
     }, {}, nodeId, saved.positionX, saved.positionY);
+
+    await page.click('[data-testid="create-whiteboard-group"]');
+    await page.waitForSelector('[data-testid="whiteboard-group-editor"]');
+    await page.click('[data-testid="whiteboard-group-name"]', { clickCount: 3 });
+    await page.type('[data-testid="whiteboard-group-name"]', "检索方法");
+    await page.click('[data-testid="save-whiteboard-group"]');
+    await page.waitForFunction((mapId) => {
+      const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+      return document.querySelectorAll('[data-testid="whiteboard-group"]').length === 1
+        && (state.whiteboardGroups?.[mapId] || []).length === 1;
+    }, {}, activeMapId);
+    // Group creation recenters the viewport with a short animation. Wait for it
+    // to settle before deriving pointer coordinates for the following drag.
+    await page.evaluate(() => new Promise((resolve) => window.setTimeout(resolve, 500)));
+    const groupId = await page.$eval('[data-testid="whiteboard-group"]', (element) => element.getAttribute("data-whiteboard-group-id"));
+    if (!groupId) throw new Error("Created whiteboard group has no stable id");
+
+    const groupNode = await page.$(`.react-flow__node[data-id="__mindgrow_whiteboard_group__${groupId}"]`);
+    const candidateCards = await page.$$('.react-flow__node:has([data-whiteboard-card="true"])');
+    const groupBox = await groupNode?.boundingBox();
+    let groupedCard = null;
+    let groupedCardBox = null;
+    for (const candidate of candidateCards) {
+      const box = await candidate.boundingBox();
+      if (box && box.x + box.width > 0 && box.y + box.height > 90 && box.x < 1440 && box.y < 900) {
+        groupedCard = candidate;
+        groupedCardBox = box;
+        break;
+      }
+    }
+    if (!groupNode || !groupBox || !groupedCard || !groupedCardBox) throw new Error("Whiteboard group or visible card cannot be dragged");
+    const groupedCardId = await groupedCard.evaluate((element) => element.getAttribute("data-id"));
+    if (!groupedCardId) throw new Error("Grouped card id is missing");
+    await page.mouse.move(groupedCardBox.x + groupedCardBox.width / 2, groupedCardBox.y + groupedCardBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(groupBox.x + Math.min(220, groupBox.width / 2), groupBox.y + Math.min(190, groupBox.height / 2), { steps: 10 });
+    await page.mouse.up();
+    try {
+      await page.waitForFunction((id, mapId, expectedGroupId) => {
+        const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+        const layout = state.layouts?.[id];
+        return layout?.mapId === mapId && layout.groupId === expectedGroupId;
+      }, { timeout: 8000 }, groupedCardId, activeMapId, groupId);
+    } catch {
+      const debug = await page.evaluate((id, mapId, expectedGroupId) => {
+        const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+        const card = document.querySelector(`.react-flow__node[data-id="${id}"]`)?.getBoundingClientRect();
+        const group = document.querySelector(`[data-whiteboard-group-id="${expectedGroupId}"]`)?.closest(".react-flow__node")?.getBoundingClientRect();
+        return { layout: state.layouts?.[id], group: (state.whiteboardGroups?.[mapId] || []).find((item) => item.id === expectedGroupId), card: card && { x: card.x, y: card.y, width: card.width, height: card.height }, groupBox: group && { x: group.x, y: group.y, width: group.width, height: group.height } };
+      }, groupedCardId, activeMapId, groupId);
+      throw new Error(`Card did not enter the whiteboard group: ${JSON.stringify(debug)}`);
+    }
+    const relativeLayout = await page.evaluate((id) => JSON.parse(localStorage.getItem("mindgrow.local.v2")).layouts[id], groupedCardId);
+
+    await page.click(`button[aria-label="重命名分组 检索方法"]`);
+    await page.waitForSelector('[data-testid="whiteboard-group-editor"]');
+    await page.click('[data-testid="whiteboard-group-name"]', { clickCount: 3 });
+    await page.type('[data-testid="whiteboard-group-name"]', "检索与 RAG");
+    await page.click('[data-testid="save-whiteboard-group"]');
+    await page.waitForFunction((mapId, expectedGroupId) => {
+      const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+      return (state.whiteboardGroups?.[mapId] || []).find((group) => group.id === expectedGroupId)?.name === "检索与 RAG";
+    }, {}, activeMapId, groupId);
+
+    await page.waitForSelector(`button[aria-label="放大分组 检索与 RAG"]:not([disabled])`);
+    await page.$eval(`button[aria-label="放大分组 检索与 RAG"]`, (button) => button.click());
+    await page.waitForFunction((mapId, expectedGroupId) => {
+      const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+      const group = (state.whiteboardGroups?.[mapId] || []).find((item) => item.id === expectedGroupId);
+      return group?.width > 720 && group?.height > 480;
+    }, {}, activeMapId, groupId);
+
+    await page.waitForSelector(`button[aria-label="折叠分组 检索与 RAG"]:not([disabled])`);
+    await page.$eval(`button[aria-label="折叠分组 检索与 RAG"]`, (button) => button.click());
+    await page.waitForFunction((mapId, expectedGroupId) => {
+      const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+      const group = (state.whiteboardGroups?.[mapId] || []).find((item) => item.id === expectedGroupId);
+      return group?.collapsed === true;
+    }, {}, activeMapId, groupId);
+    await page.waitForFunction((cardId) => !document.querySelector(`.react-flow__node[data-id="${cardId}"]`), {}, groupedCardId);
+    await page.waitForSelector(`button[aria-label="展开分组 检索与 RAG"]:not([disabled])`);
+    await page.$eval(`button[aria-label="展开分组 检索与 RAG"]`, (button) => button.click());
+    await page.waitForFunction((mapId, expectedGroupId) => {
+      const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+      const group = (state.whiteboardGroups?.[mapId] || []).find((item) => item.id === expectedGroupId);
+      return group?.collapsed === false;
+    }, {}, activeMapId, groupId);
+    await page.waitForSelector(`.react-flow__node[data-id="${groupedCardId}"]`, { timeout: 10000 });
+    await page.waitForSelector(`button[aria-label="折叠分组 检索与 RAG"]:not([disabled])`);
+
+    const groupBeforeMove = await page.evaluate((mapId, expectedGroupId) => {
+      const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+      return (state.whiteboardGroups?.[mapId] || []).find((item) => item.id === expectedGroupId);
+    }, activeMapId, groupId);
+    const dragHandle = await page.$('[data-testid="whiteboard-group-drag-handle"]');
+    const dragHandleBox = await dragHandle?.boundingBox();
+    if (!dragHandleBox) throw new Error("Whiteboard group drag handle is missing");
+    await page.mouse.move(dragHandleBox.x + 90, dragHandleBox.y + dragHandleBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(dragHandleBox.x + 180, dragHandleBox.y + dragHandleBox.height / 2 + 64, { steps: 10 });
+    await page.mouse.up();
+    await page.waitForFunction((mapId, expectedGroupId, x, y) => {
+      const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+      const group = (state.whiteboardGroups?.[mapId] || []).find((item) => item.id === expectedGroupId);
+      return group && (Math.abs(group.positionX - x) > 40 || Math.abs(group.positionY - y) > 40);
+    }, {}, activeMapId, groupId, groupBeforeMove.positionX, groupBeforeMove.positionY);
+    await page.waitForSelector(`button[aria-label="折叠分组 检索与 RAG"]:not([disabled])`);
+    const layoutAfterGroupMove = await page.evaluate((id) => JSON.parse(localStorage.getItem("mindgrow.local.v2")).layouts[id], groupedCardId);
+    if (layoutAfterGroupMove.positionX !== relativeLayout.positionX || layoutAfterGroupMove.positionY !== relativeLayout.positionY) {
+      throw new Error("Moving a group rewrote its card's relative position");
+    }
+
+    await page.$eval(`.react-flow__node[data-id="${groupedCardId}"] [data-testid="leave-whiteboard-group"]`, (button) => button.click());
+    await page.waitForFunction((id) => JSON.parse(localStorage.getItem("mindgrow.local.v2")).layouts[id]?.groupId === null, {}, groupedCardId);
+
+    const outsideCard = await page.$(`.react-flow__node[data-id="${groupedCardId}"]`);
+    const outsideCardBox = await outsideCard?.boundingBox();
+    const groupForReturn = await page.$eval(`.react-flow__node[data-id="__mindgrow_whiteboard_group__${groupId}"]`, (element) => {
+      const box = element.getBoundingClientRect();
+      return { x: box.x, y: box.y, width: box.width, height: box.height };
+    });
+    if (!outsideCardBox || !groupForReturn) throw new Error("Ungrouped card cannot be moved back into the group");
+    await page.mouse.move(outsideCardBox.x + outsideCardBox.width / 2, outsideCardBox.y + outsideCardBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(groupForReturn.x + Math.min(230, groupForReturn.width / 2), groupForReturn.y + Math.min(190, groupForReturn.height / 2), { steps: 10 });
+    await page.mouse.up();
+    await page.waitForFunction((id, expectedGroupId) => JSON.parse(localStorage.getItem("mindgrow.local.v2")).layouts[id]?.groupId === expectedGroupId, {}, groupedCardId, groupId);
+
+    await page.click(`button[aria-label="删除分组 检索与 RAG"]`);
+    await page.waitForSelector('[data-testid="whiteboard-group-delete-confirm"]');
+    await page.click('[data-testid="confirm-delete-whiteboard-group"]');
+    await page.waitForFunction((mapId, id) => {
+      const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+      return (state.whiteboardGroups?.[mapId] || []).length === 0
+        && state.layouts?.[id]?.groupId === null
+        && Boolean(document.querySelector(`.react-flow__node[data-id="${id}"]`));
+    }, {}, activeMapId, groupedCardId);
+
+    const ungroupedAfterDelete = await page.evaluate((id) => JSON.parse(localStorage.getItem("mindgrow.local.v2")).layouts[id], groupedCardId);
+    await page.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
+    await page.waitForFunction((mapId, id, x, y) => {
+      const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+      return document.querySelector('[data-testid="knowledge-graph-workspace"]')?.getAttribute("data-canvas-view") === "whiteboard"
+        && (state.whiteboardGroups?.[mapId] || []).length === 0
+        && state.layouts?.[id]?.positionX === x
+        && state.layouts?.[id]?.positionY === y
+        && Boolean(document.querySelector(`.react-flow__node[data-id="${id}"]`));
+    }, {}, activeMapId, groupedCardId, ungroupedAfterDelete.positionX, ungroupedAfterDelete.positionY);
 
     await page.click('[data-testid="canvas-view-mindmap"]');
     await page.waitForFunction((mapId) => {
@@ -753,7 +905,7 @@ const expandOneVisibleLevel = async (page, previousCount) => {
         }
         const commandEntityTitle = await page.$eval('[data-testid="entity-detail-panel"]', (panel) => panel.textContent);
         if (!commandEntityTitle.includes(entityQuery)) throw new Error("Command palette did not focus the selected entity");
-        await page.keyboard.press("Escape");
+        await page.click('button[aria-label="关闭实体详情"]');
         await page.waitForFunction(() => !document.querySelector('[data-testid="entity-detail-panel"]'));
       });
     });

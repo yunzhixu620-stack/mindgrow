@@ -144,6 +144,31 @@ describe("MindGrow Store graph channels", () => {
     expect(useMindGrowStore.getState().getLocalEditVersion("map-a")).toBe(1);
   });
 
+  it("rolls an optimistic graph mutation back to the prior server snapshot", () => {
+    selectMap();
+    const before = graph("server");
+    useMindGrowStore.getState().hydrateGraphFromServer(
+      "map-a",
+      before,
+      0,
+      scopeA,
+      tenantCache.beginMapRead(scopeA, "map-a"),
+    );
+    useMindGrowStore.getState().mutateGraphLocally("map-a", scopeA, (draft) => {
+      draft.whiteboardGroups.push({
+        id: "wbg-test", mapId: "map-a", name: "临时分组", color: "#22d3a7",
+        positionX: 0, positionY: 0, width: 720, height: 480, collapsed: false, sortOrder: 0,
+        createdAt, updatedAt: createdAt,
+      });
+    });
+    expect(useMindGrowStore.getState().isMapDirty("map-a")).toBe(true);
+
+    expect(useMindGrowStore.getState().rollbackGraphLocally("map-a", scopeA, before)).toBe(true);
+    expect(useMindGrowStore.getState().whiteboardGroups).toEqual([]);
+    expect(useMindGrowStore.getState().isMapDirty("map-a")).toBe(false);
+    expect(tenantCache.getMapGraph(scopeA, "map-a")?.source).toBe("server");
+  });
+
   it("ignores local mutation requests for a map that is no longer active", () => {
     selectMap("map-active");
     const before = useMindGrowStore.getState();

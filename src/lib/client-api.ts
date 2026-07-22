@@ -318,28 +318,38 @@ function handleKnowledge(path: string, init?: RequestInit): Response {
   const body = bodyOf(init);
   if (method === "PUT") {
     const mapId = String(body.mapId || "map_default");
-    const nodeId = String(body.nodeId || "");
-    const nodeExists = (state.nodes[mapId] || []).some((node) => node.id === nodeId);
-    const groupId = body.groupId ? String(body.groupId) : null;
-    const groupExists = !groupId || (state.whiteboardGroups[mapId] || []).some((group) => group.id === groupId);
-    const values = [Number(body.positionX ?? 0), Number(body.positionY ?? 0), Number(body.zoomLevel ?? 1), Number(body.cardWidth ?? 280), Number(body.cardHeight ?? 168)];
-    if (!nodeExists || !groupExists || values.some((value) => !Number.isFinite(value))
-      || Math.abs(values[0]) > 100000 || Math.abs(values[1]) > 100000
-      || values[2] < 0.05 || values[2] > 8 || values[3] < 180 || values[3] > 800
-      || values[4] < 96 || values[4] > 640) return json({ error: "Invalid whiteboard layout" }, 400);
-    state.layouts[nodeId] = {
-      nodeId,
-      mapId,
-      positionX: values[0],
-      positionY: values[1],
-      zoomLevel: values[2],
-      groupId,
-      cardWidth: values[3],
-      cardHeight: values[4],
-      updatedAt: now(),
-    };
+    const inputLayouts = Array.isArray(body.layouts) ? body.layouts : [body];
+    if (inputLayouts.length === 0 || inputLayouts.length > 500) return json({ error: "Invalid whiteboard layout" }, 400);
+    const normalizedLayouts: NodeLayout[] = [];
+    for (const input of inputLayouts) {
+      if (input.mapId && String(input.mapId) !== mapId) return json({ error: "Invalid whiteboard layout" }, 400);
+      const nodeId = String(input.nodeId || "");
+      const nodeExists = (state.nodes[mapId] || []).some((node) => node.id === nodeId);
+      const groupId = input.groupId ? String(input.groupId) : null;
+      const groupExists = !groupId || (state.whiteboardGroups[mapId] || []).some((group) => group.id === groupId);
+      const values = [Number(input.positionX ?? 0), Number(input.positionY ?? 0), Number(input.zoomLevel ?? 1), Number(input.cardWidth ?? 280), Number(input.cardHeight ?? 168)];
+      if (!nodeExists || !groupExists || values.some((value) => !Number.isFinite(value))
+        || Math.abs(values[0]) > 100000 || Math.abs(values[1]) > 100000
+        || values[2] < 0.05 || values[2] > 8 || values[3] < 180 || values[3] > 800
+        || values[4] < 96 || values[4] > 640) return json({ error: "Invalid whiteboard layout" }, 400);
+      normalizedLayouts.push({
+        nodeId,
+        mapId,
+        positionX: values[0],
+        positionY: values[1],
+        zoomLevel: values[2],
+        groupId,
+        cardWidth: values[3],
+        cardHeight: values[4],
+        updatedAt: now(),
+      });
+    }
+    if (new Set(normalizedLayouts.map((layout) => layout.nodeId)).size !== normalizedLayouts.length) return json({ error: "Invalid whiteboard layout" }, 400);
+    normalizedLayouts.forEach((layout) => { state.layouts[layout.nodeId] = layout; });
     saveState(state);
-    return json({ success: true, layout: state.layouts[nodeId] });
+    return normalizedLayouts.length === 1
+      ? json({ success: true, layout: normalizedLayouts[0] })
+      : json({ success: true, layouts: normalizedLayouts });
   }
 
   if (method === "PATCH") {
@@ -372,8 +382,10 @@ function handleKnowledge(path: string, init?: RequestInit): Response {
     if (body.collapsed !== undefined && typeof body.collapsed !== "boolean") return json({ error: "Invalid whiteboard group" }, 400);
     if (!/^#[0-9a-f]{6}$/i.test(String(body.color || "#22d3a7"))) return json({ error: "Invalid whiteboard group" }, 400);
     const timestamp = now();
+    const requestedId = String(body.id || makeId("wbg"));
+    if (!/^wbg_[a-z0-9_-]{3,88}$/i.test(requestedId)) return json({ error: "Invalid whiteboard group" }, 400);
     const group: WhiteboardGroup = {
-      id: makeId("wbg"), mapId, name: String(body.name).trim().slice(0, 80), color: String(body.color || "#22d3a7"),
+      id: requestedId, mapId, name: String(body.name).trim().slice(0, 80), color: String(body.color || "#22d3a7"),
       positionX: Number(body.positionX ?? 0), positionY: Number(body.positionY ?? 0),
       width: Math.min(2400, Math.max(240, Number(body.width ?? 720))), height: Math.min(2000, Math.max(160, Number(body.height ?? 480))),
       collapsed: body.collapsed ?? false, sortOrder: Math.trunc(Number(body.sortOrder ?? (state.whiteboardGroups[mapId] || []).length)),
@@ -417,9 +429,16 @@ function handleKnowledge(path: string, init?: RequestInit): Response {
   if (action === "deleteWhiteboardGroup") {
     const mapId = String(body.mapId || "map_default");
     const groups = state.whiteboardGroups[mapId] || [];
-    if (!groups.some((group) => group.id === body.groupId)) return json({ error: "Whiteboard group not found" }, 404);
+    const group = groups.find((candidate) => candidate.id === body.groupId);
+    if (!group) return json({ error: "Whiteboard group not found" }, 404);
     state.whiteboardGroups[mapId] = groups.filter((group) => group.id !== body.groupId);
-    Object.values(state.layouts).forEach((layout) => { if (layout.mapId === mapId && layout.groupId === body.groupId) layout.groupId = null; });
+    Object.values(state.layouts).forEach((layout) => {
+      if (layout.mapId !== mapId || layout.groupId !== body.groupId) return;
+      layout.positionX += group.positionX;
+      layout.positionY += group.positionY;
+      layout.groupId = null;
+      layout.updatedAt = now();
+    });
     saveState(state);
     return json({ success: true });
   }
