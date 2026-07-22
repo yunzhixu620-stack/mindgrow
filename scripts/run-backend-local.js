@@ -2,6 +2,7 @@ const http = require("http");
 const net = require("net");
 const path = require("path");
 const { spawn } = require("child_process");
+const { readApiVersion } = require("./deployment-fact");
 
 const projectRoot = path.join(__dirname, "..");
 const backendEntry = process.env.MINDGROW_LOCAL_BACKEND_ENTRY
@@ -9,7 +10,7 @@ const backendEntry = process.env.MINDGROW_LOCAL_BACKEND_ENTRY
   : path.join(projectRoot, "fc-proxy", "index.js");
 const backendPort = 9000;
 const backendBase = `http://127.0.0.1:${backendPort}`;
-const localApiVersion = process.env.MINDGROW_LOCAL_API_VERSION || "10.7.0";
+const localApiVersion = process.env.MINDGROW_LOCAL_API_VERSION || readApiVersion();
 const allowedHealthTables = new Set([
   "maps",
   "document_chunks",

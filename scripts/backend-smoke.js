@@ -1,8 +1,9 @@
 const fs = require("fs");
 const path = require("path");
+const { readApiVersion } = require("./deployment-fact");
 
 const baseUrl = (process.env.MINDGROW_API_BASE || process.env.MINDGROW_API_BASE_URL || "https://mindgrow-api-eyippxdkkh.cn-hangzhou.fcapp.run").replace(/\/$/, "");
-const expectedApiVersion = process.env.MINDGROW_EXPECTED_API_VERSION || "10.7.0";
+const expectedApiVersion = process.env.MINDGROW_EXPECTED_API_VERSION || readApiVersion();
 const accessToken = process.env.MINDGROW_ACCESS_TOKEN || "";
 const bootstrapOnly = process.env.MINDGROW_BOOTSTRAP_ONLY === "true";
 let workspaceId = process.env.MINDGROW_WORKSPACE_ID || "";

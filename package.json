@@ -4,9 +4,13 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "prebuild": "node scripts/write-deployment-fact.js",
     "build": "next build",
+    "postbuild": "node scripts/verify-deployment-fact.js --artifact && node scripts/write-deployment-fact.js --cleanup",
     "start": "next start",
     "check:api-version": "node scripts/check-api-version.js",
+    "check:deployment-artifact": "node scripts/verify-deployment-fact.js --artifact",
+    "check:deployment:production": "node scripts/verify-deployment-fact.js --production",
     "lint": "eslint . --ext .js,.ts,.tsx --max-warnings=0",
     "test:unit": "vitest run --reporter=default",
     "test:unit:watch": "vitest",
