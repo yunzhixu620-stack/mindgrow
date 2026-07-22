@@ -9,7 +9,7 @@ const backendEntry = process.env.MINDGROW_LOCAL_BACKEND_ENTRY
   : path.join(projectRoot, "fc-proxy", "index.js");
 const backendPort = 9000;
 const backendBase = `http://127.0.0.1:${backendPort}`;
-const localApiVersion = process.env.MINDGROW_LOCAL_API_VERSION || "10.5.2";
+const localApiVersion = process.env.MINDGROW_LOCAL_API_VERSION || "10.6.0";
 const allowedHealthTables = new Set([
   "maps",
   "document_chunks",

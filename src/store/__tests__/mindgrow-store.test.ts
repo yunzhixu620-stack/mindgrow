@@ -171,7 +171,7 @@ describe("MindGrow Store tenant reset", () => {
     useMindGrowStore.setState({
       currentMapId: "map-a",
       maps: [{
-        id: "map-a", name: "Tenant map", description: "", color: "#14b8a6", isDefault: false,
+        id: "map-a", name: "Tenant map", description: "", mode: "knowledge", color: "#14b8a6", isDefault: false,
         categoryId: "category-a", nodeCount: 1, createdAt, updatedAt: createdAt,
       }],
       categories: [{ id: "category-a", name: "Tenant", icon: "T", color: "#14b8a6", sortOrder: 1, createdAt }],

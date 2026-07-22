@@ -21,7 +21,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.5.2';
+const API_VERSION = '10.6.0';
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
 const DASHSCOPE_AUDIO_ENDPOINT = process.env.DASHSCOPE_AUDIO_ENDPOINT || 'https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer';
 const ALLOWED_ORIGINS = new Set(
@@ -240,6 +240,7 @@ async function createWorkspace(user, name) {
     workspace_id: workspaceId,
     name: '默认知识库',
     description: '我的第一个 AI 知识图谱',
+    mode: 'knowledge',
     color: '#22d3a7',
     is_default: true,
     node_count: 0,
@@ -303,7 +304,7 @@ async function handleWorkspaces(req, user) {
   await supabaseRequest('POST', 'workspaces', { id: workspaceId, name, owner_id: user.id, created_at: now, updated_at: now }, 'return=minimal');
   await supabaseRequest('POST', 'workspace_members', { workspace_id: workspaceId, user_id: user.id, role: 'owner', created_at: now }, 'return=minimal');
   const defaultMapId = defaultMapIdForWorkspace(workspaceId);
-  await supabaseRequest('POST', 'maps', { id: defaultMapId, workspace_id: workspaceId, name: '默认知识库', description: '', color: '#22d3a7', is_default: true, node_count: 0, created_at: now, updated_at: now }, 'return=minimal');
+  await supabaseRequest('POST', 'maps', { id: defaultMapId, workspace_id: workspaceId, name: '默认知识库', description: '', mode: 'knowledge', color: '#22d3a7', is_default: true, node_count: 0, created_at: now, updated_at: now }, 'return=minimal');
   return { status: 201, data: { workspace: { id: workspaceId, name, ownerId: user.id, role: 'owner', defaultMapId, createdAt: now, updatedAt: now } } };
 }
 
@@ -3603,6 +3604,7 @@ function convertMap(row) {
     id: row.id,
     name: row.name,
     description: row.description || '',
+    mode: normalizeMapMode(row.mode, row.description),
     color: row.color || '#22d3a7',
     isDefault: Boolean(row.is_default),
     categoryId: row.category_id || null,
@@ -3610,6 +3612,18 @@ function convertMap(row) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function normalizeMapMode(mode, description) {
+  if (mode === 'knowledge' || mode === 'meeting' || mode === 'article') return mode;
+  const value = String(description || '');
+  if (value.includes('[MindGrow:meeting]')) return 'meeting';
+  if (value.includes('[MindGrow:article]')) return 'article';
+  return 'knowledge';
+}
+
+function isValidMapMode(mode) {
+  return mode === 'knowledge' || mode === 'meeting' || mode === 'article';
 }
 
 function convertNode(node, citations) {
@@ -3673,24 +3687,33 @@ async function loadNodeCitations(workspaceId, mapId, nodeIds) {
 }
 
 async function assertOwnedMap(workspaceId, mapId) {
-  const rows = await supabaseRequest('GET', `maps?workspace_id=eq.${encodeURIComponent(workspaceId)}&id=eq.${encodeURIComponent(mapId)}&select=id,description&limit=1`);
+  const rows = await supabaseRequest('GET', `maps?workspace_id=eq.${encodeURIComponent(workspaceId)}&id=eq.${encodeURIComponent(mapId)}&select=id,description,mode&limit=1`);
   if (!Array.isArray(rows) || !rows[0]) throw requestError(404, 'MAP_NOT_FOUND', 'Knowledge map not found');
   return rows[0];
 }
 
 async function resolveMapForSource(workspaceId, requestedMapId, source) {
   const requested = await assertOwnedMap(workspaceId, requestedMapId);
+  const desiredMode = source === 'meeting' || source === 'article' ? source : 'knowledge';
   const marker = source === 'meeting' ? '[MindGrow:meeting]' : source === 'article' ? '[MindGrow:article]' : '';
-  if (!marker || String(requested.description || '').includes(marker)) return requestedMapId;
+  if (normalizeMapMode(requested.mode, requested.description) === desiredMode) return requestedMapId;
 
   // A rapid board switch can leave a stale map id in a mounted client for one
   // render. Never let that contaminate another product library: resolve the
   // first board-owned map on the server and tell the client which map was used.
   const candidates = await supabaseRequest(
     'GET',
-    `maps?workspace_id=eq.${encodeURIComponent(workspaceId)}&description=like.*${encodeURIComponent(marker)}*&select=id&order=created_at.asc&limit=1`,
+    `maps?workspace_id=eq.${encodeURIComponent(workspaceId)}&mode=eq.${encodeURIComponent(desiredMode)}&select=id&order=created_at.asc&limit=1`,
   );
   if (Array.isArray(candidates) && candidates[0] && candidates[0].id) return String(candidates[0].id);
+  // Compatibility for a pre-v12 row returned during a rolling migration.
+  if (marker) {
+    const legacyCandidates = await supabaseRequest(
+      'GET',
+      `maps?workspace_id=eq.${encodeURIComponent(workspaceId)}&description=like.*${encodeURIComponent(marker)}*&select=id&order=created_at.asc&limit=1`,
+    );
+    if (Array.isArray(legacyCandidates) && legacyCandidates[0] && legacyCandidates[0].id) return String(legacyCandidates[0].id);
+  }
   throw requestError(409, 'MODE_LIBRARY_MISMATCH', 'The selected product library is not ready; reopen this board and retry');
 }
 
@@ -4312,12 +4335,18 @@ async function handleKnowledge(req, context) {
     if (template && (!template.root || !Array.isArray(template.children))) {
       return { status: 400, data: { error: 'Invalid template data', code: 'INVALID_INPUT' } };
     }
+    if (body.mode !== undefined && !isValidMapMode(body.mode)) {
+      return { status: 400, data: { error: 'mode must be knowledge, meeting, or article', code: 'INVALID_INPUT' } };
+    }
     await assertOwnedCategory(workspaceId, body.categoryId || null);
+    const description = body.description || (template && template.rootDesc) || '';
+    const requestedMode = normalizeMapMode(body.mode, description);
     const map = {
       id,
       workspace_id: workspaceId,
       name: body.name || (template && template.root) || '新知识库',
-      description: body.description || (template && template.rootDesc) || '',
+      description,
+      mode: requestedMode,
       color: body.color || '#22d3a7',
       is_default: false,
       node_count: 0,
@@ -4591,6 +4620,7 @@ if (require.main === module) {
 
 module.exports = {
   __citationInternal: { normalizeForExactMatch, isVerbatimQuote, verifiedIndexes, verifiedCitationPayload },
+  __mapModeInternal: { normalizeMapMode, isValidMapMode, convertMap },
   buildDocumentChunks,
   buildMeetingCitations,
   fallbackMeetingAnalysis,

@@ -1,13 +1,13 @@
-import type { MindMap } from "@/types";
+import type { MapMode, MindMap } from "@/types";
 
-export type ProductMode = "knowledge" | "meeting" | "article";
+export type ProductMode = MapMode;
 
 export const MODE_LIBRARY_CONFIG: Record<ProductMode, {
   label: string;
   shortLabel: string;
   emoji: string;
   defaultName: string;
-  marker: string;
+  legacyMarker: string;
   description: string;
 }> = {
   knowledge: {
@@ -15,7 +15,7 @@ export const MODE_LIBRARY_CONFIG: Record<ProductMode, {
     shortLabel: "知识",
     emoji: "💡",
     defaultName: "默认知识库",
-    marker: "",
+    legacyMarker: "",
     description: "记录、检索并连接长期知识",
   },
   meeting: {
@@ -23,7 +23,7 @@ export const MODE_LIBRARY_CONFIG: Record<ProductMode, {
     shortLabel: "会议",
     emoji: "🎯",
     defaultName: "会议知识库",
-    marker: "[MindGrow:meeting]",
+    legacyMarker: "[MindGrow:meeting]",
     description: "独立沉淀会议纪要、决议、行动项和风险",
   },
   article: {
@@ -31,22 +31,33 @@ export const MODE_LIBRARY_CONFIG: Record<ProductMode, {
     shortLabel: "文章",
     emoji: "📄",
     defaultName: "文章知识库",
-    marker: "[MindGrow:article]",
+    legacyMarker: "[MindGrow:article]",
     description: "独立沉淀文章、网页、PDF、引用和音频概览",
   },
 };
 
-export function getMapMode(map: Pick<MindMap, "description">): ProductMode {
-  if ((map.description || "").includes(MODE_LIBRARY_CONFIG.meeting.marker)) return "meeting";
-  if ((map.description || "").includes(MODE_LIBRARY_CONFIG.article.marker)) return "article";
+export function normalizeMapMode(mode: unknown, description = ""): ProductMode {
+  if (mode === "knowledge" || mode === "meeting" || mode === "article") return mode;
+  if (description.includes(MODE_LIBRARY_CONFIG.meeting.legacyMarker)) return "meeting";
+  if (description.includes(MODE_LIBRARY_CONFIG.article.legacyMarker)) return "article";
   return "knowledge";
 }
 
-export function isMapForMode(map: Pick<MindMap, "description">, mode: ProductMode) {
+export function getMapMode(map: Pick<MindMap, "mode" | "description">): ProductMode {
+  // Explicit mode is authoritative. Marker parsing exists only for pre-v12 API
+  // payloads and localStorage created before S2.1.
+  return normalizeMapMode(map.mode, map.description || "");
+}
+
+export function migrateLegacyMapMode<T extends { mode?: unknown; description?: string }>(map: T): T & { mode: ProductMode } {
+  return { ...map, mode: normalizeMapMode(map.mode, map.description || "") };
+}
+
+export function isMapForMode(map: Pick<MindMap, "mode" | "description">, mode: ProductMode) {
   return getMapMode(map) === mode;
 }
 
 export function modeLibraryDescription(mode: Exclude<ProductMode, "knowledge">, extra = "") {
   const config = MODE_LIBRARY_CONFIG[mode];
-  return `${config.marker} ${extra || config.description}`.trim();
+  return (extra || config.description).trim();
 }

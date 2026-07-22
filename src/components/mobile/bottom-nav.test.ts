@@ -8,7 +8,8 @@ describe("mobile bottom navigation", () => {
     expect(MOBILE_NAV_MODES.map((mode) => MODE_LIBRARY_CONFIG[mode].shortLabel)).toEqual(["知识", "文章", "会议"]);
   });
 
-  it("keeps every create action scoped to a real product library", () => {
-    expect(MOBILE_NAV_MODES.every((mode) => Boolean(MODE_LIBRARY_CONFIG[mode].marker || mode === "knowledge"))).toBe(true);
+  it("uses the explicit persisted mode values for every product library", () => {
+    expect(new Set(MOBILE_NAV_MODES)).toEqual(new Set(["knowledge", "meeting", "article"]));
+    expect(MOBILE_NAV_MODES.every((mode) => Boolean(MODE_LIBRARY_CONFIG[mode].defaultName))).toBe(true);
   });
 });

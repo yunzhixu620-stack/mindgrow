@@ -62,7 +62,7 @@ NEXT_PUBLIC_SUPABASE_URL=https://<project>.supabase.co
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=<public publishable key>
 ```
 
-新 Supabase 项目使用 `supabase-schema.sql` 初始化；V7 项目再执行 `supabase-v8-citations-migration.sql`。该架构不允许浏览器匿名直写数据库。
+新 Supabase 项目使用 `supabase-schema.sql` 初始化；已有 V7 项目按版本顺序执行 V8–V12 migration，最新一步为 `supabase-v12-map-mode-migration.sql`，执行与回滚见 `docs/s2-1-map-mode-migration.md`。该架构不允许浏览器匿名直写数据库。
 
 ## 关键目录
 

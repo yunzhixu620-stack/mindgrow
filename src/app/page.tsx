@@ -317,6 +317,7 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "createFromTemplate",
+          mode: "knowledge",
           name: PERSONAL_NOTES_TEMPLATE.root,
           description: PERSONAL_NOTES_TEMPLATE.rootDesc,
           color: "#22d3a7",
@@ -386,6 +387,7 @@ export default function Home() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         action: "createMap",
+        mode: currentMode,
         name: config.defaultName,
         description: modeLibraryDescription(currentMode),
         color: currentMode === "meeting" ? "#38bdf8" : "#a78bfa",
@@ -421,6 +423,7 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "createMap",
+          mode: currentMode,
           name: newName.trim(),
           categoryId: currentMode === "knowledge" ? newCategoryId : null,
           description: currentMode === "knowledge" ? "" : modeLibraryDescription(currentMode),
@@ -1037,6 +1040,7 @@ export default function Home() {
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({
                     action: "createFromTemplate",
+                    mode: "knowledge",
                     name: template.mindMap.root,
                     description: template.mindMap.rootDesc || template.description,
                     color: "#22d3a7",

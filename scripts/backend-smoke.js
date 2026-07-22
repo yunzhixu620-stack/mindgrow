@@ -2,7 +2,7 @@ const fs = require("fs");
 const path = require("path");
 
 const baseUrl = (process.env.MINDGROW_API_BASE || process.env.MINDGROW_API_BASE_URL || "https://mindgrow-api-eyippxdkkh.cn-hangzhou.fcapp.run").replace(/\/$/, "");
-const expectedApiVersion = process.env.MINDGROW_EXPECTED_API_VERSION || "10.5.2";
+const expectedApiVersion = process.env.MINDGROW_EXPECTED_API_VERSION || "10.6.0";
 const accessToken = process.env.MINDGROW_ACCESS_TOKEN || "";
 let workspaceId = process.env.MINDGROW_WORKSPACE_ID || "";
 const results = [];
@@ -77,10 +77,22 @@ function expectStatus(result, status) {
     await request("List tenant categories", "/api/knowledge?action=categories");
     if (maps.ok && Array.isArray(maps.body?.maps)) {
       let mapId;
+      const temporaryMapIds = [];
       try {
-        const created = await request("Create temporary map", "/api/knowledge", { method: "POST", body: JSON.stringify({ action: "createMap", name: `Backend smoke ${Date.now()}` }) });
-        mapId = created.body?.map?.id;
-        if (!mapId) throw new Error("Backend did not return a map id");
+        for (const mode of ["knowledge", "meeting", "article"]) {
+          const created = await request(`Create temporary ${mode} map`, "/api/knowledge", {
+            method: "POST",
+            body: JSON.stringify({ action: "createMap", name: `Backend smoke ${mode} ${Date.now()}`, mode, description: `${mode} smoke` }),
+          });
+          const createdMap = created.body?.map;
+          if (!createdMap?.id) throw new Error(`Backend did not return a ${mode} map id`);
+          temporaryMapIds.push(createdMap.id);
+          if (createdMap.mode !== mode || String(createdMap.description || "").includes("[MindGrow:")) {
+            created.ok = false;
+            throw new Error(`Backend did not persist clean explicit mode ${mode}`);
+          }
+          if (mode === "knowledge") mapId = createdMap.id;
+        }
         const graph = await request("Create cited temporary graph", "/api/knowledge", {
           method: "POST",
           body: JSON.stringify({
@@ -95,7 +107,9 @@ function expectStatus(result, status) {
         const reloaded = await request("Verify cited graph reload", `/api/knowledge?mapId=${encodeURIComponent(mapId)}`);
         if (!reloaded.body?.nodes?.some((node) => node.id === nodeId && node.citations?.length)) reloaded.ok = false;
       } finally {
-        if (mapId) await request("Delete temporary map", "/api/knowledge", { method: "POST", body: JSON.stringify({ action: "deleteMap", mapId }) });
+        for (const temporaryMapId of temporaryMapIds) {
+          await request("Delete temporary map", "/api/knowledge", { method: "POST", body: JSON.stringify({ action: "deleteMap", mapId: temporaryMapId }) });
+        }
       }
     }
   } else {

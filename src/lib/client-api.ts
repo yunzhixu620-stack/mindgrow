@@ -1,6 +1,7 @@
 import { API_BASE_URL } from "@/lib/config";
 import { supabase } from "@/lib/supabase-browser";
 import { aiEntityGraphToEntityGraph } from "@/lib/entity-graph";
+import { migrateLegacyMapMode, normalizeMapMode } from "@/lib/mode-libraries";
 import type { TenantScope } from "@/lib/tenant-cache";
 import { useMindGrowStore, type WriteRequestToken } from "@/store/mindgrow-store";
 import type { AIEntityGraph, AIMindMap, Category, Citation, EntityGraph, KnowledgeEdge, KnowledgeNode, MindMap } from "@/types";
@@ -67,6 +68,7 @@ function seedState(): LocalState {
       id: "map_default",
       name: "MindGrow 入门",
       description: "可直接编辑的本地示例知识库",
+      mode: "knowledge",
       color: "#22d3a7",
       isDefault: true,
       categoryId: null,
@@ -101,7 +103,12 @@ function loadState(): LocalState {
     }
     const parsed = JSON.parse(raw) as LocalState;
     if (parsed.version !== 2 || !Array.isArray(parsed.maps)) throw new Error("Unsupported local data");
+    const legacyMaps = parsed.maps as Array<MindMap & { mode?: unknown }>;
+    const upgradedMaps = legacyMaps.map(migrateLegacyMapMode);
+    const upgraded = upgradedMaps.some((map, index) => map.mode !== legacyMaps[index].mode);
+    parsed.maps = upgradedMaps;
     parsed.entityGraphs ||= {};
+    if (upgraded) saveState(parsed);
     return parsed;
   } catch {
     const seeded = seedState();
@@ -315,8 +322,10 @@ function handleKnowledge(path: string, init?: RequestInit): Response {
   const action = body.action;
   if (action === "createMap") {
     const timestamp = now();
+    const description = body.description || "";
     const map: MindMap = {
-      id: makeId("map"), name: body.name || "新知识库", description: body.description || "",
+      id: makeId("map"), name: body.name || "新知识库", description,
+      mode: normalizeMapMode(body.mode, description),
       color: body.color || "#22d3a7", isDefault: false, categoryId: body.categoryId || null,
       nodeCount: 0, createdAt: timestamp, updatedAt: timestamp,
     };
@@ -327,8 +336,10 @@ function handleKnowledge(path: string, init?: RequestInit): Response {
   if (action === "createFromTemplate") {
     if (!body.template?.root) return json({ error: "Invalid template data" }, 400);
     const timestamp = now();
+    const description = body.description || "";
     const map: MindMap = {
-      id: makeId("map"), name: body.name || body.template.root, description: body.description || "",
+      id: makeId("map"), name: body.name || body.template.root, description,
+      mode: normalizeMapMode(body.mode, description),
       color: body.color || "#22d3a7", isDefault: false, categoryId: body.categoryId || null,
       nodeCount: 0, createdAt: timestamp, updatedAt: timestamp,
     };

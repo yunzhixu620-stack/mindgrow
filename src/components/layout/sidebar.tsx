@@ -316,6 +316,7 @@ export function Sidebar({ onSwitchMap, onMapCreated }: SidebarProps) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "createMap",
+          mode: currentMode,
           name: newName.trim(),
           color: newColor,
           categoryId: currentMode === "knowledge" ? newCategoryId : null,
@@ -884,6 +885,7 @@ export function Sidebar({ onSwitchMap, onMapCreated }: SidebarProps) {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                   action: "createFromTemplate",
+                  mode: "knowledge",
                   name: template.mindMap.root,
                   description: template.mindMap.rootDesc || template.description,
                   color: "#22d3a7",
