@@ -22,15 +22,17 @@ import ReactFlow, {
 import "reactflow/dist/style.css";
 import { useAuth } from "@/components/auth/auth-provider";
 import { useMindGrowStore } from "@/store/mindgrow-store";
-import { EntityGraph, GraphEntity, KnowledgeNode, KnowledgeEdge } from "@/types";
+import { EntityGraph, GraphEntity, KnowledgeNode, KnowledgeEdge, NodeContext } from "@/types";
 import { apiFetch, IS_LOCAL_MODE } from "@/lib/client-api";
 import type { TenantScope } from "@/lib/tenant-cache";
 import { MODE_LIBRARY_CONFIG } from "@/lib/mode-libraries";
 import { entityGraphToKnowledgeGraph, entityViewNodeId, formalEntityGraph, isEntityViewNode } from "@/lib/entity-graph";
 import { MindMapSkeleton } from "@/components/mindmap/mind-map-skeleton";
 import { EntityDetailPanel } from "@/components/entity/entity-detail-panel";
+import { NodeContextPanel } from "@/components/node/node-context-panel";
 import { graphEdgeFocusOpacity, graphNodeFocusOpacity, oneHopNodeIds } from "@/lib/graph-hover";
 import { COMMAND_ENTITY_FOCUS_EVENT } from "@/lib/command-search";
+import { buildLocalNodeContext } from "@/lib/node-context";
 
 // ============================================================
 // Branch color palette
@@ -861,6 +863,10 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
   const [selectedRelationId, setSelectedRelationId] = useState<string | null>(null);
   const [autoShowNodeDetails, setAutoShowNodeDetails] = useState(true);
   const [detailMode, setDetailMode] = useState<"auto" | "title" | "card">("auto");
+  const [contextNode, setContextNode] = useState<KnowledgeNode | null>(null);
+  const [nodeContext, setNodeContext] = useState<NodeContext | null>(null);
+  const [nodeContextLoading, setNodeContextLoading] = useState(false);
+  const [nodeContextError, setNodeContextError] = useState("");
   const reactFlowInstance = useRef<ReactFlowInstance | null>(null);
   const editInputRef = useRef<HTMLInputElement>(null);
   const initializedLargeMapRef = useRef<string | null>(null);
@@ -887,6 +893,13 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
       editInputRef.current.select();
     }
   }, [editingNode]);
+
+  useEffect(() => {
+    setContextNode(null);
+    setNodeContext(null);
+    setNodeContextLoading(false);
+    setNodeContextError("");
+  }, [currentMapId]);
 
   const officialEntityGraph = useMemo(() => formalEntityGraph(entityGraph), [entityGraph]);
   const entityDisplayGraph = useMemo(() => entityGraphToKnowledgeGraph(officialEntityGraph), [officialEntityGraph]);
@@ -1172,6 +1185,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
       if ((e.ctrlKey || e.metaKey) && (e.key === "y" || (e.shiftKey && e.key === "Z"))) { e.preventDefault(); redo(); }
       if (e.key === "?") { e.preventDefault(); setShowHelp(true); }
       if (e.key === "Escape") {
+        if (contextNode) { setContextNode(null); setNodeContext(null); return; }
         if (selectedRelationId) { setSelectedRelationId(null); return; }
         if (selectedEntityId) { closeEntityDetail(); return; }
         if (editingNode) { setEditingNode(null); return; }
@@ -1190,7 +1204,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [flowNodes, removeNode, currentMapId, setStoreNodes, setStoreEdges, setSearchResults, editingNode, focusedNodeId, selectedEntityId, selectedRelationId, closeEntityDetail, refitGraph, pushHistory, undo, redo, setContextMenu, setShowHelp]);
+  }, [flowNodes, removeNode, currentMapId, setStoreNodes, setStoreEdges, setSearchResults, editingNode, focusedNodeId, selectedEntityId, selectedRelationId, contextNode, closeEntityDetail, refitGraph, pushHistory, undo, redo, setContextMenu, setShowHelp]);
 
   // Reload after edit/delete from context menu
   const reloadMap = useCallback(() => {
@@ -1291,6 +1305,48 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
     if (node) setEditingNode({ id: node.id, mapId: currentMapId, content: node.content, desc: node.desc || "" });
     setContextMenu(null);
   }, [contextMenu, currentMapId, storeNodes, setContextMenu]);
+
+  const openNodeContext = useCallback(async (nodeId: string) => {
+    const node = storeNodes.find((candidate) => candidate.id === nodeId);
+    if (!node) return;
+    setContextNode(node);
+    setNodeContext(null);
+    setNodeContextError("");
+    setNodeContextLoading(true);
+    try {
+      if (IS_LOCAL_MODE) {
+        setNodeContext(buildLocalNodeContext(node, storeNodes, storeEdges));
+      } else {
+        const response = await apiFetch(`/api/knowledge?action=nodeContext&nodeId=${encodeURIComponent(nodeId)}`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json() as NodeContext;
+        if (!data?.node?.id || !Array.isArray(data.sources) || !Array.isArray(data.backlinks) || !Array.isArray(data.timeline)) {
+          throw new Error("invalid response");
+        }
+        setContextNode(data.node);
+        setNodeContext(data);
+      }
+    } catch (error) {
+      console.error("Failed to load node context:", error);
+      setNodeContextError("引用与时间轴加载失败，请稍后重试；现有节点内容没有受到影响。");
+    } finally {
+      setNodeContextLoading(false);
+    }
+  }, [storeEdges, storeNodes]);
+
+  const handleCtxNodeContext = useCallback(() => {
+    if (!contextMenu) return;
+    const nodeId = contextMenu.nodeId;
+    setContextMenu(null);
+    void openNodeContext(nodeId);
+  }, [contextMenu, openNodeContext, setContextMenu]);
+
+  const locateContextBacklink = useCallback((nodeId: string) => {
+    setContextNode(null);
+    setNodeContext(null);
+    const node = flowNodes.find((candidate) => candidate.id === nodeId);
+    if (node) reactFlowInstance.current?.setCenter(node.position.x, node.position.y, { zoom: 1.35, duration: 320 });
+  }, [flowNodes]);
 
   // Context menu: delete
   const handleCtxDelete = useCallback(() => {
@@ -1624,6 +1680,10 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
             编辑内容
           </button>
+          <button onClick={handleCtxNodeContext} className="w-full px-3 py-2 text-xs text-left text-[var(--foreground)] hover:bg-[var(--muted)] transition-colors cursor-pointer flex items-center gap-2">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" /><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" /></svg>
+            引用与时间轴
+          </button>
           <button onClick={() => { if (contextMenu) { handleToggleBranch(contextMenu.nodeId); setContextMenu(null); } }} className="w-full px-3 py-2 text-xs text-left text-[var(--foreground)] hover:bg-[var(--muted)] transition-colors cursor-pointer flex items-center gap-2">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg>
             {contextMenu && collapsedNodes.has(contextMenu.nodeId) ? "展开子节点" : "折叠子节点"}
@@ -1686,6 +1746,17 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
       )}
 
       {showHelp && <HelpPanel onClose={() => setShowHelp(false)} />}
+
+      {!showingEntityGraph && contextNode && (
+        <NodeContextPanel
+          node={contextNode}
+          context={nodeContext}
+          loading={nodeContextLoading}
+          error={nodeContextError}
+          onClose={() => { setContextNode(null); setNodeContext(null); }}
+          onLocate={locateContextBacklink}
+        />
+      )}
 
       {hiddenNodeCount > 0 && (
         <div className="pointer-events-none absolute bottom-4 left-3 z-40 rounded-xl border border-[var(--border)] bg-[var(--card)]/95 px-3 py-2 text-[11px] text-[var(--muted-foreground)] shadow-lg backdrop-blur">

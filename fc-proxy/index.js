@@ -21,7 +21,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.7.0';
+const API_VERSION = '10.8.0';
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
 const DASHSCOPE_AUDIO_ENDPOINT = process.env.DASHSCOPE_AUDIO_ENDPOINT || 'https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer';
 const ALLOWED_ORIGINS = new Set(
@@ -3703,6 +3703,17 @@ function convertNode(node, citations) {
   };
 }
 
+function convertNodeRevision(revision) {
+  return {
+    id: revision.id,
+    eventType: revision.event_type,
+    content: revision.content || '',
+    desc: revision.desc || '',
+    changedFields: Array.isArray(revision.changed_fields) ? revision.changed_fields : [],
+    createdAt: revision.created_at,
+  };
+}
+
 function convertEdge(edge) {
   return {
     id: edge.id,
@@ -3746,6 +3757,92 @@ async function loadNodeCitations(workspaceId, mapId, nodeIds) {
     byNode.set(item.node_id, current);
   });
   return byNode;
+}
+
+async function loadNodeContext(workspaceId, nodeId) {
+  const workspace = encodeURIComponent(workspaceId);
+  const encodedNodeId = encodeURIComponent(nodeId);
+  const rows = await supabaseRequest('GET', `nodes?workspace_id=eq.${workspace}&id=eq.${encodedNodeId}&select=*&limit=1`);
+  const nodeRow = Array.isArray(rows) ? rows[0] : null;
+  if (!nodeRow) throw requestError(404, 'NOT_FOUND', 'Node not found');
+  const mapId = nodeRow.map_id;
+  const map = encodeURIComponent(mapId);
+  const targetCitationsByNode = await loadNodeCitations(workspaceId, mapId, [nodeId]);
+  const targetCitations = targetCitationsByNode.get(nodeId) || [];
+  const documentIds = [...new Set(targetCitations.map((citation) => citation.documentId).filter(Boolean))];
+
+  const [incomingEdges, sharedCitationRows, revisionRows] = await Promise.all([
+    supabaseRequest('GET', `edges?workspace_id=eq.${workspace}&map_id=eq.${map}&target_id=eq.${encodedNodeId}&select=*&order=created_at.desc&limit=500`),
+    documentIds.length
+      ? supabaseRequest('GET', `node_citations?workspace_id=eq.${workspace}&map_id=eq.${map}&document_id=in.${inFilter(documentIds)}&node_id=neq.${encodedNodeId}&select=node_id,document_id,citation_index&limit=2000`)
+      : Promise.resolve([]),
+    supabaseRequest('GET', `node_revisions?workspace_id=eq.${workspace}&map_id=eq.${map}&node_id=eq.${encodedNodeId}&select=*&order=created_at.desc&limit=200`),
+  ]);
+  if (![incomingEdges, sharedCitationRows, revisionRows].every(Array.isArray)) throw dependencyError('node_context');
+
+  const backlinkKinds = new Map();
+  const incomingByNode = new Map();
+  incomingEdges.forEach((edge) => {
+    if (!edge.source_id || edge.source_id === nodeId) return;
+    const kinds = backlinkKinds.get(edge.source_id) || new Set();
+    kinds.add('incoming_edge');
+    backlinkKinds.set(edge.source_id, kinds);
+    incomingByNode.set(edge.source_id, edge);
+  });
+  sharedCitationRows.forEach((citation) => {
+    if (!citation.node_id || citation.node_id === nodeId) return;
+    const kinds = backlinkKinds.get(citation.node_id) || new Set();
+    kinds.add('shared_source');
+    backlinkKinds.set(citation.node_id, kinds);
+  });
+
+  const backlinkNodeIds = [...backlinkKinds.keys()];
+  let backlinkNodeRows = [];
+  let backlinkCitationsByNode = new Map();
+  if (backlinkNodeIds.length) {
+    const result = await supabaseRequest('GET', `nodes?workspace_id=eq.${workspace}&map_id=eq.${map}&id=in.${inFilter(backlinkNodeIds)}&select=*&limit=500`);
+    backlinkNodeRows = Array.isArray(result) ? result : [];
+    backlinkCitationsByNode = await loadNodeCitations(workspaceId, mapId, backlinkNodeIds);
+  }
+  const documentIdSet = new Set(documentIds);
+  const backlinks = backlinkNodeRows.map((row) => {
+    const incoming = incomingByNode.get(row.id);
+    const sharedCitations = (backlinkCitationsByNode.get(row.id) || []).filter((citation) => documentIdSet.has(citation.documentId));
+    return {
+      node: convertNode(row, backlinkCitationsByNode.get(row.id)),
+      kinds: [...(backlinkKinds.get(row.id) || [])],
+      relation: incoming ? incoming.relation : null,
+      relationCreatedAt: incoming ? incoming.created_at : null,
+      sharedCitations,
+    };
+  }).sort((left, right) => (
+    Number(right.kinds.includes('incoming_edge')) - Number(left.kinds.includes('incoming_edge'))
+      || String(right.node.updatedAt).localeCompare(String(left.node.updatedAt))
+  ));
+
+  const timeline = revisionRows.map(convertNodeRevision);
+  if (!timeline.some((event) => event.eventType === 'created')) {
+    timeline.push({
+      id: `legacy-created:${nodeId}`,
+      eventType: 'created',
+      content: nodeRow.content,
+      desc: nodeRow.desc || '',
+      changedFields: ['content', 'desc'],
+      createdAt: nodeRow.created_at,
+    });
+  }
+  if (nodeRow.updated_at !== nodeRow.created_at && timeline.length === 1) {
+    timeline.push({
+      id: `legacy-updated:${nodeId}`,
+      eventType: 'updated',
+      content: nodeRow.content,
+      desc: nodeRow.desc || '',
+      changedFields: [],
+      createdAt: nodeRow.updated_at,
+    });
+  }
+  timeline.sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)));
+  return { node: convertNode(nodeRow, targetCitations), sources: targetCitations, backlinks, timeline };
 }
 
 async function assertOwnedMap(workspaceId, mapId) {
@@ -4118,6 +4215,23 @@ async function createGraph(workspaceId, mapId, mindMap, source, document, source
     });
   });
   if (nodes.length) await supabaseRequest('POST', 'nodes', nodes);
+  if (nodes.length) {
+    try {
+      await supabaseRequest('POST', 'node_revisions', nodes.map((node) => ({
+        id: `rev_${node.id}_created`,
+        workspace_id: workspaceId,
+        map_id: mapId,
+        node_id: node.id,
+        event_type: 'created',
+        content: node.content,
+        desc: node.desc || '',
+        changed_fields: ['content', 'desc'],
+        created_at: now,
+      })));
+    } catch (error) {
+      console.warn('Node creation timeline unavailable; graph remains saved', { code: error.publicCode || error.code || 'NODE_TIMELINE_UNAVAILABLE' });
+    }
+  }
   if (edges.length) await supabaseRequest('POST', 'edges', edges);
   let citationRows = [];
   let sourceDocument = null;
@@ -4344,6 +4458,11 @@ async function handleKnowledge(req, context) {
         .slice(0, 20);
       return { status: 200, data: { query: searchQuery, results, total: results.length } };
     }
+    if (query.action === 'nodeContext') {
+      const nodeId = String(query.nodeId || '').trim();
+      if (!nodeId) return { status: 400, data: { error: 'nodeId is required', code: 'INVALID_INPUT' } };
+      return { status: 200, data: await loadNodeContext(workspaceId, nodeId) };
+    }
     const requestedMapId = String(query.mapId || context.defaultMapId);
     return { status: 200, data: await loadMapGraphSnapshot(workspaceId, requestedMapId) };
   }
@@ -4383,14 +4502,40 @@ async function handleKnowledge(req, context) {
   if (req.method === 'PATCH') {
     const body = await readBody(req);
     if (!body.nodeId) return { status: 400, data: { error: 'nodeId is required', code: 'INVALID_INPUT' } };
+    const nodeId = String(body.nodeId);
+    const currentRows = await supabaseRequest('GET', `nodes?workspace_id=eq.${workspace}&id=eq.${encodeURIComponent(nodeId)}&select=*&limit=1`);
+    const current = Array.isArray(currentRows) ? currentRows[0] : null;
+    if (!current) return { status: 404, data: { error: 'Node not found', code: 'NOT_FOUND' } };
     const updates = { updated_at: new Date().toISOString() };
+    const changedFields = [];
     ['content', 'desc', 'type', 'status', 'source', 'confidence'].forEach((field) => {
-      if (body[field] !== undefined) updates[field] = body[field];
+      if (body[field] !== undefined && body[field] !== current[field]) {
+        updates[field] = body[field];
+        changedFields.push(field);
+      }
     });
-    const rows = await supabaseRequest('PATCH', `nodes?workspace_id=eq.${workspace}&id=eq.${encodeURIComponent(String(body.nodeId))}`, updates, 'return=representation');
+    if (changedFields.length === 0) return { status: 200, data: { node: convertNode(current), changed: false } };
+    const rows = await supabaseRequest('PATCH', `nodes?workspace_id=eq.${workspace}&id=eq.${encodeURIComponent(nodeId)}`, updates, 'return=representation');
     const node = Array.isArray(rows) ? rows[0] : rows;
     if (!node) return { status: 404, data: { error: 'Node not found', code: 'NOT_FOUND' } };
-    return { status: 200, data: { node: convertNode(node) } };
+    try {
+      await supabaseRequest('POST', 'node_revisions', {
+        id: `rev_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        workspace_id: workspaceId,
+        map_id: node.map_id,
+        node_id: node.id,
+        event_type: 'updated',
+        content: node.content,
+        desc: node.desc || '',
+        changed_fields: changedFields,
+        created_at: updates.updated_at,
+      }, 'return=minimal');
+    } catch (error) {
+      // The content update has already committed. Do not tell the client the
+      // edit failed and tempt it to overwrite the saved value on retry.
+      console.warn('Node update timeline unavailable; node edit remains saved', { code: error.publicCode || error.code || 'NODE_TIMELINE_WRITE_FAILED' });
+    }
+    return { status: 200, data: { node: convertNode(node), changed: true } };
   }
 
   if (req.method !== 'POST') {
@@ -4611,6 +4756,7 @@ const server = http.createServer(async (req, res) => {
         knowledgeStore: 'unknown',
         hybridRetrieval: 'unknown',
         entityGraph: 'unknown',
+        nodeTimeline: 'unknown',
       };
       if (checks.knowledgeStoreConfigured) {
         try {
@@ -4622,18 +4768,22 @@ const server = http.createServer(async (req, res) => {
           await supabaseRequest('GET', 'graph_relations?select=id&limit=1');
           await supabaseRequest('GET', 'graph_evidence?select=id&limit=1');
           checks.entityGraph = 'ready';
+          await supabaseRequest('GET', 'node_revisions?select=id&limit=1');
+          checks.nodeTimeline = 'ready';
         } catch (_) {
           if (checks.knowledgeStore !== 'ok') checks.knowledgeStore = 'unreachable';
           if (checks.hybridRetrieval !== 'ready') checks.hybridRetrieval = 'unavailable';
           checks.entityGraph = 'unavailable';
+          checks.nodeTimeline = 'unavailable';
         }
       } else {
         checks.knowledgeStore = 'not_configured';
         checks.hybridRetrieval = 'not_configured';
         checks.entityGraph = 'not_configured';
+        checks.nodeTimeline = 'not_configured';
       }
       const healthy = checks.authConfiguration === 'ok' && checks.modelConfigured && checks.knowledgeStore === 'ok'
-        && checks.hybridRetrieval === 'ready' && checks.entityGraph === 'ready';
+        && checks.hybridRetrieval === 'ready' && checks.entityGraph === 'ready' && checks.nodeTimeline === 'ready';
       res.writeHead(healthy ? 200 : 503, { 'Content-Type': 'application/json; charset=utf-8' });
       return res.end(JSON.stringify({
         status: healthy ? 'ok' : 'degraded',

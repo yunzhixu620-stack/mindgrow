@@ -424,6 +424,22 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     if (!saved.includes("经过验证")) throw new Error(`Detailed explanation was not persisted for ${nodeId}: ${saved}`);
   });
 
+  await check("node context exposes source backlinks and a readable timeline", async () => {
+    const node = await page.$(".react-flow__node");
+    if (!node) throw new Error("No node is available for traceability inspection");
+    await node.evaluate((element) => element.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 420, clientY: 260 })));
+    await page.waitForFunction(() => Array.from(document.querySelectorAll("button")).some((button) => button.textContent.includes("引用与时间轴")));
+    await clickByText(page, "button", "引用与时间轴");
+    await page.waitForSelector('[data-testid="node-context-panel"]');
+    const panelText = await page.$eval('[data-testid="node-context-panel"]', (element) => element.textContent);
+    if (!panelText.includes("原文来源") || !panelText.includes("谁指向或复用了它") || !panelText.includes("变更时间轴")) {
+      throw new Error("Node traceability sections are incomplete");
+    }
+    if (!await page.$('[data-testid="node-timeline-event"]')) throw new Error("Node timeline has no events");
+    await page.click('button[aria-label="关闭节点引用与时间轴"]');
+    await page.waitForFunction(() => !document.querySelector('[data-testid="node-context-panel"]'));
+  });
+
   await check("new map persists after reload", async () => {
     await page.click('button[title="新建知识库"]');
     await page.waitForSelector('input[placeholder="知识库名称..."]');

@@ -47,8 +47,8 @@
 |---|---|---|
 | S2.1 maps.mode 数据迁移 | 已合并 | PR #36 / `a1a988a`；Supabase V12、阿里云 API `10.6.0`、GitHub Pages 均已发布；真实账号三种 mode 的创建、刷新读取、板块隔离与清理全部通过 |
 | S2.2 `/api/bootstrap` 首屏聚合 | 已合并 | PR #37 / `eac8102`；阿里云 API `10.7.0`、GitHub Pages 已发布；匿名拒绝公网 smoke 6/6、带认证本地聚合 smoke 7/7；真实登录首屏一次恢复工作区、5 个知识库与默认图 107 节点，三板块往返无缓存残留，页面无 warning/error |
-| S2.3 CI 部署事实校验 | 开发中 | 独立分支 `agent/s2-3-deployment-fact`；增加构建清单、线上 health/auth/version/前端 SHA 对应断言与 CI，后端 `git_sha` 按 Owner 决定留到 S2.10 |
-| S2.4 Backlinks + 时间轴 | 待开发 | 当前 citation 不等于可反查 backlinks |
+| S2.3 CI 部署事实校验 | 已合并 | PR #38 / `4653d25`；GitHub Pages 静态清单的完整 SHA、API `10.7.0` 与 `authRequired=true` 生产校验通过；后端 `git_sha` 按 Owner 决定留到 S2.10 |
+| S2.4 Backlinks + 时间轴 | 发布中 | PR #39 / `84c427a`；Supabase V13 已上线且 service-role-only 权限通过，阿里云 API `10.8.0` 已发布，`nodeTimeline=ready`、公网后端 smoke 6/6；待合并前端并完成真实账号持久化验收 |
 | S2.5 canonical ID + 真 createdAt | 待开发 | 依赖统一实体数据模型与可撤销迁移 |
 | S2.6 React Flow 可复现 bug | 局部已有 | 已修复若干跳转/展开问题；尚未形成只按复现步骤验收的清单 |
 | S2.7 Obsidian 式实体网状图 | 局部已有 | 已有实体图、一跳聚焦和详情；缺完整强关系默认、过滤、搜索验收 |
@@ -75,3 +75,11 @@
 4. [x] 2026-07-22 使用已登录真实账号完成三种 `mode` 的创建、刷新读取和板块隔离验证，随后删除全部测试 map；未读取或导出浏览器令牌。
 5. [x] 2026-07-22 前端合并为 `main@a1a988a`，GitHub Pages 公网 `index.html` SHA-256 与本地构建完全一致。
 6. 若任一阶段失败，先停止后续发布；数据库回滚使用 `supabase-v12-map-mode-rollback.sql`，阿里云函数回滚到 API `10.5.2`。
+
+## S2.4 发布检查点
+
+1. [x] 2026-07-22 在 Supabase SQL Editor 执行 V13 migration；`node_revisions` 表、索引与 RLS 均存在，`anon` / `authenticated` 不可直接读取，`service_role` 可用。
+2. [x] 2026-07-22 阿里云 WebIDE 源码写入前校验 SHA-256 `9ded77a64eebe2d51ef4346714a10a38c816f29ed74415ab19b0cff8ea223efa`、版本 `10.8.0`、字节数 `253485`，控制台部署完成。
+3. [x] 2026-07-22 公网 `/health` 返回 `status=ok`、`version=10.8.0`、`authRequired=true`、`knowledgeStore=ok`、`nodeTimeline=ready`；匿名安全 smoke 6/6 通过。
+4. [ ] PR #39 合并、GitHub Pages 发布并通过 production fact。
+5. [ ] 使用真实账号编辑节点，确认“引用与时间轴”展示 created / updated 事件且刷新后仍存在；测试完成后清理临时 map。
