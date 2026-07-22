@@ -615,24 +615,42 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     await page.screenshot({ path: path.join(artifactDir, "layoutlmv3-document-coverage.png"), fullPage: true });
   });
 
-  await check("mobile chat and map tabs have no horizontal overflow", async () => {
-    await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true });
+  await check("mobile bottom navigation stays clear on iPhone SE and keeps graph access", async () => {
+    await page.setViewport({ width: 375, height: 667, isMobile: true, hasTouch: true });
     await page.reload({ waitUntil: "networkidle0" });
+    await page.click('[data-testid="mobile-bottom-nav"] button[aria-label="切换到知识碎片"]');
     const mobileBreadcrumb = await page.$('[data-testid="mobile-breadcrumb-bar"] [data-testid="product-breadcrumb"]');
     if (!mobileBreadcrumb) throw new Error("Mobile knowledge-base breadcrumb is missing");
     const mobileBreadcrumbLabel = await mobileBreadcrumb.$eval("button span.truncate", (label) => label.textContent.trim());
     if (mobileBreadcrumbLabel.length > 12) throw new Error(`Mobile breadcrumb was not shortened: ${mobileBreadcrumbLabel}`);
     const hasTextarea = await page.$('textarea[aria-label="输入知识或向知识库提问"]');
     if (!hasTextarea) throw new Error("Mobile chat input missing");
-    await page.click('[data-testid="mobile-product-tabs"] button[aria-label="切换到会议助手"]');
+    const navigationCount = await page.$$eval('[data-testid="mobile-bottom-nav"]', (elements) => elements.length);
+    if (navigationCount !== 1 || await page.$('[data-testid="mobile-product-tabs"]')) throw new Error("Mobile product navigation is duplicated");
+    const safeAreaStyle = await page.$eval('[data-testid="mobile-bottom-nav"]', (element) => element.getAttribute("style") || "");
+    if (!safeAreaStyle.includes("safe-area-inset-bottom")) throw new Error("Mobile bottom navigation does not reserve the device safe area");
+    const [inputBox, contentBox, navigationBox] = await Promise.all([
+      hasTextarea.boundingBox(),
+      page.$eval('[data-testid="mobile-content-region"]', (element) => {
+        const box = element.getBoundingClientRect();
+        return { x: box.x, y: box.y, width: box.width, height: box.height };
+      }),
+      page.$eval('[data-testid="mobile-bottom-nav"]', (element) => {
+        const box = element.getBoundingClientRect();
+        return { x: box.x, y: box.y, width: box.width, height: box.height };
+      }),
+    ]);
+    if (contentBox.y + contentBox.height > navigationBox.y) throw new Error("Mobile bottom navigation overlaps the scrollable content and citation region");
+    if (!inputBox || inputBox.y + inputBox.height > navigationBox.y) throw new Error("Mobile bottom navigation obscures the chat input");
+    await page.click('[data-testid="mobile-bottom-nav"] button[aria-label="切换到会议助手"]');
     await page.waitForFunction(() => document.body.innerText.includes("独立会议知识库"));
     const meetingHasMapTab = await page.$$eval("button", (buttons) => buttons.some((button) => button.textContent.includes("图谱")));
     if (!meetingHasMapTab || await page.$(".react-flow")) throw new Error("Mobile meeting graph tab behavior is incorrect");
-    await page.click('[data-testid="mobile-product-tabs"] button[aria-label="查看知识图谱"]');
+    await page.click('[data-testid="mobile-view-toolbar"] button[aria-label="查看知识图谱"]');
     await page.waitForSelector('[data-testid="knowledge-graph-workspace"][data-graph-mode="meeting"]');
-    await page.click('[data-testid="mobile-product-tabs"] button[aria-label="切换到知识碎片"]');
+    await page.click('[data-testid="mobile-bottom-nav"] button[aria-label="切换到知识碎片"]');
     await page.waitForSelector('textarea[aria-label="输入知识或向知识库提问"]');
-    await page.click('[data-testid="mobile-product-tabs"] button[aria-label="查看知识图谱"]');
+    await page.click('[data-testid="mobile-view-toolbar"] button[aria-label="查看知识图谱"]');
     await page.waitForSelector(".react-flow");
     await page.waitForSelector(".mindgrow-minimap");
     await page.waitForFunction(() => document.body.innerText.includes("当前显示") && document.body.innerText.includes("＋N 逐层展开"));
@@ -653,8 +671,25 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     await new Promise((resolve) => setTimeout(resolve, 400));
   });
 
+  await check("mobile floating New creates a library in the current board", async () => {
+    await page.click('[data-testid="mobile-bottom-nav"] button[aria-label="切换到会议助手"]');
+    await page.waitForFunction(() => document.body.innerText.includes("独立会议知识库"));
+    await page.click('[data-testid="mobile-create-library"]');
+    const name = `移动会议库-${Date.now()}`;
+    await page.waitForSelector('input[placeholder="知识库名称..."]');
+    await page.type('input[placeholder="知识库名称..."]', name);
+    await clickByText(page, "button", "创建");
+    await page.waitForFunction((libraryName) => {
+      const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+      return state.maps.some((map) => map.name === libraryName && String(map.description || "").includes("[MindGrow:meeting]"));
+    }, {}, name);
+    await page.waitForSelector('[data-testid="meeting-content-workspace"]');
+    const createLabel = await page.$eval('[data-testid="mobile-create-library"]', (button) => button.getAttribute("aria-label"));
+    if (createLabel !== "在会议助手中新建知识库") throw new Error(`Floating New lost current-board scope: ${createLabel}`);
+  });
+
   await check("mobile template creation uses the shared graph loader once", async () => {
-    await page.click('[data-testid="mobile-product-tabs"] button[aria-label="切换到知识碎片"]');
+    await page.click('[data-testid="mobile-bottom-nav"] button[aria-label="切换到知识碎片"]');
     await page.waitForSelector('textarea[aria-label="输入知识或向知识库提问"]');
     const existingMapIds = await page.evaluate(() => JSON.parse(localStorage.getItem("mindgrow.local.v2")).maps.map((map) => map.id));
     await page.evaluate(() => {
@@ -685,7 +720,7 @@ const expandOneVisibleLevel = async (page, previousCount) => {
         return { id: map?.id || "", root: state.nodes[map?.id]?.[0]?.content || "" };
       }, existingMapIds);
       if (!created.id || !created.root) throw new Error("Template did not create a populated knowledge library");
-      await page.click('[data-testid="mobile-product-tabs"] button[aria-label="查看知识图谱"]');
+      await page.click('[data-testid="mobile-view-toolbar"] button[aria-label="查看知识图谱"]');
       await page.waitForFunction((root) => document.body.innerText.includes(root), {}, created.root);
       await new Promise((resolve) => setTimeout(resolve, 300));
       const requestCount = await page.evaluate((mapId) => window.__mindgrowLocalGraphRequests.filter((candidate) => candidate === mapId).length, created.id);
