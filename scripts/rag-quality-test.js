@@ -47,7 +47,7 @@ const {
   __entityGraphInternal,
 } = require("../fc-proxy/index.js");
 const { verifiedIndexes, verifiedCitationPayload } = __citationInternal;
-const { canonicalGraphEntityIdentity } = __entityGraphInternal;
+const { canonicalGraphEntityIdentity, normalizedEntityGraphForWrite } = __entityGraphInternal;
 
 const root = path.join(__dirname, "..", "tests", "fixtures", "papers");
 const fixtures = [
@@ -525,6 +525,32 @@ check("canonical entity ids are stable inside one library and isolated across li
   assert.strictEqual(first.normalizedName, "graph rag");
   assert.notStrictEqual(first.id, otherLibrary.id);
   assert.notStrictEqual(first.id, otherType.id);
+});
+
+check("deterministic evidence entities remain persistable after the analysis response round-trip", () => {
+  const citation = {
+    index: 1,
+    quote: "GraphRAG 是一种结合知识图谱与检索增强生成的检索方法。GraphRAG 使用知识图谱。",
+    content: "GraphRAG 是一种结合知识图谱与检索增强生成的检索方法。GraphRAG 使用知识图谱。",
+    locator: "第 1 段",
+    sourceType: "text",
+  };
+  const graph = normalizedEntityGraphForWrite({
+    entities: [{
+      tempId: "E1",
+      name: "GraphRAG",
+      type: "method",
+      aliases: [],
+      description: "GraphRAG 使用知识图谱",
+      descriptionEvidence: [1],
+      citationIndexes: [1],
+      confidence: 0.8,
+    }],
+    relations: [],
+  }, new Set([1]), [citation]);
+  assert(graph.entities.some((entity) => entity.name === "GraphRAG"));
+  assert(graph.entities.some((entity) => entity.name === "知识图谱"));
+  assert(graph.relations.some((relation) => relation.type === "uses"));
 });
 
 const all = fixtures.map((fixture) => {
