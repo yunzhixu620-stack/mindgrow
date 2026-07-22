@@ -1210,6 +1210,36 @@ function articleTaskSystemPrompt(request) {
   return `你是严格基于证据回答的论文知识助手。${schema}${conciseFormat}使用简体中文直接回答当前问题。可用最近对话理解“它/前者/后者/这个方法”等指代。${grounding}处理表格数值时必须按表头从左到右先确定任务、再确定指标、最后定位模型行；相邻任务出现同名指标时不得串列。若无法从同一证据块确认表头与数据行，就明确说明表格结构不足，不得选取看似接近的数字。`;
 }
 
+function resolveUsedEvidenceIds(rawUsedSourceIds, evidence, requestedCoverage, options) {
+  const allowedIds = new Set((Array.isArray(evidence) ? evidence : [])
+    .map((node) => (node && typeof node.id === 'string' ? node.id : ''))
+    .filter(Boolean));
+  const usedIds = [];
+  (Array.isArray(rawUsedSourceIds) ? rawUsedSourceIds : []).forEach((value) => {
+    // Evidence ids are an explicit string namespace. Do not coerce numeric
+    // citation indexes into it: citation indexes are document-local and can
+    // collide across documents.
+    if (typeof value !== 'string') return;
+    const id = value.trim();
+    if (allowedIds.has(id) && !usedIds.includes(id)) usedIds.push(id);
+  });
+
+  const requireAllForComplete = Boolean(options && options.requireAllForComplete);
+  let coverage = requestedCoverage === 'complete' ? 'complete' : 'partial';
+  const missingInformation = [];
+  if (usedIds.length === 0) coverage = 'partial';
+  if (requireAllForComplete && requestedCoverage === 'complete') {
+    const usedSet = new Set(usedIds);
+    const complete = allowedIds.size > 0 && usedSet.size === allowedIds.size
+      && [...allowedIds].every((id) => usedSet.has(id));
+    if (!complete) {
+      coverage = 'partial';
+      missingInformation.push('翻译覆盖与来源声明不完整：模型未明确引用全部选中证据');
+    }
+  }
+  return { usedIds, coverage, missingInformation };
+}
+
 function sanitizeGroundedAnswer(answer, evidence) {
   const sourceText = (Array.isArray(evidence) ? evidence : []).reduce((all, item) => all.concat([
     String((item && item.content) || ''),
@@ -1428,7 +1458,6 @@ async function answerQuestion(input, mapId, intent, workspaceId, history, articl
     return deterministicEvidenceAnswer(evidence, intent);
   }
 
-  const allowedIds = new Set(evidence.map((node) => node.id));
   try {
     const raw = await dashscopeChat([
       {
@@ -1442,22 +1471,31 @@ async function answerQuestion(input, mapId, intent, workspaceId, history, articl
     ], (!articleRequest || articleRequest.task === 'qa') && isTableQuestion(input) ? 'qwen-max' : 'qwen-plus', articleRequest && articleRequest.task === 'translate' ? 4200 : 1400, 0.1);
     const parsed = JSON.parse(stripJsonFence(raw));
     if (!parsed || typeof parsed.answer !== 'string' || !Array.isArray(parsed.usedSourceIds)) throw new Error('Invalid answer schema');
-    let usedIds = [...new Set(parsed.usedSourceIds.map(String))].filter((id) => allowedIds.has(id));
-    if (articleRequest && articleRequest.task === 'translate' && parsed.answer.trim()) {
-      usedIds = evidence.map((node) => node.id);
-    }
+    const usedResolution = resolveUsedEvidenceIds(parsed.usedSourceIds, evidence, parsed.coverage, {
+      requireAllForComplete: Boolean(articleRequest && articleRequest.task === 'translate'),
+    });
+    const usedIds = usedResolution.usedIds;
+    const parsedMissingInformation = Array.isArray(parsed.missingInformation)
+      ? parsed.missingInformation.map(String).slice(0, 8) : [];
+    const resolvedMissingInformation = [...new Set([
+      ...usedResolution.missingInformation,
+      ...parsedMissingInformation,
+    ])].slice(0, 8);
     if (usedIds.length === 0) {
       return {
         status: 200,
         data: {
           intent,
           type: 'answer',
-          reply: parsed.answer || '当前知识库中没有足够证据回答这个问题。',
+          reply: articleRequest && articleRequest.task === 'translate'
+            ? '翻译结果没有返回可验证的字符串证据 ID，暂不展示模型正文。请重试或缩小翻译范围。'
+            : (parsed.answer || '当前知识库中没有足够证据回答这个问题。'),
           sources: [],
           grounded: true,
           abstained: true,
           coverage: 'partial',
-          missingInformation: Array.isArray(parsed.missingInformation) ? parsed.missingInformation.map(String).slice(0, 8) : ['缺少直接支持该结论的来源'],
+          missingInformation: resolvedMissingInformation.length > 0
+            ? resolvedMissingInformation : ['缺少直接支持该结论的来源'],
           retrievalTrace: evidence.trace || null,
         },
       };
@@ -1468,8 +1506,7 @@ async function answerQuestion(input, mapId, intent, workspaceId, history, articl
     const answerAudit = (!articleRequest || articleRequest.task === 'qa')
       ? sanitizeGroundedAnswer(parsed.answer, used) : { answer: parsed.answer, removedLines: 0 };
     if (!answerAudit.answer) return deterministicEvidenceAnswer(used, intent);
-    const missingInformation = Array.isArray(parsed.missingInformation)
-      ? parsed.missingInformation.map(String).slice(0, 8) : [];
+    const missingInformation = resolvedMissingInformation;
     if (answerAudit.removedLines > 0) {
       missingInformation.push('已移除 ' + String(answerAudit.removedLines) + ' 行无法由引用直接支持的扩展解释');
     }
@@ -1485,7 +1522,7 @@ async function answerQuestion(input, mapId, intent, workspaceId, history, articl
         }),
         grounded: true,
         abstained: false,
-        coverage: parsed.coverage === 'complete' ? 'complete' : 'partial',
+        coverage: usedResolution.coverage,
         missingInformation,
         retrievalTrace: evidence.trace || null,
       },
@@ -4244,6 +4281,7 @@ module.exports = {
   selectArticleDocument,
   selectAbstractTranslationChunks,
   articleTaskSystemPrompt,
+  resolveUsedEvidenceIds,
   articleOutputNeedsChinese,
   articleTranslationTargets,
   applyArticleFieldTranslations,
