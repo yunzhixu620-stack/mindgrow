@@ -13,6 +13,7 @@ function map(id: string): MindMap {
     id,
     name: id,
     description: "",
+    mode: "knowledge",
     color: "#14b8a6",
     isDefault: false,
     categoryId: null,

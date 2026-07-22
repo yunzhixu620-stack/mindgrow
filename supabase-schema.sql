@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS maps (
   workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
+  mode TEXT NOT NULL CHECK (mode IN ('knowledge', 'meeting', 'article')),
   color TEXT NOT NULL DEFAULT '#22d3a7',
   is_default BOOLEAN NOT NULL DEFAULT FALSE,
   node_count INTEGER NOT NULL DEFAULT 0 CHECK (node_count >= 0),
@@ -44,6 +45,34 @@ CREATE TABLE IF NOT EXISTS maps (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Compatibility window for an older backend that still encoded product mode
+-- in description. New writes send maps.mode explicitly; the trigger prevents
+-- old Function Compute revisions from creating misclassified maps while a
+-- rolling deployment is in progress.
+CREATE OR REPLACE FUNCTION normalize_map_mode_from_legacy_marker()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
+BEGIN
+  IF NEW.mode IS NULL THEN
+    IF NEW.description LIKE '%[MindGrow:meeting]%' THEN
+      NEW.mode := 'meeting';
+    ELSIF NEW.description LIKE '%[MindGrow:article]%' THEN
+      NEW.mode := 'article';
+    ELSE
+      NEW.mode := 'knowledge';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS maps_legacy_mode_compat ON maps;
+CREATE TRIGGER maps_legacy_mode_compat
+BEFORE INSERT OR UPDATE OF description, mode ON maps
+FOR EACH ROW EXECUTE FUNCTION normalize_map_mode_from_legacy_marker();
 
 CREATE TABLE IF NOT EXISTS nodes (
   id TEXT PRIMARY KEY,
@@ -110,6 +139,7 @@ CREATE TABLE IF NOT EXISTS node_citations (
 CREATE INDEX IF NOT EXISTS idx_members_user ON workspace_members(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_maps_workspace_updated ON maps(workspace_id, is_default DESC, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_maps_workspace_category ON maps(workspace_id, category_id);
+CREATE INDEX IF NOT EXISTS idx_maps_workspace_mode_updated ON maps(workspace_id, mode, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_categories_workspace_sort ON categories(workspace_id, sort_order);
 CREATE INDEX IF NOT EXISTS idx_nodes_workspace_map_status ON nodes(workspace_id, map_id, status);
 CREATE INDEX IF NOT EXISTS idx_nodes_content_trgm ON nodes USING GIN (content gin_trgm_ops);
@@ -184,7 +214,9 @@ DROP POLICY IF EXISTS "Allow all on node_layouts" ON node_layouts;
 
 REVOKE ALL ON TABLE workspaces, workspace_members, categories, maps, nodes, edges, node_layouts, source_documents, node_citations FROM anon, authenticated;
 REVOKE ALL ON FUNCTION search_knowledge_nodes(TEXT, TEXT, TEXT, INTEGER) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION normalize_map_mode_from_legacy_marker() FROM PUBLIC, anon, authenticated;
 GRANT ALL ON TABLE workspaces, workspace_members, categories, maps, nodes, edges, node_layouts, source_documents, node_citations TO service_role;
 GRANT EXECUTE ON FUNCTION search_knowledge_nodes(TEXT, TEXT, TEXT, INTEGER) TO service_role;
+GRANT EXECUTE ON FUNCTION normalize_map_mode_from_legacy_marker() TO service_role;
 
 COMMIT;

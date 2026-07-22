@@ -38,6 +38,7 @@ function universe(label: string): UniverseSnapshot {
         id: `map-${label}`,
         name: label,
         description: "",
+        mode: "knowledge",
         color: "#14b8a6",
         isDefault: false,
         categoryId: null,

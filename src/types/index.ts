@@ -108,10 +108,13 @@ export interface Category {
   createdAt: string;
 }
 
+export type MapMode = "knowledge" | "meeting" | "article";
+
 export interface MindMap {
   id: string;
   name: string;
   description: string;
+  mode: MapMode;
   color: string;
   isDefault: boolean;
   categoryId: string | null;

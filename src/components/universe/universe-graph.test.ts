@@ -9,7 +9,8 @@ function library(): LibraryGraph {
     map: {
       id: "map-article",
       name: "论文库",
-      description: "[mindgrow:mode=article]",
+      description: "论文阅读",
+      mode: "article",
       color: "#a78bfa",
       isDefault: false,
       categoryId: null,

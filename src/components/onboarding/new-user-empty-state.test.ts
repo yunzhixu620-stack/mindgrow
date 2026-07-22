@@ -11,6 +11,7 @@ const defaultMap: MindMap = {
   id: "map-default",
   name: "默认知识库",
   description: "",
+  mode: "knowledge",
   color: "#22d3a7",
   isDefault: true,
   categoryId: null,

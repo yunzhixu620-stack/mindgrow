@@ -139,6 +139,40 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     await revealAllStoredNodes(page);
   });
 
+  await check("pre-v12 local maps upgrade to explicit mode without losing descriptions", async () => {
+    const legacyId = "map_e2e_legacy_mode";
+    await page.evaluate((mapId) => {
+      const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+      const source = state.maps[0];
+      const legacy = { ...source, id: mapId, name: "Legacy article map", description: "[MindGrow:article] 原始说明", isDefault: false, nodeCount: 0 };
+      delete legacy.mode;
+      state.maps.push(legacy);
+      state.nodes[mapId] = [];
+      state.edges[mapId] = [];
+      state.entityGraphs[mapId] = { entities: [], relations: [] };
+      localStorage.setItem("mindgrow.local.v2", JSON.stringify(state));
+    }, legacyId);
+    await page.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
+    await page.waitForSelector('[data-testid="knowledge-workspace"]');
+    await page.waitForFunction((mapId) => {
+      const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+      return state.maps.find((map) => map.id === mapId)?.mode === "article";
+    }, {}, legacyId);
+    const upgraded = await page.evaluate((mapId) => {
+      const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+      return state.maps.find((map) => map.id === mapId);
+    }, legacyId);
+    if (upgraded?.mode !== "article" || upgraded.description !== "[MindGrow:article] 原始说明") throw new Error(`Legacy map migration was lossy: ${JSON.stringify(upgraded)}`);
+    await page.evaluate((mapId) => {
+      const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+      state.maps = state.maps.filter((map) => map.id !== mapId);
+      delete state.nodes[mapId]; delete state.edges[mapId]; delete state.entityGraphs[mapId];
+      localStorage.setItem("mindgrow.local.v2", JSON.stringify(state));
+    }, legacyId);
+    await page.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
+    await revealAllStoredNodes(page);
+  });
+
   await check("sync indicator reports current-map network state without cross-map leakage", async () => {
     const indicator = await page.waitForSelector('[data-testid="sync-indicator"]');
     const initial = await indicator.evaluate((element) => ({ state: element.getAttribute("data-sync-state"), mapId: element.getAttribute("data-sync-map-id") }));
@@ -405,7 +439,7 @@ const expandOneVisibleLevel = async (page, previousCount) => {
       const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
       const activeId = document.querySelector('[data-testid="knowledge-workspace"]')?.getAttribute("data-current-map-id") || "";
       const active = state.maps.find((map) => map.id === activeId);
-      const target = state.maps.find((map) => map.id !== activeId && !String(map.description || "").includes("[MindGrow:meeting]") && !String(map.description || "").includes("[MindGrow:article]"));
+      const target = state.maps.find((map) => map.id !== activeId && map.mode === "knowledge");
       return { activeId, activeName: active?.name || "", targetId: target?.id || "", targetName: target?.name || "" };
     });
     if (!breadcrumbState.activeId || !breadcrumbState.activeName || !breadcrumbState.targetId) throw new Error(`Breadcrumb fixture is incomplete: ${JSON.stringify(breadcrumbState)}`);
@@ -455,7 +489,7 @@ const expandOneVisibleLevel = async (page, previousCount) => {
       const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
       return state.maps.find((map) => map.id === mapId);
     }, meetingLibraryId);
-    if (!meetingLibrary?.description.includes("[MindGrow:meeting]")) throw new Error("Meeting board did not enter its own knowledge library");
+    if (meetingLibrary?.mode !== "meeting") throw new Error("Meeting board did not enter its own explicit-mode knowledge library");
     await page.type('textarea[placeholder*="会议记录"]', "今天讨论知识助手发布计划。决定本周完成登录测试。小王负责回归验证，周五前完成。风险是文章解析接口可能超时。");
     await clickByText(page, "button", "生成结构化会议纪要");
     await page.waitForSelector('[data-testid="answer-card"]');
@@ -481,7 +515,7 @@ const expandOneVisibleLevel = async (page, previousCount) => {
       const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
       return { map: state.maps.find((map) => map.id === mapId), nodes: state.nodes[mapId] || [] };
     }, articleLibraryId);
-    if (!articleLibrary?.map?.description.includes("[MindGrow:article]")) throw new Error("Article board did not enter its own knowledge library");
+    if (articleLibrary?.map?.mode !== "article") throw new Error("Article board did not enter its own explicit-mode knowledge library");
     if (articleLibrary.nodes.some((node) => node.content.includes("知识助手发布计划"))) throw new Error("Meeting content leaked into the article library");
     const fileInput = await page.waitForSelector('input[type="file"][accept*="pdf"]');
     await fileInput.uploadFile(pdfPath);
@@ -636,8 +670,7 @@ const expandOneVisibleLevel = async (page, previousCount) => {
         const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
         const map = state.maps.find((item) => item.id === id);
         if (!map) return false;
-        const description = map.description || "";
-        return expectedMode === "meeting" ? description.includes("[MindGrow:meeting]") : expectedMode === "article" ? description.includes("[MindGrow:article]") : !description.includes("[MindGrow:");
+        return map.mode === expectedMode;
       }, {}, mode);
       switchDurations.push(Date.now() - startedAt);
     }
@@ -789,7 +822,7 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     await clickByText(page, "button", "创建");
     await page.waitForFunction((libraryName) => {
       const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
-      return state.maps.some((map) => map.name === libraryName && String(map.description || "").includes("[MindGrow:meeting]"));
+      return state.maps.some((map) => map.name === libraryName && map.mode === "meeting");
     }, {}, name);
     await page.waitForSelector('[data-testid="meeting-content-workspace"]');
     const createLabel = await page.$eval('[data-testid="mobile-create-library"]', (button) => button.getAttribute("aria-label"));
