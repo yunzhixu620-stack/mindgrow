@@ -1,77 +1,30 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Category, KnowledgeNode, MindMap } from "@/types";
 import { apiFetch } from "@/lib/client-api";
-
-type OrganizeMode = "recommended" | "semantic" | "workflow" | "custom";
-
-interface ProposedCategory {
-  key: string;
-  name: string;
-  description: string;
-  icon: string;
-}
-
-interface Proposal {
-  categories: ProposedCategory[];
-  assignments: Record<string, string>;
-}
+import {
+  buildRuleProposal,
+  normalizeAiProposal,
+  organizerUndoKey,
+  parseCustomCategories,
+  type OrganizeMode,
+  type OrganizerProposal,
+} from "@/lib/knowledge-organizer";
 
 interface UndoSnapshot {
+  scopeKey: string;
   assignments: Record<string, string | null>;
   createdCategoryIds: string[];
+  createdAt: string;
 }
-
-const UNDO_KEY = "mindgrow.organize.undo.v1";
 
 const MODE_OPTIONS: Array<{ id: OrganizeMode; title: string; description: string }> = [
-  { id: "recommended", title: "AI 推荐", description: "根据内容自动选择最稳妥的主题结构" },
-  { id: "semantic", title: "语义主题", description: "按技术、产品、研究和行业主题聚合" },
+  { id: "recommended", title: "AI 推荐", description: "读取当前知识库内容，生成更贴合现状的大目录" },
+  { id: "semantic", title: "语义主题", description: "按技术、产品、研究和项目主题聚合" },
   { id: "workflow", title: "知识工作流", description: "按问题、方法、证据、结论和行动整理" },
-  { id: "custom", title: "自定义大目录", description: "按你的目录名称和说明自动迁移小知识库" },
+  { id: "custom", title: "自定义大目录", description: "按你的目录名称和说明迁移小知识库" },
 ];
-
-const SEMANTIC_CATEGORIES: ProposedCategory[] = [
-  { key: "ai", name: "AI与技术", description: "模型、RAG、检索、数据与工程", icon: "⚙️" },
-  { key: "product", name: "产品与用户", description: "产品、需求、用户、竞品与商业", icon: "💡" },
-  { key: "research", name: "研究与资料", description: "论文、文章、PDF、报告与学习", icon: "📚" },
-  { key: "project", name: "项目与决策", description: "项目、会议、任务、决策与行动", icon: "🎯" },
-  { key: "other", name: "其他知识", description: "暂未形成稳定主题的内容", icon: "🗂️" },
-];
-
-const WORKFLOW_CATEGORIES: ProposedCategory[] = [
-  { key: "question", name: "问题与目标", description: "待解决问题、需求和目标", icon: "❓" },
-  { key: "method", name: "概念与方法", description: "概念、模型、框架和方法", icon: "🧩" },
-  { key: "evidence", name: "证据与资料", description: "论文、数据、报告和引用", icon: "📎" },
-  { key: "result", name: "结论与行动", description: "结论、决策、任务和下一步", icon: "✅" },
-];
-
-const KEYWORDS: Record<string, string[]> = {
-  ai: ["ai", "llm", "rag", "模型", "算法", "检索", "向量", "代码", "数据库", "部署", "api"],
-  product: ["产品", "用户", "需求", "竞品", "体验", "商业", "市场", "增长", "设计"],
-  research: ["论文", "文章", "pdf", "研究", "报告", "实验", "学习", "文献", "citation"],
-  project: ["项目", "会议", "任务", "决策", "行动", "计划", "负责人", "进度"],
-  question: ["问题", "目标", "需求", "为什么", "挑战", "缺口"],
-  method: ["方法", "概念", "模型", "框架", "技术", "流程", "设计"],
-  evidence: ["证据", "引用", "论文", "数据", "报告", "实验", "来源"],
-  result: ["结论", "决策", "行动", "任务", "计划", "建议", "下一步"],
-};
-
-function parseCustomCategories(value: string): ProposedCategory[] {
-  return value.split(/\r?\n/).map((line, index) => {
-    const [name, ...description] = line.split(/[：:]/);
-    return { key: `custom-${index}`, name: name.trim(), description: description.join("：").trim(), icon: "📁" };
-  }).filter((category) => category.name);
-}
-
-function scoreText(text: string, category: ProposedCategory) {
-  const normalized = text.toLocaleLowerCase();
-  const terms = [category.name, category.description, ...(KEYWORDS[category.key] || [])]
-    .flatMap((value) => value.toLocaleLowerCase().split(/[\s、，,；;\/]+/))
-    .filter((value) => value.length >= 2);
-  return terms.reduce((score, term) => score + (normalized.includes(term) ? Math.min(4, term.length) : 0), 0);
-}
 
 async function mapText(map: MindMap) {
   try {
@@ -85,114 +38,273 @@ async function mapText(map: MindMap) {
   }
 }
 
-export function OrganizeLibraryDialog({ maps, categories, onClose, onDone }: {
+export function OrganizeLibraryDialog({ maps, categories, organizerScopeKey, onClose, onDone }: {
   maps: MindMap[];
   categories: Category[];
+  organizerScopeKey: string;
   onClose: () => void;
   onDone: () => Promise<void> | void;
 }) {
+  const undoKey = useMemo(() => organizerUndoKey(organizerScopeKey), [organizerScopeKey]);
   const [mode, setMode] = useState<OrganizeMode>("recommended");
   const [customDirectory, setCustomDirectory] = useState("产品设计：需求、用户、竞品\n技术架构：AI、RAG、数据库、部署\n研究资料：论文、文章、PDF、报告");
-  const [proposal, setProposal] = useState<Proposal | null>(null);
+  const [proposal, setProposal] = useState<OrganizerProposal | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
-  let hasUndo = false;
-  try { hasUndo = typeof window !== "undefined" && Boolean(window.localStorage.getItem(UNDO_KEY)); } catch { hasUndo = false; }
+  const [hasUndo, setHasUndo] = useState(false);
+
+  useEffect(() => {
+    try { setHasUndo(Boolean(window.localStorage.getItem(undoKey))); }
+    catch { setHasUndo(false); }
+  }, [undoKey]);
+
+  const createRulePreview = async (selectedMode: Exclude<OrganizeMode, "recommended">) => {
+    if (selectedMode === "custom" && parseCustomCategories(customDirectory).length === 0) {
+      throw new Error("请至少填写一个不重复的大目录");
+    }
+    const texts = await Promise.all(maps.map(async (map) => ({ map, text: await mapText(map) })));
+    return buildRuleProposal(texts, selectedMode, customDirectory);
+  };
 
   const createPreview = async () => {
-    setBusy(true); setNotice("");
+    setBusy(true);
+    setNotice("");
     try {
-      const candidateCategories = mode === "workflow"
-        ? WORKFLOW_CATEGORIES
-        : mode === "custom"
-          ? parseCustomCategories(customDirectory)
-          : SEMANTIC_CATEGORIES;
-      if (!candidateCategories.length) { setNotice("请至少填写一个大目录"); return; }
-      const texts = await Promise.all(maps.map(async (map) => [map.id, await mapText(map)] as const));
-      const assignments: Record<string, string> = {};
-      texts.forEach(([mapId, text]) => {
-        const ranked = candidateCategories.map((category) => ({ category, score: scoreText(text, category) })).sort((left, right) => right.score - left.score);
-        assignments[mapId] = ranked[0]?.score > 0 ? ranked[0].category.key : candidateCategories.at(-1)!.key;
-      });
-      const used = new Set(Object.values(assignments));
-      const selectedCategories = candidateCategories.filter((category) => used.has(category.key));
-      setProposal({ categories: selectedCategories, assignments });
-    } catch {
-      setNotice("读取知识库失败，请检查连接后重试。");
+      if (mode === "recommended") {
+        try {
+          const response = await apiFetch("/api/knowledge", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "suggestOrganization", mapIds: maps.map((map) => map.id) }),
+          });
+          const data = await response.json();
+          const aiProposal = response.ok ? normalizeAiProposal(data.proposal || data, maps) : null;
+          if (!aiProposal) throw new Error(data.error || "AI proposal unavailable");
+          setProposal(aiProposal);
+          setNotice("AI 已生成建议；你可以修改目录、逐个调整归属或选择保持原位置。未确认前不会改变知识库。");
+          return;
+        } catch {
+          const fallback = await createRulePreview("semantic");
+          setProposal({ ...fallback, note: "AI 服务暂不可用，当前为本地语义规则预览。" });
+          setNotice("AI 服务暂不可用，已生成本地语义预览；确认前不会改变知识库。");
+          return;
+        }
+      }
+      setProposal(await createRulePreview(mode));
+      setNotice("预览已生成；确认前不会改变知识库。");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "读取知识库失败，请检查连接后重试。");
     } finally {
       setBusy(false);
     }
   };
 
+  const restoreSnapshot = async (snapshot: UndoSnapshot) => {
+    for (const [mapId, categoryId] of Object.entries(snapshot.assignments)) {
+      const response = await apiFetch("/api/knowledge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        writeForMapId: mapId,
+        body: JSON.stringify({ action: "moveMapToCategory", mapId, categoryId }),
+      });
+      if (!response.ok) throw new Error("知识库恢复失败");
+    }
+    for (const categoryId of snapshot.createdCategoryIds) {
+      const response = await apiFetch("/api/knowledge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "deleteCategory", categoryId }),
+      });
+      if (!response.ok) throw new Error("目录清理失败");
+    }
+  };
+
   const applyProposal = async () => {
     if (!proposal) return;
-    setBusy(true); setNotice("");
+    const usedKeys = new Set(Object.values(proposal.assignments).map((assignment) => assignment.categoryKey).filter(Boolean));
+    const usedCategories = proposal.categories.filter((category) => usedKeys.has(category.key));
+    const normalizedNames = usedCategories.map((category) => category.name.trim().toLocaleLowerCase());
+    if (normalizedNames.some((name) => !name)) {
+      setNotice("请先填写所有将使用的目录名称。");
+      return;
+    }
+    if (new Set(normalizedNames).size !== normalizedNames.length) {
+      setNotice("目录名称不能重复，请合并或修改后再确认。");
+      return;
+    }
+    setBusy(true);
+    setNotice("");
+    const undo: UndoSnapshot = {
+      scopeKey: organizerScopeKey,
+      assignments: Object.fromEntries(maps.map((map) => [map.id, map.categoryId])),
+      createdCategoryIds: [],
+      createdAt: new Date().toISOString(),
+    };
     try {
-      const undo: UndoSnapshot = { assignments: Object.fromEntries(maps.map((map) => [map.id, map.categoryId])), createdCategoryIds: [] };
-      window.localStorage.setItem(UNDO_KEY, JSON.stringify(undo));
+      window.localStorage.setItem(undoKey, JSON.stringify(undo));
+      setHasUndo(true);
       const categoryIds = new Map<string, string>();
-      for (const proposed of proposal.categories) {
-        const existing = categories.find((category) => category.name.trim() === proposed.name.trim());
-        if (existing) { categoryIds.set(proposed.key, existing.id); continue; }
-        const response = await apiFetch("/api/knowledge", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "createCategory", name: proposed.name, icon: proposed.icon }) });
+      for (const proposed of usedCategories) {
+        const existing = categories.find((category) => category.name.trim().toLocaleLowerCase() === proposed.name.trim().toLocaleLowerCase());
+        if (existing) {
+          categoryIds.set(proposed.key, existing.id);
+          continue;
+        }
+        const response = await apiFetch("/api/knowledge", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "createCategory", name: proposed.name, icon: proposed.icon }),
+        });
         const data = await response.json();
         if (!response.ok || !data.category?.id) throw new Error("目录创建失败");
         categoryIds.set(proposed.key, data.category.id);
         undo.createdCategoryIds.push(data.category.id);
-        window.localStorage.setItem(UNDO_KEY, JSON.stringify(undo));
+        window.localStorage.setItem(undoKey, JSON.stringify(undo));
       }
+
+      let moved = 0;
       for (const map of maps) {
-        const categoryId = categoryIds.get(proposal.assignments[map.id]) || null;
-        const response = await apiFetch("/api/knowledge", { method: "POST", headers: { "Content-Type": "application/json" }, writeForMapId: map.id, body: JSON.stringify({ action: "moveMapToCategory", mapId: map.id, categoryId }) });
+        const categoryKey = proposal.assignments[map.id]?.categoryKey;
+        if (!categoryKey) continue;
+        const categoryId = categoryIds.get(categoryKey);
+        if (!categoryId || categoryId === map.categoryId) continue;
+        const response = await apiFetch("/api/knowledge", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          writeForMapId: map.id,
+          body: JSON.stringify({ action: "moveMapToCategory", mapId: map.id, categoryId }),
+        });
         if (!response.ok) throw new Error("知识库迁移失败");
+        moved += 1;
       }
       await onDone();
-      setNotice(`已整理 ${maps.length} 个知识库；原结构可一键撤销。`);
+      setNotice(`已整理：移动 ${moved} 个知识库；原结构可一键撤销。`);
     } catch {
-      setNotice("整理未完成，请检查连接后重试；已成功的操作可用撤销恢复。");
+      try {
+        await restoreSnapshot(undo);
+        window.localStorage.removeItem(undoKey);
+        setHasUndo(false);
+        await onDone();
+        setNotice("整理未完成，已自动恢复原目录结构；可检查连接后重试。");
+      } catch {
+        setNotice("整理与自动恢复均未完成；撤销记录已保留，请点击“撤销上次整理”重试。");
+      }
     } finally {
       setBusy(false);
     }
   };
 
   const undoLast = async () => {
-    const raw = window.localStorage.getItem(UNDO_KEY);
+    const raw = window.localStorage.getItem(undoKey);
     if (!raw) return;
-    setBusy(true); setNotice("");
+    setBusy(true);
+    setNotice("");
     try {
       const snapshot = JSON.parse(raw) as UndoSnapshot;
-      for (const [mapId, categoryId] of Object.entries(snapshot.assignments)) {
-        const response = await apiFetch("/api/knowledge", { method: "POST", headers: { "Content-Type": "application/json" }, writeForMapId: mapId, body: JSON.stringify({ action: "moveMapToCategory", mapId, categoryId }) });
-        if (!response.ok) throw new Error("知识库恢复失败");
-      }
-      for (const categoryId of snapshot.createdCategoryIds) {
-        const response = await apiFetch("/api/knowledge", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "deleteCategory", categoryId }) });
-        if (!response.ok) throw new Error("目录清理失败");
-      }
-      window.localStorage.removeItem(UNDO_KEY);
+      if (snapshot.scopeKey !== organizerScopeKey) throw new Error("撤销记录不属于当前工作区");
+      await restoreSnapshot(snapshot);
+      window.localStorage.removeItem(undoKey);
+      setHasUndo(false);
       await onDone();
-      setProposal(null); setNotice("已恢复整理前的目录结构。");
-    } catch {
-      setNotice("撤销未完成，请重试；原始整理记录仍保留。");
+      setProposal(null);
+      setNotice("已恢复整理前的目录结构。");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "撤销未完成，请重试；原始整理记录仍保留。");
     } finally {
       setBusy(false);
     }
   };
 
+  const changeAssignment = (mapId: string, categoryKey: string | null) => {
+    setProposal((current) => current ? {
+      ...current,
+      assignments: {
+        ...current.assignments,
+        [mapId]: {
+          ...current.assignments[mapId],
+          categoryKey,
+          reason: categoryKey ? "用户在预览中手动调整" : "用户选择保持原位置",
+          confidence: 1,
+        },
+      },
+    } : current);
+  };
+
+  const assignedCount = proposal
+    ? Object.values(proposal.assignments).filter((assignment) => assignment.categoryKey).length
+    : 0;
+
   return (
     <div className="fixed inset-0 z-[250] flex items-center justify-center bg-[var(--overlay-bg)] p-4 backdrop-blur-sm" data-testid="organize-library-dialog">
-      <div className="max-h-[88vh] w-[min(760px,96vw)] overflow-y-auto rounded-3xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-6 shadow-2xl">
+      <div className="max-h-[88vh] w-[min(820px,96vw)] overflow-y-auto rounded-3xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-6 shadow-2xl">
         <div className="flex items-start justify-between gap-4">
-          <div><div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--primary)]">按需执行 · 默认不整理</div><h2 className="mt-1 text-xl font-semibold text-[var(--text-primary)]">一键整理知识库</h2><p className="mt-2 text-xs text-[var(--text-secondary)]">选择结构后先预览；只移动小知识库到大目录，不改写节点、引用和关系。</p></div>
+          <div>
+            <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--primary)]">按需执行 · 默认不整理</div>
+            <h2 className="mt-1 text-xl font-semibold text-[var(--text-primary)]">一键整理知识库</h2>
+            <p className="mt-2 text-xs leading-6 text-[var(--text-secondary)]">选择结构后先预览；只移动小知识库到大目录，不改写节点、引用和关系。你可以逐个调整，随时撤销。</p>
+          </div>
           <button type="button" data-testid="organize-close" onClick={onClose} className="rounded-lg border border-[var(--border-default)] px-2 py-1 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)]" aria-label="关闭一键整理">×</button>
         </div>
+
         <div className="mt-5 grid gap-3 sm:grid-cols-2">
-          {MODE_OPTIONS.map((option) => <button key={option.id} type="button" data-testid={`organize-mode-${option.id}`} onClick={() => { setMode(option.id); setProposal(null); }} className={`rounded-2xl border p-4 text-left ${mode === option.id ? "border-[var(--primary-border)] bg-[var(--primary-subtle)]" : "border-[var(--border-default)] bg-[var(--bg-elevated)] hover:border-[var(--border-strong)]"}`}><div className="text-sm font-semibold text-[var(--text-primary)]">{option.title}</div><div className="mt-1 text-[11px] leading-5 text-[var(--text-secondary)]">{option.description}</div></button>)}
+          {MODE_OPTIONS.map((option) => (
+            <button key={option.id} type="button" data-testid={`organize-mode-${option.id}`} onClick={() => { setMode(option.id); setProposal(null); setNotice(""); }} className={`rounded-2xl border p-4 text-left ${mode === option.id ? "border-[var(--primary-border)] bg-[var(--primary-subtle)]" : "border-[var(--border-default)] bg-[var(--bg-elevated)] hover:border-[var(--border-strong)]"}`}>
+              <div className="text-sm font-semibold text-[var(--text-primary)]">{option.title}</div>
+              <div className="mt-1 text-[11px] leading-5 text-[var(--text-secondary)]">{option.description}</div>
+            </button>
+          ))}
         </div>
-        {mode === "custom" && <textarea value={customDirectory} onChange={(event) => { setCustomDirectory(event.target.value); setProposal(null); }} rows={5} className="mt-4 w-full rounded-2xl border border-[var(--border-default)] bg-[var(--bg-base)] p-4 text-xs leading-6 text-[var(--text-primary)] outline-none focus:border-[var(--primary-border)]" aria-label="自定义大目录" />}
-        {proposal && <div className="mt-5 rounded-2xl border border-[var(--border-default)] bg-[var(--bg-base)] p-4" data-testid="organize-preview"><div className="mb-3 flex items-center justify-between"><div className="text-xs font-semibold text-[var(--text-primary)]">整理预览</div><div className="text-[10px] text-[var(--text-tertiary)]">{maps.length} 个知识库 · {proposal.categories.length} 个目录</div></div><div className="space-y-3">{proposal.categories.map((category) => <div key={category.key} className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-3"><div className="flex items-center gap-2"><span>{category.icon}</span><input value={category.name} onChange={(event) => setProposal((current) => current ? { ...current, categories: current.categories.map((item) => item.key === category.key ? { ...item, name: event.target.value } : item) } : current)} className="min-w-0 flex-1 bg-transparent text-xs font-semibold text-[var(--text-primary)] outline-none" aria-label={`目录名称 ${category.key}`} /></div><div className="mt-2 flex flex-wrap gap-1.5">{maps.filter((map) => proposal.assignments[map.id] === category.key).map((map) => <span key={map.id} className="rounded-md bg-[var(--bg-hover)] px-2 py-1 text-[10px] text-[var(--text-secondary)]">{map.name}</span>)}</div></div>)}</div></div>}
-        {notice && <div role="status" data-testid="organize-status" className="mt-4 rounded-xl border border-[var(--primary-border)] bg-[var(--primary-subtle)] px-3 py-2 text-xs text-[var(--primary)]">{notice}</div>}
-        <div className="mt-5 flex flex-wrap justify-end gap-2"><button type="button" data-testid="organize-undo" onClick={() => void undoLast()} disabled={!hasUndo || busy} className="rounded-xl border border-[var(--border-default)] px-4 py-2 text-xs text-[var(--text-secondary)] disabled:opacity-30">撤销上次整理</button><button type="button" data-testid="organize-create-preview" onClick={() => void createPreview()} disabled={busy || maps.length === 0} className="rounded-xl border border-[var(--primary-border)] px-4 py-2 text-xs font-semibold text-[var(--primary)] disabled:opacity-30">{busy ? "正在分析…" : "生成预览"}</button><button type="button" data-testid="organize-apply" onClick={() => void applyProposal()} disabled={!proposal || busy} className="rounded-xl bg-[var(--primary)] px-4 py-2 text-xs font-semibold text-[var(--primary-foreground)] disabled:opacity-30">确认整理</button></div>
+
+        {mode === "custom" && (
+          <textarea value={customDirectory} onChange={(event) => { setCustomDirectory(event.target.value); setProposal(null); }} rows={5} className="mt-4 w-full rounded-2xl border border-[var(--border-default)] bg-[var(--bg-base)] p-4 text-xs leading-6 text-[var(--text-primary)] outline-none focus:border-[var(--primary-border)]" aria-label="自定义大目录" />
+        )}
+
+        {proposal && (
+          <div className="mt-5 rounded-2xl border border-[var(--border-default)] bg-[var(--bg-base)] p-4" data-testid="organize-preview" data-proposal-source={proposal.source}>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div className="text-xs font-semibold text-[var(--text-primary)]">整理预览 · {proposal.source === "ai" ? "AI 建议" : "本地规则"}</div>
+              <div className="text-[10px] text-[var(--text-tertiary)]">计划移动 {assignedCount}/{maps.length} 个知识库 · {proposal.categories.length} 个目录</div>
+            </div>
+            {proposal.note && <div className="mb-3 rounded-lg bg-amber-300/5 px-3 py-2 text-[10px] leading-5 text-amber-200">{proposal.note}</div>}
+            <div className="space-y-3">
+              {proposal.categories.map((category) => (
+                <div key={category.key} className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-3">
+                  <div className="flex items-center gap-2">
+                    <span>{category.icon}</span>
+                    <input value={category.name} onChange={(event) => setProposal((current) => current ? { ...current, categories: current.categories.map((item) => item.key === category.key ? { ...item, name: event.target.value } : item) } : current)} className="min-w-0 flex-1 bg-transparent text-xs font-semibold text-[var(--text-primary)] outline-none" aria-label={`目录名称 ${category.key}`} />
+                  </div>
+                  <input value={category.description} onChange={(event) => setProposal((current) => current ? { ...current, categories: current.categories.map((item) => item.key === category.key ? { ...item, description: event.target.value } : item) } : current)} className="mt-1 w-full bg-transparent text-[10px] text-[var(--text-tertiary)] outline-none" aria-label={`目录说明 ${category.key}`} />
+                  <div className="mt-2 space-y-1.5">
+                    {maps.filter((map) => proposal.assignments[map.id]?.categoryKey === category.key).map((map) => (
+                      <div key={map.id} className="flex items-center gap-2 rounded-lg bg-[var(--bg-hover)] px-2 py-1.5" data-testid={`organize-map-${map.id}`}>
+                        <div className="min-w-0 flex-1"><div className="truncate text-[10px] font-medium text-[var(--text-primary)]">{map.name}</div><div className="truncate text-[9px] text-[var(--text-tertiary)]">{proposal.assignments[map.id]?.reason}</div></div>
+                        <select aria-label={`调整 ${map.name} 的目录`} value={category.key} onChange={(event) => changeAssignment(map.id, event.target.value || null)} className="max-w-[150px] rounded-md border border-[var(--border-default)] bg-[var(--bg-base)] px-1.5 py-1 text-[9px] text-[var(--text-secondary)]">
+                          <option value="">保持原位置</option>
+                          {proposal.categories.map((option) => <option key={option.key} value={option.key}>{option.icon} {option.name}</option>)}
+                        </select>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              {maps.filter((map) => !proposal.assignments[map.id]?.categoryKey).length > 0 && (
+                <div className="rounded-xl border border-dashed border-[var(--border-default)] p-3" data-testid="organize-kept-maps">
+                  <div className="text-[10px] font-semibold text-[var(--text-secondary)]">保持原位置</div>
+                  <div className="mt-2 space-y-1.5">{maps.filter((map) => !proposal.assignments[map.id]?.categoryKey).map((map) => (
+                    <div key={map.id} className="flex items-center gap-2"><span className="min-w-0 flex-1 truncate text-[10px] text-[var(--text-tertiary)]">{map.name}</span><select aria-label={`调整 ${map.name} 的目录`} value="" onChange={(event) => changeAssignment(map.id, event.target.value || null)} className="max-w-[150px] rounded-md border border-[var(--border-default)] bg-[var(--bg-base)] px-1.5 py-1 text-[9px] text-[var(--text-secondary)]"><option value="">保持原位置</option>{proposal.categories.map((option) => <option key={option.key} value={option.key}>{option.icon} {option.name}</option>)}</select></div>
+                  ))}</div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {notice && <div role="status" aria-live="polite" data-testid="organize-status" className="mt-4 rounded-xl border border-[var(--primary-border)] bg-[var(--primary-subtle)] px-3 py-2 text-xs leading-5 text-[var(--primary)]">{notice}</div>}
+        <div className="mt-5 flex flex-wrap justify-end gap-2">
+          <button type="button" data-testid="organize-undo" onClick={() => void undoLast()} disabled={!hasUndo || busy} className="rounded-xl border border-[var(--border-default)] px-4 py-2 text-xs text-[var(--text-secondary)] disabled:opacity-30">撤销上次整理</button>
+          <button type="button" data-testid="organize-create-preview" onClick={() => void createPreview()} disabled={busy || maps.length === 0} className="rounded-xl border border-[var(--primary-border)] px-4 py-2 text-xs font-semibold text-[var(--primary)] disabled:opacity-30">{busy ? "正在分析…" : "生成预览"}</button>
+          <button type="button" data-testid="organize-apply" onClick={() => void applyProposal()} disabled={!proposal || busy || assignedCount === 0} className="rounded-xl bg-[var(--primary)] px-4 py-2 text-xs font-semibold text-[var(--primary-foreground)] disabled:opacity-30">确认整理</button>
+        </div>
       </div>
     </div>
   );

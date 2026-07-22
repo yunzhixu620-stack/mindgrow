@@ -57,7 +57,7 @@
 | S2.10 观测/on-call | 已合并 | PR #52 / `5dfff96`，后端源码 `5ee87d4`；API `10.11.0`、精确 `gitSha`、生产 fail-closed、on-call 闭环、GitHub Pages 与 production fact 均通过 |
 | S2.11 PDF Viewer + 原文高亮 | 已合并 | PR #53 / `055123d`；页码定位、PDF.js `PDFFindController` 高亮、统一引用跳转与防导航穿透均已发布；unit 171/171、lint、build、产品 E2E 37/37、公网 E2E 7/7 与 production fact 均通过 |
 | S2.12 查询时 GraphRAG 定位 | 已合并 | PR #54 / `025cce2`；Supabase V15、阿里云 API `10.12.0` 与 GitHub Pages 均已发布；entity linking、混合召回、1–2 跳路径重排、拒答和可见路由已上线，冻结集全部指标 100%，公网 backend smoke 7/7、公网 E2E 7/7 与 production fact 均通过 |
-| S2.13 一键整理知识库 | 局部已有 | 已有分级展开/展示能力；缺多策略、预览、撤销和默认不整理的完整闭环 |
+| S2.13 一键整理知识库 | 开发完成，待发布 | 四策略、AI 失败显式降级、预览/逐项调整、默认不写入、工作区隔离撤销与部分失败自动回滚已完成；本地 unit 176/176、RAG 64/64、backend 9/9、产品 E2E 37/37 通过，待 PR/生产验证 |
 | S2.14 统一知识宇宙 | 局部已有 | 三模块已有共享展示基础；缺统一实体与“会议确认后入长期库”门禁 |
 | S2.15 多源文章 + Audio Overview | 局部已有 | 已支持部分 URL/PDF/正文与 citation；缺完整拒答、可靠多源覆盖及 Audio Overview |
 | S2.16 跨库全局搜索 | 局部已有 | U5 仅本地命令搜索；缺后端索引、权限过滤和命中解释 |
