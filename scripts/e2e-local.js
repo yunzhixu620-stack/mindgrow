@@ -141,17 +141,60 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     }
   });
 
-  await check("workspace search finds maps by node content", async () => {
-    const search = await page.$('input[aria-label="搜索全部知识库"]');
-    if (!search) throw new Error("Workspace search input missing");
-    await search.type("可信检索");
-    await page.waitForFunction(() => Array.from(document.querySelectorAll('button[aria-label^="打开知识库 "]')).length > 0);
-    const result = await page.$('button[aria-label^="打开知识库 "]');
-    if (!result) throw new Error("No matching knowledge map result");
-    const resultText = await result.evaluate((element) => element.textContent);
-    if (!resultText.includes("可信检索")) throw new Error("Node-content match is not visible in result");
-    await result.click();
-    await page.waitForFunction(() => !document.querySelector('input[aria-label="搜索全部知识库"]').value);
+  await check("Ctrl+K searches loaded content locally with keyboard navigation", async () => {
+    const commandStep = async (label, task) => {
+      try { return await task(); } catch (error) { throw new Error(`${label}: ${error.message}`); }
+    };
+    await page.evaluate(() => {
+      window.__mindgrowCommandSearchRequests = [];
+      window.__mindgrowCommandSearchCapture = (event) => window.__mindgrowCommandSearchRequests.push(event.detail?.path || "");
+      window.addEventListener("mindgrow:local-api-request", window.__mindgrowCommandSearchCapture);
+    });
+    try {
+      await page.keyboard.down("Control");
+      await page.keyboard.press("k");
+      await page.keyboard.up("Control");
+      await commandStep("Ctrl+K did not open the palette", () => page.waitForSelector('[data-testid="command-palette"] input', { timeout: 5000 }));
+      const search = await page.$('[data-testid="command-palette"] input');
+      if (!search) throw new Error("Command search input missing");
+      await page.$eval('[data-testid="command-palette"] input', (input) => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+        setter.call(input, "AI");
+        input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: "AI" }));
+      });
+      await commandStep("Controlled query did not update", () => page.waitForFunction(() => document.querySelector('[data-testid="command-palette"] input')?.value === "AI", { timeout: 5000 }));
+      await commandStep("Current-node result did not render", () => page.waitForSelector('[data-result-group="nodes"] [data-result-kind="node"]', { timeout: 5000 }));
+      const resultText = await page.$eval('[data-result-group="nodes"] [data-result-kind="node"]', (element) => element.textContent);
+      if (!resultText.includes("AI")) throw new Error("Current-node match is not visible in the command palette");
+      const remoteSearchRequests = await page.evaluate(() => window.__mindgrowCommandSearchRequests.filter((path) => path.includes("action=search")));
+      if (remoteSearchRequests.length > 0) throw new Error("Cmd/Ctrl+K search issued a backend request");
+      await page.keyboard.press("ArrowDown");
+      await page.keyboard.press("ArrowUp");
+      await page.keyboard.press("Enter");
+      await commandStep("Enter did not close the palette", () => page.waitForFunction(() => !document.querySelector('[data-testid="command-palette"]'), { timeout: 5000 }));
+      await page.keyboard.down("Control");
+      await page.keyboard.press("k");
+      await page.keyboard.up("Control");
+      await commandStep("Second Ctrl+K did not reopen the palette", () => page.waitForSelector('[data-testid="command-palette"]', { timeout: 5000 }));
+      await page.keyboard.press("Escape");
+      await commandStep("Escape did not close the palette", () => page.waitForFunction(() => !document.querySelector('[data-testid="command-palette"]'), { timeout: 5000 }));
+      await page.click('[data-testid="command-palette-open"]');
+      await commandStep("Sidebar launcher did not open the palette", () => page.waitForSelector('[data-testid="command-palette"]', { timeout: 5000 }));
+      const scopeText = await page.$eval('[data-testid="command-palette"] footer', (element) => element.textContent);
+      if (!scopeText.includes("仅搜索已加载知识库") || scopeText.includes("所有知识库")) throw new Error("Command search scope copy is misleading");
+      await page.screenshot({ path: path.join(artifactDir, "desktop-command-palette.png") });
+      await page.keyboard.press("Escape");
+    } finally {
+      if (await page.$('[data-testid="command-palette"]')) {
+        await page.keyboard.press("Escape");
+        await page.waitForFunction(() => !document.querySelector('[data-testid="command-palette"]'), { timeout: 5000 }).catch(() => {});
+      }
+      await page.evaluate(() => {
+        window.removeEventListener("mindgrow:local-api-request", window.__mindgrowCommandSearchCapture);
+        delete window.__mindgrowCommandSearchCapture;
+        delete window.__mindgrowCommandSearchRequests;
+      });
+    }
   });
 
   await check("capability shortcut returns a concise fixed answer", async () => {
@@ -465,6 +508,23 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     const localNodeCount = await page.$$eval('[data-testid="entity-network-node"]', (nodes) => nodes.length);
     if (localNodeCount > globalNodeCount) throw new Error("One-hop entity view expanded beyond the global graph");
     await page.screenshot({ path: path.join(artifactDir, "desktop-entity-network.png") });
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector('[data-testid="entity-detail-panel"]'));
+    const entityQuery = storedGraph.entities[0].canonicalName;
+    await page.keyboard.down("Control");
+    await page.keyboard.press("k");
+    await page.keyboard.up("Control");
+    await page.waitForSelector('[data-testid="command-palette"] input');
+    await page.$eval('[data-testid="command-palette"] input', (input, query) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+      setter.call(input, query);
+      input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: query }));
+    }, entityQuery);
+    await page.waitForSelector('[data-result-group="entities"] [data-result-kind="entity"]');
+    await page.click('[data-result-group="entities"] [data-result-kind="entity"]');
+    await page.waitForSelector('[data-testid="entity-detail-panel"]');
+    const commandEntityTitle = await page.$eval('[data-testid="entity-detail-panel"]', (panel) => panel.textContent);
+    if (!commandEntityTitle.includes(entityQuery)) throw new Error("Command palette did not focus the selected entity");
     await page.keyboard.press("Escape");
     await page.waitForFunction(() => !document.querySelector('[data-testid="entity-detail-panel"]'));
     await clickByText(page, '[data-testid="entity-view-modes"] button', "证据链");

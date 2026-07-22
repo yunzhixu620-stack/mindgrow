@@ -9,19 +9,7 @@ import { TemplateBrowser } from "@/components/template/template-browser";
 import { MODE_LIBRARY_CONFIG, isMapForMode, modeLibraryDescription } from "@/lib/mode-libraries";
 import Link from "next/link";
 import { OrganizeLibraryDialog } from "@/components/layout/organize-library-dialog";
-
-interface LibrarySearchMatch {
-  id: string;
-  content: string;
-  desc?: string;
-  type: string;
-}
-
-interface LibrarySearchResult {
-  map: MindMap;
-  mapMatches: boolean;
-  matches: LibrarySearchMatch[];
-}
+import { COMMAND_PALETTE_OPEN_EVENT } from "@/lib/command-search";
 
 // ============================================================
 // Category header (collapsible folder)
@@ -280,15 +268,9 @@ export function Sidebar({ onSwitchMap, onMapCreated }: SidebarProps) {
   const [showIconPicker, setShowIconPicker] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
   const [showOrganizer, setShowOrganizer] = useState(false);
-  const [librarySearch, setLibrarySearch] = useState("");
-  const [librarySearchResults, setLibrarySearchResults] = useState<LibrarySearchResult[]>([]);
-  const [isSearchingLibrary, setIsSearchingLibrary] = useState(false);
-  const [librarySearchError, setLibrarySearchError] = useState("");
   const menuRef = useRef<HTMLDivElement>(null);
   const createRef = useRef<HTMLInputElement>(null);
   const catCreateRef = useRef<HTMLInputElement>(null);
-  const librarySearchRef = useRef<HTMLInputElement>(null);
-  const searchRequestRef = useRef(0);
 
   // Close context menu on click outside
   useEffect(() => {
@@ -317,48 +299,6 @@ export function Sidebar({ onSwitchMap, onMapCreated }: SidebarProps) {
       .then((data) => setCategories(data.categories || []))
       .catch(() => {});
   }, [setCategories]);
-
-  // Search map metadata and node content across the active local/cloud workspace.
-  useEffect(() => {
-    const query = librarySearch.trim();
-    const requestId = ++searchRequestRef.current;
-    if (!query) {
-      setLibrarySearchResults([]);
-      setLibrarySearchError("");
-      setIsSearchingLibrary(false);
-      return;
-    }
-    setIsSearchingLibrary(true);
-    setLibrarySearchError("");
-    const timer = window.setTimeout(async () => {
-      try {
-        const response = await apiFetch(`/api/knowledge?action=search&q=${encodeURIComponent(query)}`);
-        if (!response.ok) throw new Error("Search failed");
-        const data = await response.json();
-        if (searchRequestRef.current !== requestId) return;
-        setLibrarySearchResults(data.results || []);
-      } catch {
-        if (searchRequestRef.current !== requestId) return;
-        setLibrarySearchResults([]);
-        setLibrarySearchError("搜索暂时不可用，请稍后重试");
-      } finally {
-        if (searchRequestRef.current === requestId) setIsSearchingLibrary(false);
-      }
-    }, 220);
-    return () => window.clearTimeout(timer);
-  }, [librarySearch]);
-
-  useEffect(() => {
-    const handleShortcut = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase() === "k") {
-        event.preventDefault();
-        setSidebarOpen(true);
-        window.setTimeout(() => librarySearchRef.current?.focus(), 0);
-      }
-    };
-    window.addEventListener("keydown", handleShortcut);
-    return () => window.removeEventListener("keydown", handleShortcut);
-  }, [setSidebarOpen]);
 
   const handleContextMenu = useCallback((e: React.MouseEvent, map: MindMap) => {
     e.preventDefault();
@@ -401,14 +341,6 @@ export function Sidebar({ onSwitchMap, onMapCreated }: SidebarProps) {
     setSearchResults([]);
     setHighlightedNodeId(null);
   }, [currentMapId, onSwitchMap, setSearchResults, setHighlightedNodeId]);
-
-  const handleSearchResultSelect = useCallback(async (result: LibrarySearchResult) => {
-    await handleSwitch(result.map.id);
-    const matchedNodeIds = result.matches.map((match) => match.id);
-    setSearchResults(matchedNodeIds);
-    setHighlightedNodeId(matchedNodeIds[0] || null);
-    setLibrarySearch("");
-  }, [handleSwitch, setSearchResults, setHighlightedNodeId]);
 
   const handleDeleteMap = useCallback(async (map: MindMap) => {
     if (map.isDefault) return;
@@ -600,7 +532,6 @@ export function Sidebar({ onSwitchMap, onMapCreated }: SidebarProps) {
   // Each product board only exposes its own libraries. This prevents a click
   // on an article/meeting card from racing the mode switch back to knowledge.
   const visibleMaps = maps.filter((map) => isMapForMode(map, currentMode));
-  const visibleSearchResults = librarySearchResults.filter((result) => isMapForMode(result.map, currentMode));
   const uncategorizedMaps = visibleMaps.filter((m) => !m.categoryId);
   const categorizedMaps = (currentMode === "knowledge" ? categories : []).map((cat) => ({
     category: cat,
@@ -681,29 +612,19 @@ export function Sidebar({ onSwitchMap, onMapCreated }: SidebarProps) {
       </div>
 
       <div className="border-b border-[var(--border)] px-3 py-2.5">
-        <div className="relative">
-          <svg className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--muted-foreground)]" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+        <button
+          type="button"
+          onClick={() => window.dispatchEvent(new Event(COMMAND_PALETTE_OPEN_EVENT))}
+          aria-label="搜索已加载内容"
+          data-testid="command-palette-open"
+          className="flex w-full items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-base)] px-2.5 py-2 text-left text-xs text-[var(--muted-foreground)] transition-colors hover:border-[var(--primary)]"
+        >
+          <svg className="shrink-0 text-[var(--muted-foreground)]" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
           </svg>
-          <input
-            ref={librarySearchRef}
-            value={librarySearch}
-            onChange={(event) => setLibrarySearch(event.target.value)}
-            onKeyDown={(event) => { if (event.key === "Escape") setLibrarySearch(""); }}
-            placeholder={currentMode === "knowledge" ? "搜索全部知识库..." : `搜索${MODE_LIBRARY_CONFIG[currentMode].shortLabel}库...`}
-            aria-label={currentMode === "knowledge" ? "搜索全部知识库" : `搜索${MODE_LIBRARY_CONFIG[currentMode].shortLabel}库`}
-            className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-base)] py-2 pl-8 pr-8 text-xs text-[var(--foreground)] outline-none transition-colors placeholder:text-[var(--muted-foreground)] focus:border-[var(--primary)]"
-          />
-          {librarySearch ? (
-            <button
-              onClick={() => setLibrarySearch("")}
-              aria-label="清除知识库搜索"
-              className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-[var(--muted-foreground)] hover:text-[var(--foreground)] cursor-pointer"
-            >✕</button>
-          ) : (
-            <kbd className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded border border-[var(--border)] px-1 py-0.5 text-[8px] text-[var(--muted-foreground)]">Ctrl K</kbd>
-          )}
-        </div>
+          <span className="min-w-0 flex-1 truncate">搜索已加载内容…</span>
+          <kbd className="shrink-0 rounded border border-[var(--border)] px-1 py-0.5 text-[8px] text-[var(--muted-foreground)]">Ctrl/⌘ K</kbd>
+        </button>
         <Link
           href={`/universe?mode=${currentMode}`}
           data-testid="mode-universe-link"
@@ -719,75 +640,30 @@ export function Sidebar({ onSwitchMap, onMapCreated }: SidebarProps) {
 
       {/* Map List grouped by category */}
       <div className="flex-1 overflow-y-auto py-2 space-y-0.5">
-        {librarySearch.trim() ? (
-          <div className="space-y-1 px-2">
-            <div className="flex items-center justify-between px-1 pb-1 text-[10px] text-[var(--muted-foreground)]">
-              <span>{isSearchingLibrary ? "正在搜索名称、描述和节点…" : `命中 ${visibleSearchResults.length} 个${MODE_LIBRARY_CONFIG[currentMode].shortLabel}库`}</span>
-              {!isSearchingLibrary && visibleSearchResults.length > 0 && <span>点击进入并高亮</span>}
-            </div>
-            {librarySearchError && (
-              <div className="rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2 text-[10px] text-red-400">{librarySearchError}</div>
-            )}
-            {!isSearchingLibrary && !librarySearchError && visibleSearchResults.length === 0 && (
-              <div className="rounded-lg border border-dashed border-[var(--border)] px-3 py-5 text-center text-[11px] text-[var(--muted-foreground)]">
-                没有找到相关知识库或节点
-              </div>
-            )}
-            {visibleSearchResults.map((result) => (
-              <button
-                key={result.map.id}
-                onClick={() => handleSearchResultSelect(result)}
-                aria-label={`打开知识库 ${result.map.name}`}
-                className={`w-full rounded-lg border px-3 py-2.5 text-left transition-colors cursor-pointer ${
-                  result.map.id === currentMapId
-                    ? "border-[var(--primary)]/40 bg-[var(--primary)]/10"
-                    : "border-[var(--border)] bg-[var(--bg-base)] hover:border-[var(--primary)]/30 hover:bg-[var(--bg-hover)]"
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <span className="h-2.5 w-2.5 flex-shrink-0 rounded-full" style={{ backgroundColor: result.map.color }} />
-                  <span className="min-w-0 flex-1 truncate text-xs font-medium text-[var(--text-primary)]">{result.map.name}</span>
-                  <span className="text-[9px] text-[var(--muted-foreground)]">{result.matches.length ? `${result.matches.length} 处命中` : "名称命中"}</span>
-                </div>
-                {result.matches.slice(0, 2).map((match) => (
-                  <div key={match.id} className="mt-1.5 truncate border-l border-[var(--primary)]/40 pl-2 text-[10px] text-[var(--muted-foreground)]" title={match.content}>
-                    {match.content}
-                  </div>
-                ))}
-                {result.mapMatches && result.matches.length === 0 && result.map.description && (
-                  <div className="mt-1.5 line-clamp-2 text-[10px] text-[var(--muted-foreground)]">{result.map.description}</div>
-                )}
-              </button>
-            ))}
-          </div>
-        ) : (
-          <>
-            {/* Categorized maps */}
-            {categorizedMaps.map(({ category, maps: catMaps }) => (
-              <CategorySection
-                key={category.id}
-                category={category}
-                maps={catMaps}
-                currentMapId={currentMapId}
-                onSwitch={handleSwitch}
-                onContextMenu={handleContextMenu}
-                onDeleteMap={setDeleteCandidate}
-                onDeleteCategory={handleDeleteCategory}
-                onRenameCategory={handleRenameCategory}
-              />
-            ))}
+        {/* Categorized maps */}
+        {categorizedMaps.map(({ category, maps: catMaps }) => (
+          <CategorySection
+            key={category.id}
+            category={category}
+            maps={catMaps}
+            currentMapId={currentMapId}
+            onSwitch={handleSwitch}
+            onContextMenu={handleContextMenu}
+            onDeleteMap={setDeleteCandidate}
+            onDeleteCategory={handleDeleteCategory}
+            onRenameCategory={handleRenameCategory}
+          />
+        ))}
 
-            {/* Uncategorized */}
-            <CategorySection
-              category={null}
-              maps={uncategorizedMaps}
-              currentMapId={currentMapId}
-              onSwitch={handleSwitch}
-              onContextMenu={handleContextMenu}
-              onDeleteMap={setDeleteCandidate}
-            />
-          </>
-        )}
+        {/* Uncategorized */}
+        <CategorySection
+          category={null}
+          maps={uncategorizedMaps}
+          currentMapId={currentMapId}
+          onSwitch={handleSwitch}
+          onContextMenu={handleContextMenu}
+          onDeleteMap={setDeleteCandidate}
+        />
 
         {/* Create new map inline */}
         {isCreating && (

@@ -13,7 +13,7 @@ import { WorkspaceMenu } from "@/components/auth/workspace-menu";
 import { MeetingAssistant } from "@/components/modes/meeting-assistant";
 import { ArticleParser } from "@/components/modes/article-parser";
 import { IS_LOCAL_MODE } from "@/lib/client-api";
-import { MODE_LIBRARY_CONFIG, isMapForMode, modeLibraryDescription } from "@/lib/mode-libraries";
+import { MODE_LIBRARY_CONFIG, getMapMode, isMapForMode, modeLibraryDescription } from "@/lib/mode-libraries";
 import { tenantCache, tenantMapKey, tenantScopeKey, type TenantScope } from "@/lib/tenant-cache";
 import { commitPageGraphResponse, graphSnapshotFromResponse, type PageGraphRequest } from "@/app/page-loader";
 import {
@@ -24,6 +24,7 @@ import {
   type OnboardingState,
 } from "@/components/onboarding/new-user-empty-state";
 import { MobileBottomNav } from "@/components/mobile/bottom-nav";
+import { COMMAND_ENTITY_FOCUS_EVENT, COMMAND_NAVIGATE_EVENT, type CommandSearchResult } from "@/lib/command-search";
 
 const LOCAL_TENANT_SCOPE: TenantScope = { userId: "local-user", workspaceId: "local-workspace" };
 
@@ -52,6 +53,8 @@ export default function Home() {
     currentMode,
     setCurrentMode,
     nodes,
+    setSearchResults,
+    setHighlightedNodeId,
   } = useMindGrowStore();
   const mapsSignature = useMemo(() => maps.map((map) => `${map.id}:${map.updatedAt}`).join("|"), [maps]);
   const [mobileTab, setMobileTab] = useState<"chat" | "map">("chat");
@@ -244,6 +247,51 @@ export default function Home() {
     loadChatHistory(mapId);
     setDrawerOpen(false);
   }, [currentMapId, tenantScope, setCurrentMapId, setNodes, setEdges, setEntityGraph, saveChatHistory, loadChatHistory]);
+
+  useEffect(() => {
+    const handleCommandNavigation = (event: Event) => {
+      const result = (event as CustomEvent<CommandSearchResult>).detail;
+      if (!result) return;
+
+      if (result.kind === "map") {
+        const target = maps.find((map) => map.id === result.targetId);
+        if (!target) return;
+        const targetMode = getMapMode(target);
+        setMobileTab("chat");
+        if (targetMode !== currentMode) {
+          lastMapByModeRef.current[targetMode] = target.id;
+          setCurrentMode(targetMode);
+        } else {
+          handleSwitchMap(target.id);
+        }
+        return;
+      }
+
+      if (result.kind === "node") {
+        setMobileTab("map");
+        setSearchResults([result.targetId]);
+        setHighlightedNodeId(result.targetId);
+        return;
+      }
+
+      if (result.kind === "entity") {
+        setMobileTab("map");
+        window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+          window.dispatchEvent(new CustomEvent(COMMAND_ENTITY_FOCUS_EVENT, { detail: { entityId: result.targetId } }));
+        }));
+        return;
+      }
+
+      setMobileTab("chat");
+      window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+        const message = Array.from(document.querySelectorAll<HTMLElement>("[data-chat-message-id]"))
+          .find((element) => element.dataset.chatMessageId === result.targetId);
+        message?.scrollIntoView({ block: "center", behavior: "smooth" });
+      }));
+    };
+    window.addEventListener(COMMAND_NAVIGATE_EVENT, handleCommandNavigation);
+    return () => window.removeEventListener(COMMAND_NAVIGATE_EVENT, handleCommandNavigation);
+  }, [currentMode, handleSwitchMap, maps, setCurrentMode, setHighlightedNodeId, setSearchResults]);
 
   const handleCreatedMap = useCallback(async (mapId: string) => {
     // Keep catalog prefetch from racing the explicit navigation while the new
