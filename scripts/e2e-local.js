@@ -3,7 +3,7 @@ const path = require("path");
 const fs = require("fs");
 const { jsPDF } = require("jspdf");
 
-const BASE_URL = process.env.MINDGROW_BASE_URL || "http://127.0.0.1:3000";
+const BASE_URL = process.env.MINDGROW_BASE_URL || "http://localhost:3000";
 const BASE_PATH = new URL(BASE_URL).pathname.replace(/\/$/, "");
 const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 const artifactDir = path.join(__dirname, "..", "artifacts");
@@ -103,6 +103,60 @@ const expandOneVisibleLevel = async (page, previousCount) => {
   await check("seed knowledge map renders", async () => {
     const count = await revealAllStoredNodes(page);
     if (count !== 13) throw new Error(`Expected 13 stored seed nodes, got ${count}`);
+  });
+
+  await check("whiteboard view persists card positions and returns to the mind map", async () => {
+    const activeMapId = await page.$eval('[data-testid="knowledge-workspace"]', (element) => element.getAttribute("data-current-map-id"));
+    if (!activeMapId) throw new Error("Active map id is missing");
+    await page.click('[data-testid="canvas-view-whiteboard"]');
+    await page.waitForFunction((mapId) => {
+      const workspace = document.querySelector('[data-testid="knowledge-graph-workspace"]');
+      const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+      return workspace?.getAttribute("data-canvas-view") === "whiteboard"
+        && state.maps.find((map) => map.id === mapId)?.canvasView === "whiteboard";
+    }, {}, activeMapId);
+    await page.waitForFunction(() => {
+      const cards = document.querySelectorAll('[data-whiteboard-card="true"]');
+      return cards.length === 13 && !document.querySelector('[data-display-overview="true"]');
+    });
+    await page.waitForFunction(() => document.querySelector(".react-flow__viewport")?.style.transform.includes("scale(0.88)"));
+
+    const firstNode = await page.$('.react-flow__node:has([data-whiteboard-card="true"])');
+    if (!firstNode) throw new Error("Whiteboard reading card is missing");
+    const nodeId = await firstNode.evaluate((element) => element.getAttribute("data-id"));
+    const before = await firstNode.boundingBox();
+    if (!nodeId || !before) throw new Error("Whiteboard card cannot be dragged");
+    await page.mouse.move(before.x + before.width / 2, before.y + before.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(before.x + before.width / 2 + 96, before.y + before.height / 2 + 64, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForFunction((id, mapId) => {
+      const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+      const layout = state.layouts?.[id];
+      return layout?.mapId === mapId && Math.abs(layout.positionX - 80) > 40;
+    }, {}, nodeId, activeMapId);
+    const saved = await page.evaluate((id) => JSON.parse(localStorage.getItem("mindgrow.local.v2")).layouts[id], nodeId);
+    await page.screenshot({ path: path.join(artifactDir, "desktop-whiteboard.png"), fullPage: true });
+
+    await page.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
+    await page.waitForFunction((id, x, y) => {
+      const workspace = document.querySelector('[data-testid="knowledge-graph-workspace"]');
+      const card = document.querySelector(`.react-flow__node[data-id="${id}"] [data-whiteboard-persisted="true"]`);
+      const layout = JSON.parse(localStorage.getItem("mindgrow.local.v2")).layouts?.[id];
+      return workspace?.getAttribute("data-canvas-view") === "whiteboard"
+        && Boolean(card)
+        && layout?.positionX === x
+        && layout?.positionY === y;
+    }, {}, nodeId, saved.positionX, saved.positionY);
+
+    await page.click('[data-testid="canvas-view-mindmap"]');
+    await page.waitForFunction((mapId) => {
+      const workspace = document.querySelector('[data-testid="knowledge-graph-workspace"]');
+      const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+      return workspace?.getAttribute("data-canvas-view") === "mindmap"
+        && state.maps.find((map) => map.id === mapId)?.canvasView === "mindmap";
+    }, {}, activeMapId);
+    await revealAllStoredNodes(page);
   });
 
   await check("theme toggle persists and updates the graph palette without a wrong-theme flash", async () => {

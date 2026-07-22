@@ -75,8 +75,13 @@ export function CommandPalette() {
   }, [results.length]);
 
   const selectResult = (result: CommandSearchResult) => {
-    window.dispatchEvent(new CustomEvent(COMMAND_NAVIGATE_EVENT, { detail: result }));
     setOpen(false);
+    // Close the search dialog before opening the target surface. Dispatching
+    // first can briefly leave two dialogs mounted, so the first Escape key is
+    // consumed by the stale palette instead of the entity detail panel.
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      window.dispatchEvent(new CustomEvent(COMMAND_NAVIGATE_EVENT, { detail: result }));
+    }));
   };
 
   if (!open) return null;
