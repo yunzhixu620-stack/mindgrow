@@ -26,9 +26,12 @@
 - 每 60 分钟：专用测试账号列出 workspaces/maps，不执行付费模型。
 - 每天：专用测试知识库解析一篇固定短文，验证 citation quote 与来源一致；生成一次 Audio 脚本。
 - 每次发布：`check:api-version`、lint、build、本地 E2E、公网 E2E、后端冒烟、Supabase 权限审计全部通过。
+- 前端发布后：运行 `npm run check:deployment:production`；正式验收时设置 `MINDGROW_EXPECTED_FRONTEND_SHA` 为本次 main 的完整 40 位提交号，确保 GitHub Pages 静态清单、API 版本和鉴权状态对应。
 - 每周：恢复演练一次（数据库只读、模型超时、TTS 失败、GitHub 静态资源缓存）。
 
 API 发版时先修改 `fc-proxy/index.js` 的 `API_VERSION`，再在同一个 PR 同步 `docs/api-version.txt`，最后运行 `npm run check:api-version`。禁止只改镜像文件或把镜像称为运行时版本真源。
+
+静态前端的 `deployment.json` 由构建自动生成，不手工编辑；详见 `docs/s2-3-deployment-fact.md`。后端 `git_sha` 字段按计划在 S2.10 接入。
 
 匿名模式只允许本机开发或测试环境同时设置 `AUTH_REQUIRED=false` 和 `ALLOW_ANON_LOCAL=true`；production 即使误设这两个值也必须拒绝请求并让 health 降级。生产环境不得配置 `ALLOW_ANON_LOCAL=true`。
 

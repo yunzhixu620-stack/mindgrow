@@ -1,0 +1,49 @@
+name: Deployment fact
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17,47 * * * *"
+  workflow_dispatch:
+    inputs:
+      expected_frontend_sha:
+        description: Full Git SHA expected on GitHub Pages after a release
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-fact:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run check:api-version
+      - run: npm run build
+      - run: npm run check:deployment-artifact
+
+  production-fact:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      MINDGROW_EXPECTED_FRONTEND_SHA: ${{ github.event.inputs.expected_frontend_sha || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run check:api-version
+      - run: npm run check:deployment:production
