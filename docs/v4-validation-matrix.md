@@ -51,7 +51,7 @@
 | S2.4 Backlinks + 时间轴 | 已合并 | PR #39 / `04f4cab`；Supabase V13、阿里云 API `10.8.0` 与 GitHub Pages 已发布；补齐触发器 PATCH 后，公网 smoke、真实账号 created/updated 时间轴与刷新持久化全部通过 |
 | S2.5 canonical ID + 真 createdAt | 已合并 | PR #41 / `e68b455` 与 PR #42；Supabase V11 字段、API `10.9.2` 与公网 smoke 已验证；真实文章重复导入、canonical ID/时间、刷新持久化和临时数据清理全部通过 |
 | S2.6 React Flow 可复现 bug | 已合并 | PR #43 / `3f89eee`；修复知识宇宙全页返回后大型图从总览退化为全部展开的竞态；固定复现清单、单测与 E2E 均已落库，GitHub Pages 真实账号验证通过 |
-| S2.7 Obsidian 式实体网状图 | 局部已有 | 已有实体图、一跳聚焦和详情；缺完整强关系默认、过滤、搜索验收 |
+| S2.7 Obsidian 式实体网状图 | 已合并 | PR #45 / `6f0b72a`；默认强关系去噪、一跳、类型过滤、图内搜索、孤立实体开关和空状态已发布；GitHub Pages `66be48d`，真实账号固定文章样本与部署事实通过 |
 | S2.8 Heptabase 白板底座 | 待开发 | 需要卡片、空间分组和可视化编排模型 |
 | S2.9 阿里云常驻实例 | 待开发 | 属生产云配置；需 Owner 授权、成本记录和回滚证据 |
 | S2.10 观测/on-call | 局部已有 | 已有 runbook/health；缺 `git_sha`、部署断言、错误分级与值班闭环 |
