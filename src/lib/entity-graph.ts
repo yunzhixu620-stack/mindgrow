@@ -1,6 +1,7 @@
 import type {
   AIEntityGraph,
   Citation,
+  EntityGroundingStatus,
   EntityGraph,
   GraphEntity,
   GraphRelation,
@@ -9,6 +10,9 @@ import type {
 } from "@/types";
 
 const ENTITY_PREFIX = "__mindgrow_entity__:";
+
+export const ENTITY_DESCRIPTION_MIN_LENGTH = 8;
+export const LEGACY_ENTITY_DESCRIPTION = "原文未直接说明";
 
 export function entityViewNodeId(entityId: string) {
   return `${ENTITY_PREFIX}${entityId}`;
@@ -53,6 +57,55 @@ function citationsFor(indexes: number[] | undefined, citations: Citation[]) {
   return citations.filter((citation) => indexSet.has(citation.index));
 }
 
+export function isGroundedGraphEntity(entity: GraphEntity): boolean {
+  return String(entity.canonicalName || "").trim().length > 0
+    && String(entity.description || "").trim().length >= ENTITY_DESCRIPTION_MIN_LENGTH
+    && Array.isArray(entity.descriptionCitations)
+    && entity.descriptionCitations.length > 0;
+}
+
+export function graphEntityGroundingStatus(entity: GraphEntity): EntityGroundingStatus {
+  return isGroundedGraphEntity(entity) ? "grounded" : "legacy";
+}
+
+export function entityDescriptionForReadOnlyDetail(entity: GraphEntity): string {
+  return String(entity.description || "").trim() || LEGACY_ENTITY_DESCRIPTION;
+}
+
+/**
+ * Keeps historical entities available to callers while ensuring only v4-grounded
+ * entities and their evidence-backed relations enter the formal graph.
+ */
+export function formalEntityGraph(graph: EntityGraph): EntityGraph {
+  const entities = (graph.entities || [])
+    .filter(isGroundedGraphEntity)
+    .map((entity) => ({
+      ...entity,
+      canonicalName: String(entity.canonicalName || "").trim(),
+      description: String(entity.description || "").trim(),
+      groundingStatus: "grounded" as const,
+    }));
+  const entityIds = new Set(entities.map((entity) => entity.id));
+  const relations = (graph.relations || [])
+    .filter((relation) => (
+      entityIds.has(relation.sourceId)
+      && entityIds.has(relation.targetId)
+      && relation.sourceId !== relation.targetId
+      && Array.isArray(relation.citations)
+      && relation.citations.length > 0
+    ))
+    .map((relation) => {
+      const shortLabel = [
+        relation.shortLabel,
+        relation.label,
+        RELATION_TYPE_LABELS[relation.relationType],
+        RELATION_TYPE_LABELS.related_to,
+      ].map((candidate) => String(candidate || "").trim()).find(Boolean) || RELATION_TYPE_LABELS.related_to;
+      return { ...relation, shortLabel, label: shortLabel };
+    });
+  return { entities, relations };
+}
+
 export function aiEntityGraphToEntityGraph(
   graph: AIEntityGraph | null | undefined,
   citations: Citation[],
@@ -60,19 +113,19 @@ export function aiEntityGraphToEntityGraph(
 ): EntityGraph {
   const entities: GraphEntity[] = (graph?.entities || []).map((entity, index) => ({
     id: `${scope}:${entity.tempId || `E${index + 1}`}`,
-    canonicalName: entity.name,
+    canonicalName: String(entity.name || "").trim(),
     entityType: entity.type || "other",
     aliases: entity.aliases || [],
-    description: entity.description || "",
+    description: (entity.description || "").trim(),
+    groundingStatus: "grounded",
     confidence: entity.confidence ?? 0.75,
     citations: citationsFor(entity.citationIndexes, citations),
     descriptionCitations: citationsFor(entity.descriptionEvidence, citations),
-  })).filter((entity) => entity.canonicalName && entity.citations.length > 0);
+  }));
   const byTempId = new Map((graph?.entities || []).map((entity, index) => [
     entity.tempId || `E${index + 1}`,
     `${scope}:${entity.tempId || `E${index + 1}`}`,
   ]));
-  const entityIds = new Set(entities.map((entity) => entity.id));
   const relations: GraphRelation[] = (graph?.relations || []).map((relation, index) => {
     const relationType = relation.type || "related_to";
     const shortLabel = relation.shortLabel || relation.label || RELATION_TYPE_LABELS[relationType] || RELATION_TYPE_LABELS.related_to;
@@ -88,24 +141,24 @@ export function aiEntityGraphToEntityGraph(
       confidence: relation.confidence ?? 0.7,
       citations: citationsFor(relation.citationIndexes, citations),
     };
-  }).filter((relation) => entityIds.has(relation.sourceId) && entityIds.has(relation.targetId)
-    && relation.sourceId !== relation.targetId && relation.citations.length > 0);
-  return { entities, relations };
+  });
+  return formalEntityGraph({ entities, relations });
 }
 
 export function entityGraphToKnowledgeGraph(graph: EntityGraph): {
   nodes: KnowledgeNode[];
   edges: KnowledgeEdge[];
 } {
+  const officialGraph = formalEntityGraph(graph);
   const createdAt = "1970-01-01T00:00:00.000Z";
-  const ids = new Map(graph.entities.map((entity) => [entity.id, entityViewNodeId(entity.id)]));
+  const ids = new Map(officialGraph.entities.map((entity) => [entity.id, entityViewNodeId(entity.id)]));
   const nodeType = (entityType: string): KnowledgeNode["type"] => {
     if (["person", "organization", "event"].includes(entityType)) return "topic";
     if (["metric", "time"].includes(entityType)) return "detail";
     if (["claim", "decision"].includes(entityType)) return "question";
     return "concept";
   };
-  const nodes: KnowledgeNode[] = graph.entities.map((entity) => ({
+  const nodes: KnowledgeNode[] = officialGraph.entities.map((entity) => ({
     id: ids.get(entity.id) || `${ENTITY_PREFIX}${entity.id}`,
     content: entity.canonicalName,
     desc: `${ENTITY_TYPE_LABELS[entity.entityType] || entity.entityType}${entity.description ? ` · ${entity.description}` : ""}${entity.aliases.length ? ` · 别名：${entity.aliases.join("、")}` : ""}`,
@@ -117,12 +170,12 @@ export function entityGraphToKnowledgeGraph(graph: EntityGraph): {
     updatedAt: createdAt,
     citations: entity.citations,
   }));
-  const edges: KnowledgeEdge[] = graph.relations.map((relation) => ({
+  const edges: KnowledgeEdge[] = officialGraph.relations.map((relation) => ({
     id: `${ENTITY_PREFIX}${relation.id}`,
     sourceId: ids.get(relation.sourceId) || `${ENTITY_PREFIX}${relation.sourceId}`,
     targetId: ids.get(relation.targetId) || `${ENTITY_PREFIX}${relation.targetId}`,
     relation: (relation.status === "negated" ? "contradicts" : "relates_to") as KnowledgeEdge["relation"],
-    relationLabel: `${relation.label}${relation.status === "historical" ? "（历史）" : relation.status === "proposed" ? "（待确认）" : relation.status === "negated" ? "（否定）" : ""} · ${relation.citations.length} 证据`,
+    relationLabel: relation.shortLabel,
     relationId: relation.id,
     relationStatus: relation.status,
     relationExplanation: relation.explanation,

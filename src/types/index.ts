@@ -25,12 +25,16 @@ export interface KnowledgeEdge {
   createdAt: string;
 }
 
+export type EntityGroundingStatus = "grounded" | "legacy";
+
 export interface GraphEntity {
   id: string;
   canonicalName: string;
   entityType: string;
   aliases: string[];
   description: string;
+  /** Missing on historical payloads; derive it from the v4 evidence fields before rendering. */
+  groundingStatus?: EntityGroundingStatus;
   confidence: number;
   citations: Citation[];
   descriptionCitations: Citation[];

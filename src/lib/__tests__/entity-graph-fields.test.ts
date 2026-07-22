@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { aiEntityGraphToEntityGraph, entityGraphToKnowledgeGraph } from "@/lib/entity-graph";
-import type { AIEntityGraph, Citation } from "@/types";
+import {
+  ENTITY_DESCRIPTION_MIN_LENGTH,
+  LEGACY_ENTITY_DESCRIPTION,
+  aiEntityGraphToEntityGraph,
+  entityDescriptionForReadOnlyDetail,
+  entityGraphToKnowledgeGraph,
+  formalEntityGraph,
+  graphEntityGroundingStatus,
+  isGroundedGraphEntity,
+} from "@/lib/entity-graph";
+import type { AIEntityGraph, Citation, GraphEntity } from "@/types";
 
 const citations: Citation[] = [
   { index: 1, quote: "RAG appears in the source.", locator: "page 1", sourceType: "pdf" },
@@ -73,9 +82,73 @@ describe("entity graph field propagation", () => {
     const graph = aiEntityGraphToEntityGraph(graphWithRelation(), citations, "article:test");
     const knowledge = entityGraphToKnowledgeGraph(graph);
     expect(knowledge.edges[0]).toMatchObject({
+      relationLabel: "采用",
       relationId: graph.relations[0].id,
       relationStatus: "asserted",
       relationExplanation: "RAG uses DPR as the dense retrieval component.",
     });
+    expect(knowledge.edges[0].relationLabel).not.toContain("证据");
+  });
+
+  it("requires a trimmed canonical name and an eight-character description", () => {
+    const input = graphWithRelation();
+    input.entities[0].name = "  RAG  ";
+    input.entities[1].description = "1234567";
+
+    const graph = aiEntityGraphToEntityGraph(input, citations, "article:filter");
+
+    expect(ENTITY_DESCRIPTION_MIN_LENGTH).toBe(8);
+    expect(graph.entities.map((entity) => entity.canonicalName)).toEqual(["RAG"]);
+    expect(graph.relations).toEqual([]);
+  });
+
+  it("does not treat ordinary entity citations as description evidence", () => {
+    const input = graphWithRelation();
+    input.entities[0].descriptionEvidence = undefined;
+    input.entities[0].citationIndexes = [1, 2];
+
+    const graph = aiEntityGraphToEntityGraph(input, citations, "article:evidence");
+
+    expect(graph.entities.map((entity) => entity.canonicalName)).toEqual(["DPR"]);
+    expect(graph.relations).toEqual([]);
+  });
+
+  it("accepts the minimum description length with dedicated evidence", () => {
+    const input = graphWithRelation();
+    input.entities = [{
+      tempId: "E1",
+      name: "RAG",
+      type: "model",
+      description: "12345678",
+      descriptionEvidence: [2],
+      citationIndexes: [],
+    }];
+    input.relations = [];
+
+    const graph = aiEntityGraphToEntityGraph(input, citations, "article:boundary");
+
+    expect(graph.entities).toHaveLength(1);
+    expect(graph.entities[0].citations).toEqual([]);
+    expect(graph.entities[0].descriptionCitations.map((citation) => citation.index)).toEqual([2]);
+    expect(graph.entities[0].groundingStatus).toBe("grounded");
+  });
+
+  it("keeps legacy records distinguishable for a future read-only detail view", () => {
+    const legacyEntity: GraphEntity = {
+      id: "legacy:E1",
+      canonicalName: "Legacy entity",
+      entityType: "concept",
+      aliases: [],
+      description: "",
+      confidence: 0.6,
+      citations: [citations[0]],
+      descriptionCitations: [],
+    };
+
+    expect(isGroundedGraphEntity(legacyEntity)).toBe(false);
+    expect(graphEntityGroundingStatus(legacyEntity)).toBe("legacy");
+    expect(entityDescriptionForReadOnlyDetail(legacyEntity)).toBe(LEGACY_ENTITY_DESCRIPTION);
+    expect(formalEntityGraph({ entities: [legacyEntity], relations: [] }).entities).toEqual([]);
+    expect(legacyEntity.canonicalName).toBe("Legacy entity");
   });
 });
