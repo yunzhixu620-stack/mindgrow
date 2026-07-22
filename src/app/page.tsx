@@ -508,6 +508,7 @@ export default function Home() {
         {/* Mobile tab bar */}
         <div
           className="flex items-center border-b border-[var(--border)] bg-[var(--card)] shrink-0"
+          data-testid="mobile-product-tabs"
           style={{
             paddingTop: "max(env(safe-area-inset-top), 20px)",
           }}
@@ -528,6 +529,7 @@ export default function Home() {
           <button
             key={mode}
             onClick={() => { setCurrentMode(mode); setMobileTab("chat"); }}
+            aria-label={`切换到${MODE_LIBRARY_CONFIG[mode].label}`}
             className={`flex-1 py-3 text-xs font-medium transition-all cursor-pointer ${
               mobileTab === "chat" && currentMode === mode ? "text-[var(--primary)] border-b-2 border-[var(--primary)]" : "text-[var(--muted-foreground)]"
             }`}
@@ -537,6 +539,7 @@ export default function Home() {
           ))}
           <button
               onClick={() => setMobileTab("map")}
+              aria-label="查看知识图谱"
               className={`flex-1 py-3 text-xs font-medium transition-all cursor-pointer ${
                 mobileTab === "map" ? "text-[var(--primary)] border-b-2 border-[var(--primary)]" : "text-[var(--muted-foreground)]"
               }`}
