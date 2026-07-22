@@ -23,6 +23,7 @@ import {
   shouldShowNewUserEmptyState,
   type OnboardingState,
 } from "@/components/onboarding/new-user-empty-state";
+import { MobileBottomNav } from "@/components/mobile/bottom-nav";
 
 const LOCAL_TENANT_SCOPE: TenantScope = { userId: "local-user", workspaceId: "local-workspace" };
 
@@ -620,18 +621,12 @@ export default function Home() {
   if (isMobile) {
     return (
       <main className="flex flex-col h-full w-full overflow-hidden bg-[var(--bg-base)]">
-        {/* Mobile tab bar */}
-        <div
-          className="flex items-center border-b border-[var(--border)] bg-[var(--card)] shrink-0"
-          data-testid="mobile-product-tabs"
-          style={{
-            paddingTop: "max(env(safe-area-inset-top), 20px)",
-          }}
-        >
-          {/* Map list toggle */}
+        {/* Mobile utility bar: product navigation lives only at the bottom. */}
+        <div className="flex h-11 shrink-0 items-center border-b border-[var(--border)] bg-[var(--card)] px-1.5" data-testid="mobile-view-toolbar">
           <button
             onClick={() => setDrawerOpen(!drawerOpen)}
-            className={`drawer-toggle-btn flex items-center justify-center w-11 shrink-0 h-full transition-colors cursor-pointer ${
+            aria-label="打开知识库列表"
+            className={`drawer-toggle-btn flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition-colors cursor-pointer ${
               drawerOpen ? "text-[var(--primary)]" : "text-[var(--muted-foreground)]"
             }`}
           >
@@ -639,28 +634,11 @@ export default function Home() {
               <line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" />
             </svg>
           </button>
-
-          {(["knowledge", "meeting", "article"] as const).map((mode) => (
-          <button
-            key={mode}
-            onClick={() => { setCurrentMode(mode); setMobileTab("chat"); }}
-            aria-label={`切换到${MODE_LIBRARY_CONFIG[mode].label}`}
-            className={`flex-1 py-3 text-xs font-medium transition-all cursor-pointer ${
-              mobileTab === "chat" && currentMode === mode ? "text-[var(--primary)] border-b-2 border-[var(--primary)]" : "text-[var(--muted-foreground)]"
-            }`}
-          >
-            {MODE_LIBRARY_CONFIG[mode].emoji} {MODE_LIBRARY_CONFIG[mode].shortLabel}
-          </button>
-          ))}
-          <button
-              onClick={() => setMobileTab("map")}
-              aria-label="查看知识图谱"
-              className={`flex-1 py-3 text-xs font-medium transition-all cursor-pointer ${
-                mobileTab === "map" ? "text-[var(--primary)] border-b-2 border-[var(--primary)]" : "text-[var(--muted-foreground)]"
-              }`}
-            >
-              🌐 图谱
-            </button>
+          <div className="min-w-0 flex-1 px-2 text-xs font-semibold text-[var(--text-secondary)]">{modeConfig.emoji} {modeConfig.defaultName}</div>
+          <div className="flex rounded-lg border border-[var(--border)] bg-[var(--background)] p-0.5">
+            <button type="button" onClick={() => setMobileTab("chat")} aria-label="查看当前板块内容" className={`rounded-md px-2.5 py-1.5 text-[10px] font-medium ${mobileTab === "chat" ? "bg-[var(--primary-subtle)] text-[var(--primary-hover)]" : "text-[var(--text-muted)]"}`}>内容</button>
+            <button type="button" onClick={() => setMobileTab("map")} aria-label="查看知识图谱" className={`rounded-md px-2.5 py-1.5 text-[10px] font-medium ${mobileTab === "map" ? "bg-[var(--primary-subtle)] text-[var(--primary-hover)]" : "text-[var(--text-muted)]"}`}>图谱</button>
+          </div>
         </div>
 
         {/* Drawer backdrop + panel */}
@@ -987,13 +965,18 @@ export default function Home() {
         )}
 
         {/* Content */}
-        <div className="flex-1 overflow-hidden flex flex-col">
+        <div className="flex flex-1 flex-col overflow-hidden pb-5" data-testid="mobile-content-region">
           {mobileTab === "chat" ? (
             showNewUserEmptyState ? onboardingPanel : activeModePanel
           ) : (
             <MindMapPanel showSkeleton={!mapCatalogReady || modeLibraryBusy} />
           )}
         </div>
+        <MobileBottomNav
+          currentMode={currentMode}
+          onModeChange={(mode) => { setCurrentMode(mode); setMobileTab("chat"); setDrawerOpen(false); }}
+          onCreate={() => { setMobileTab("chat"); setDrawerOpen(true); setIsCreating(true); setNewCategoryId(null); }}
+        />
         {/* Mobile Template Browser */}
         {showTemplates && (
           <TemplateBrowser
