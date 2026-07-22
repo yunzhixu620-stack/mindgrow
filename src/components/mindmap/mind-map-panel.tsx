@@ -27,6 +27,7 @@ import { apiFetch, IS_LOCAL_MODE } from "@/lib/client-api";
 import type { TenantScope } from "@/lib/tenant-cache";
 import { MODE_LIBRARY_CONFIG } from "@/lib/mode-libraries";
 import { entityGraphToKnowledgeGraph, entityViewNodeId, formalEntityGraph, isEntityViewNode } from "@/lib/entity-graph";
+import { MindMapSkeleton } from "@/components/mindmap/mind-map-skeleton";
 
 // ============================================================
 // Branch color palette
@@ -815,7 +816,7 @@ function HelpPanel({ onClose }: { onClose: () => void }) {
 // ============================================================
 // Main Component
 // ============================================================
-export function MindMapPanel() {
+export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean }) {
   const { user, currentWorkspace } = useAuth();
   const tenantScope = useMemo<TenantScope | null>(() => {
     if (IS_LOCAL_MODE) return LOCAL_TENANT_SCOPE;
@@ -1301,10 +1302,12 @@ export function MindMapPanel() {
     });
   }, []);
 
+  if (showSkeleton) return <MindMapSkeleton />;
+
   // Empty state
   if (activeNodes.length === 0) {
     return (
-      <div className="flex-1 min-w-0 flex items-center justify-center bg-[var(--background)]" data-testid="knowledge-graph-workspace" data-graph-mode={currentMode}>
+      <div className="animate-fade-in flex-1 min-w-0 flex items-center justify-center bg-[var(--background)]" data-testid="knowledge-graph-workspace" data-graph-mode={currentMode} data-graph-revealed="true">
         <div className="text-center space-y-6 max-w-[360px] px-4">
           <div className="text-6xl animate-pulse">🌱</div>
           <div>
@@ -1328,7 +1331,7 @@ export function MindMapPanel() {
   const focusedNode = focusedNodeId ? activeNodes.find((node) => node.id === focusedNodeId) : null;
 
   return (
-    <div className="flex-1 min-w-0 bg-[var(--background)] relative" data-testid="knowledge-graph-workspace" data-graph-mode={currentMode}>
+    <div className="animate-fade-in flex-1 min-w-0 bg-[var(--background)] relative" data-testid="knowledge-graph-workspace" data-graph-mode={currentMode} data-graph-revealed="true">
       {/* Top toolbar */}
       <div className={`absolute z-50 flex gap-1.5 ${isMobile ? 'right-3 flex-col items-end' : 'left-3 right-3 flex-wrap'}`} style={{ top: isMobile ? "max(calc(env(safe-area-inset-top) + 12px), 32px)" : "12px" }}>
         {/* Mobile: toggle toolbar */}
