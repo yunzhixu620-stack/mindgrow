@@ -25,13 +25,17 @@ import {
 } from "@/components/onboarding/new-user-empty-state";
 import { MobileBottomNav } from "@/components/mobile/bottom-nav";
 import { COMMAND_ENTITY_FOCUS_EVENT, COMMAND_NAVIGATE_EVENT, type CommandSearchResult } from "@/lib/command-search";
+import { matchesBootstrapTenant } from "@/lib/bootstrap";
 
 const LOCAL_TENANT_SCOPE: TenantScope = { userId: "local-user", workspaceId: "local-workspace" };
 
 export default function Home() {
-  const { currentWorkspace, user } = useAuth();
+  const { currentWorkspace, user, bootstrap } = useAuth();
   const currentWorkspaceId = currentWorkspace?.id;
   const currentWorkspaceDefaultMapId = currentWorkspace?.defaultMapId;
+  const bootstrapForTenant = useMemo(() => (
+    matchesBootstrapTenant(bootstrap, user?.id, currentWorkspaceId) ? bootstrap : null
+  ), [bootstrap, currentWorkspaceId, user?.id]);
   const tenantScope = useMemo<TenantScope | null>(() => {
     if (IS_LOCAL_MODE) return LOCAL_TENANT_SCOPE;
     if (!user?.id || !currentWorkspaceId) return null;
@@ -89,6 +93,7 @@ export default function Home() {
   const mapLoadAbortRef = useRef<AbortController | null>(null);
   const prefetchAbortRef = useRef<AbortController | null>(null);
   const prefetchedMapKeysRef = useRef(new Set<string>());
+  const bootstrapFreshGraphKeyRef = useRef<string | null>(null);
   const activeTenantScopeKeyRef = useRef<string | null>(activeTenantScopeKey);
   activeTenantScopeKeyRef.current = activeTenantScopeKey;
 
@@ -158,6 +163,7 @@ export default function Home() {
   // Load maps & categories on mount
   useEffect(() => {
     if (!tenantScope) return;
+    if (bootstrapForTenant) return;
     const requestedScopeKey = tenantScopeKey(tenantScope);
     const controller = new AbortController();
     Promise.all([
@@ -181,10 +187,10 @@ export default function Home() {
         if (requestedScopeKey === activeTenantScopeKeyRef.current) setMapCatalogReady(true);
       });
     return () => controller.abort();
-  }, [activeTenantScopeKey, setMaps, setCategories, tenantScope]);
+  }, [activeTenantScopeKey, bootstrapForTenant, setMaps, setCategories, tenantScope]);
 
   useEffect(() => {
-    if (!currentWorkspaceDefaultMapId) return;
+    if (!currentWorkspaceDefaultMapId || !tenantScope) return;
     ++mapLoadRequestRef.current;
     mapLoadAbortRef.current?.abort();
     prefetchAbortRef.current?.abort();
@@ -197,7 +203,28 @@ export default function Home() {
     setModeLibraryBusy(false);
     setModeLibraryError("");
     setCurrentMapId(currentWorkspaceDefaultMapId);
-  }, [activeTenantScopeKey, currentWorkspaceDefaultMapId, setCurrentMapId]);
+    bootstrapFreshGraphKeyRef.current = null;
+
+    if (!bootstrapForTenant) return;
+    setMaps(bootstrapForTenant.maps || []);
+    setCategories(bootstrapForTenant.categories || []);
+    setMapCatalogReady(true);
+    const defaultMap = bootstrapForTenant.defaultMap;
+    if (!defaultMap || defaultMap.map.id !== currentWorkspaceDefaultMapId) return;
+    const graphKey = tenantMapKey(tenantScope, currentWorkspaceDefaultMapId);
+    const cacheReadToken = tenantCache.beginMapRead(tenantScope, currentWorkspaceDefaultMapId);
+    const result = useMindGrowStore.getState().hydrateGraphFromServer(
+      currentWorkspaceDefaultMapId,
+      graphSnapshotFromResponse(defaultMap),
+      0,
+      tenantScope,
+      cacheReadToken,
+    );
+    if (result === "applied" || result === "rejected-local-dirty") {
+      bootstrapFreshGraphKeyRef.current = graphKey;
+      setConfirmedGraphKey(graphKey);
+    }
+  }, [activeTenantScopeKey, bootstrapForTenant, currentWorkspaceDefaultMapId, setCategories, setCurrentMapId, setMaps, tenantScope]);
 
   useEffect(() => tenantCache.subscribe((event) => {
     if (event.type === "tenant-cleared") prefetchedMapKeysRef.current.clear();
@@ -522,6 +549,14 @@ export default function Home() {
     } else {
       setModeLibraryBusy(true);
       setConfirmedGraphKey(null);
+    }
+    if (bootstrapFreshGraphKeyRef.current === graphKey) {
+      bootstrapFreshGraphKeyRef.current = null;
+      setModeLibraryError("");
+      setModeLibraryBusy(false);
+      setConfirmedGraphKey(graphKey);
+      loadChatHistory(currentMapId);
+      return;
     }
     mapLoadAbortRef.current?.abort();
     const controller = new AbortController();

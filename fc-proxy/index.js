@@ -21,7 +21,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.6.0';
+const API_VERSION = '10.7.0';
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
 const DASHSCOPE_AUDIO_ENDPOINT = process.env.DASHSCOPE_AUDIO_ENDPOINT || 'https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer';
 const ALLOWED_ORIGINS = new Set(
@@ -306,6 +306,57 @@ async function handleWorkspaces(req, user) {
   const defaultMapId = defaultMapIdForWorkspace(workspaceId);
   await supabaseRequest('POST', 'maps', { id: defaultMapId, workspace_id: workspaceId, name: '默认知识库', description: '', mode: 'knowledge', color: '#22d3a7', is_default: true, node_count: 0, created_at: now, updated_at: now }, 'return=minimal');
   return { status: 201, data: { workspace: { id: workspaceId, name, ownerId: user.id, role: 'owner', defaultMapId, createdAt: now, updatedAt: now } } };
+}
+
+function selectBootstrapWorkspace(workspaces, requestedWorkspaceId) {
+  const rows = Array.isArray(workspaces) ? workspaces : [];
+  const requested = String(requestedWorkspaceId || '').trim();
+  return (requested && rows.find((workspace) => workspace.id === requested)) || rows[0] || null;
+}
+
+function selectBootstrapDefaultMap(maps, workspace) {
+  const rows = Array.isArray(maps) ? maps : [];
+  if (!rows.length) return null;
+  const defaultMapId = workspace && workspace.defaultMapId;
+  return rows.find((map) => map.id === defaultMapId)
+    || rows.find((map) => map.isDefault && map.mode === 'knowledge')
+    || rows.find((map) => map.mode === 'knowledge')
+    || rows[0];
+}
+
+async function handleBootstrap(req, user) {
+  if (req.method !== 'GET') {
+    return { status: 405, data: { error: 'Method not allowed', code: 'METHOD_NOT_ALLOWED' } };
+  }
+  const workspaces = await listUserWorkspaces(user);
+  const workspace = selectBootstrapWorkspace(workspaces, req.headers['x-workspace-id']);
+  if (!workspace) throw requestError(403, 'WORKSPACE_FORBIDDEN', 'You do not have access to a workspace');
+
+  const encodedWorkspace = encodeURIComponent(workspace.id);
+  const [mapRows, categoryRows] = await Promise.all([
+    supabaseRequest('GET', `maps?workspace_id=eq.${encodedWorkspace}&select=*&order=is_default.desc,updated_at.desc`),
+    supabaseRequest('GET', `categories?workspace_id=eq.${encodedWorkspace}&select=*&order=sort_order.asc`),
+  ]);
+  if (!Array.isArray(mapRows) || !Array.isArray(categoryRows)) throw dependencyError('knowledge_store');
+  const maps = mapRows.map(convertMap);
+  const categories = categoryRows.map(convertCategory);
+  const defaultMap = selectBootstrapDefaultMap(maps, workspace);
+  const graph = defaultMap
+    ? await loadMapGraphSnapshot(workspace.id, defaultMap.id)
+    : { nodes: [], edges: [], entityGraph: { entities: [], relations: [] } };
+
+  return {
+    status: 200,
+    data: {
+      user,
+      workspaces,
+      workspace,
+      maps,
+      categories,
+      defaultMap: defaultMap ? { map: defaultMap, ...graph } : null,
+      generatedAt: new Date().toISOString(),
+    },
+  };
 }
 
 async function dashscopeChat(messages, model, maxTokens, temperature) {
@@ -3614,6 +3665,17 @@ function convertMap(row) {
   };
 }
 
+function convertCategory(category) {
+  return {
+    id: category.id,
+    name: category.name,
+    icon: category.icon || '📁',
+    color: category.color || '#22d3a7',
+    sortOrder: category.sort_order || 0,
+    createdAt: category.created_at,
+  };
+}
+
 function normalizeMapMode(mode, description) {
   if (mode === 'knowledge' || mode === 'meeting' || mode === 'article') return mode;
   const value = String(description || '');
@@ -4158,6 +4220,23 @@ async function updateMapNodeCount(workspaceId, mapId) {
   return count;
 }
 
+async function loadMapGraphSnapshot(workspaceId, mapId) {
+  const workspace = encodeURIComponent(workspaceId);
+  const encodedMapId = encodeURIComponent(mapId);
+  const [nodeRows, edgeRows, entityGraph] = await Promise.all([
+    supabaseRequest('GET', `nodes?workspace_id=eq.${workspace}&map_id=eq.${encodedMapId}&status=eq.active&select=*&limit=2000`),
+    supabaseRequest('GET', `edges?workspace_id=eq.${workspace}&map_id=eq.${encodedMapId}&select=*&limit=4000`),
+    loadEntityGraph(workspaceId, mapId),
+  ]);
+  if (!Array.isArray(nodeRows) || !Array.isArray(edgeRows)) throw dependencyError('knowledge_store');
+  const citationsByNode = await loadNodeCitations(workspaceId, mapId, nodeRows.map((node) => node.id));
+  return {
+    nodes: nodeRows.map((node) => convertNode(node, citationsByNode.get(node.id))),
+    edges: edgeRows.map(convertEdge),
+    entityGraph,
+  };
+}
+
 async function handleKnowledge(req, context) {
   const parsed = new URL(req.url, 'http://localhost');
   // Function Compute may still run an older Node.js runtime where
@@ -4178,7 +4257,7 @@ async function handleKnowledge(req, context) {
       if (!Array.isArray(rows)) throw dependencyError('knowledge_store');
       return {
         status: 200,
-        data: { categories: rows.map((category) => ({ id: category.id, name: category.name, icon: category.icon || '📁', color: category.color || '#22d3a7', sortOrder: category.sort_order || 0, createdAt: category.created_at })) },
+        data: { categories: rows.map(convertCategory) },
       };
     }
     if (query.action === 'universe') {
@@ -4265,16 +4344,8 @@ async function handleKnowledge(req, context) {
         .slice(0, 20);
       return { status: 200, data: { query: searchQuery, results, total: results.length } };
     }
-    const mapId = encodeURIComponent(String(query.mapId || context.defaultMapId));
     const requestedMapId = String(query.mapId || context.defaultMapId);
-    const [nodeRows, edgeRows, entityGraph] = await Promise.all([
-      supabaseRequest('GET', `nodes?workspace_id=eq.${workspace}&map_id=eq.${mapId}&status=eq.active&select=*&limit=2000`),
-      supabaseRequest('GET', `edges?workspace_id=eq.${workspace}&map_id=eq.${mapId}&select=*&limit=4000`),
-      loadEntityGraph(workspaceId, requestedMapId),
-    ]);
-    if (!Array.isArray(nodeRows) || !Array.isArray(edgeRows)) throw dependencyError('knowledge_store');
-    const citationsByNode = await loadNodeCitations(workspaceId, requestedMapId, nodeRows.map((node) => node.id));
-    return { status: 200, data: { nodes: nodeRows.map((node) => convertNode(node, citationsByNode.get(node.id))), edges: edgeRows.map(convertEdge), entityGraph } };
+    return { status: 200, data: await loadMapGraphSnapshot(workspaceId, requestedMapId) };
   }
 
   if (req.method === 'DELETE') {
@@ -4577,7 +4648,9 @@ const server = http.createServer(async (req, res) => {
 
     let result;
     const user = await authenticateUser(req);
-    if (pathname === '/api/workspaces' || pathname === '/mindgrow/api/workspaces') {
+    if (pathname === '/api/bootstrap' || pathname === '/mindgrow/api/bootstrap') {
+      result = await handleBootstrap(req, user);
+    } else if (pathname === '/api/workspaces' || pathname === '/mindgrow/api/workspaces') {
       result = await handleWorkspaces(req, user);
     } else if (pathname === '/api/tools/meeting' || pathname === '/mindgrow/api/tools/meeting'
       || pathname === '/api/tools/article' || pathname === '/mindgrow/api/tools/article'
@@ -4621,6 +4694,7 @@ if (require.main === module) {
 module.exports = {
   __citationInternal: { normalizeForExactMatch, isVerbatimQuote, verifiedIndexes, verifiedCitationPayload },
   __mapModeInternal: { normalizeMapMode, isValidMapMode, convertMap },
+  __bootstrapInternal: { selectBootstrapWorkspace, selectBootstrapDefaultMap },
   buildDocumentChunks,
   buildMeetingCitations,
   fallbackMeetingAnalysis,
