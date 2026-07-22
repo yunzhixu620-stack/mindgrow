@@ -21,18 +21,20 @@
 
 ## 3. 合成监控与发布门禁
 
-- 每 5 分钟：`GET /health`，要求 HTTP 200、`version` 与 `docs/api-version.txt` 一致、`authRequired === true`，model/store/hybridRetrieval 均为 ready 或 ok。生产 `authRequired !== true` 立即按 SEV0 处理。版本文件是运行时 `API_VERSION` 的 CI 校验镜像，不是第二个真源。
+- 每 5 分钟：`GET /health`，要求 HTTP 200、`version` 与 `docs/api-version.txt` 一致、`gitSha` 为完整 40 位提交号、`checks.deploymentIdentity === "ready"`、`authRequired === true`，model/store/hybridRetrieval 均为 ready 或 ok。生产 `authRequired !== true` 立即按 SEV0 处理；生产缺失部署身份按 SEV1 处理。版本文件是运行时 `API_VERSION` 的 CI 校验镜像，不是第二个真源。
 - 每 15 分钟：匿名访问 knowledge/workspaces/audio 均应为 401；任何 2xx 视为 SEV0。
 - 每 60 分钟：专用测试账号列出 workspaces/maps，不执行付费模型。
 - 每天：专用测试知识库解析一篇固定短文，验证 citation quote 与来源一致；生成一次 Audio 脚本。
 - 每次发布：`check:api-version`、lint、build、本地 E2E、公网 E2E、后端冒烟、Supabase 权限审计全部通过。
 - 阿里云 HTTP 触发器请求方法必须包含 `GET, POST, PUT, DELETE, PATCH, OPTIONS`。`scripts/backend-smoke.js` 会用匿名 PATCH 断言请求已进入应用鉴权层并返回 `401 AUTH_REQUIRED`；若触发器漏配 PATCH，阿里云会提前返回 `403 AccessDenied`，节点编辑与时间轴修订将失效。
-- 前端发布后：运行 `npm run check:deployment:production`；正式验收时设置 `MINDGROW_EXPECTED_FRONTEND_SHA` 为本次 main 的完整 40 位提交号，确保 GitHub Pages 静态清单、API 版本和鉴权状态对应。
+- 前端或后端发布后：运行 `npm run check:deployment:production`；正式验收时同时设置 `MINDGROW_EXPECTED_FRONTEND_SHA` 为本次前端完整提交号、`MINDGROW_EXPECTED_API_GIT_SHA` 为实际部署后端源码提交号，确保 GitHub Pages 静态清单、API 版本、后端源码身份和鉴权状态对应。
 - 每周：恢复演练一次（数据库只读、模型超时、TTS 失败、GitHub 静态资源缓存）。
 
 API 发版时先修改 `fc-proxy/index.js` 的 `API_VERSION`，再在同一个 PR 同步 `docs/api-version.txt`，最后运行 `npm run check:api-version`。禁止只改镜像文件或把镜像称为运行时版本真源。
 
-静态前端的 `deployment.json` 由构建自动生成，不手工编辑；详见 `docs/s2-3-deployment-fact.md`。后端 `git_sha` 字段按计划在 S2.10 接入。
+静态前端的 `deployment.json` 由构建自动生成，不手工编辑；详见 `docs/s2-3-deployment-fact.md`。后端 `gitSha` 来自阿里云环境变量 `MINDGROW_GIT_SHA`；该值只允许使用已推送、可审计的实际后端源码提交号，禁止填写前端提交号占位。
+
+值班闭环固定为：告警或反馈进入 → 建立事件 ID 并定级 → 指定唯一 IC → 记录脱敏时间线和受影响范围 → 恢复/回滚 → 补回归测试或评测 case → 发布验证 → 回访报告人 → 复盘关闭。没有回归证据和回访记录的事件不得标记关闭；可直接复用 `docs/oncall-incident-template.md`。
 
 匿名模式只允许本机开发或测试环境同时设置 `AUTH_REQUIRED=false` 和 `ALLOW_ANON_LOCAL=true`；production 即使误设这两个值也必须拒绝请求并让 health 降级。生产环境不得配置 `ALLOW_ANON_LOCAL=true`。
 

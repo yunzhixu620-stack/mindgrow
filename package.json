@@ -21,6 +21,7 @@
     "test:e2e:public": "node scripts/e2e-public.js",
     "test:backend": "npm run test:backend:public",
     "test:backend:local": "node scripts/run-backend-local.js",
+    "test:backend:identity": "node scripts/backend-deployment-identity-test.js",
     "test:backend:smoke-local": "cross-env MINDGROW_API_BASE=http://127.0.0.1:9000 node scripts/backend-smoke.js",
     "test:backend:public": "node scripts/backend-smoke.js",
     "test:rag": "node scripts/rag-quality-test.js"

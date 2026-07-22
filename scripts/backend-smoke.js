@@ -4,6 +4,8 @@ const { readApiVersion } = require("./deployment-fact");
 
 const baseUrl = (process.env.MINDGROW_API_BASE || process.env.MINDGROW_API_BASE_URL || "https://mindgrow-api-eyippxdkkh.cn-hangzhou.fcapp.run").replace(/\/$/, "");
 const expectedApiVersion = process.env.MINDGROW_EXPECTED_API_VERSION || readApiVersion();
+const expectedApiGitSha = String(process.env.MINDGROW_EXPECTED_API_GIT_SHA || process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
+const requiresApiGitSha = Boolean(expectedApiGitSha) || !/^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/|$)/i.test(baseUrl);
 const accessToken = process.env.MINDGROW_ACCESS_TOKEN || "";
 const bootstrapOnly = process.env.MINDGROW_BOOTSTRAP_ONLY === "true";
 let workspaceId = process.env.MINDGROW_WORKSPACE_ID || "";
@@ -49,14 +51,21 @@ function expectStatus(result, status) {
   preflight.ok = preflight.status === 204 && preflight.cors === "https://yunzhixu620-stack.github.io";
 
   const health = await request("Dependency health and API version", "/health", { authenticated: false });
+  const healthGitSha = String(health.body?.gitSha || '').toLowerCase();
+  const deploymentIdentityReady = !requiresApiGitSha || (
+    /^[0-9a-f]{40}$/.test(healthGitSha)
+    && health.body?.checks?.deploymentIdentity === "ready"
+    && (!expectedApiGitSha || healthGitSha === expectedApiGitSha)
+  );
   health.ok = health.status === 200 && health.body?.status === "ok" && health.body?.version === expectedApiVersion
     && health.body?.authRequired === true && health.body?.allowAnonLocal === false
     && typeof health.body?.nodeEnv === "string" && health.body?.checks?.authConfiguration === "ok"
     && health.body?.checks?.modelConfigured === true && health.body?.checks?.knowledgeStore === "ok"
     && health.body?.checks?.hybridRetrieval === "ready" && health.body?.checks?.entityGraph === "ready"
-    && health.body?.checks?.nodeTimeline === "ready" && health.body?.checks?.whiteboardLayout === "ready";
+    && health.body?.checks?.nodeTimeline === "ready" && health.body?.checks?.whiteboardLayout === "ready"
+    && deploymentIdentityReady;
   if (!health.ok) {
-    health.expectation = "Expected healthy authenticated API " + expectedApiVersion + " with knowledge, hybrid retrieval, and entity graph ready";
+    health.expectation = "Expected healthy authenticated API " + expectedApiVersion + " with a verified deployment identity and ready dependencies";
     console.error("FAIL Dependency health gate: received " + (health.body?.version || "unknown"));
   }
 

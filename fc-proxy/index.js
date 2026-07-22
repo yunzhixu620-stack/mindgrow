@@ -21,7 +21,9 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.10.1';
+const API_VERSION = '10.11.0';
+const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
+const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
 const DASHSCOPE_AUDIO_ENDPOINT = process.env.DASHSCOPE_AUDIO_ENDPOINT || 'https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer';
 const ALLOWED_ORIGINS = new Set(
@@ -4984,6 +4986,7 @@ const server = http.createServer(async (req, res) => {
         entityGraph: 'unknown',
         nodeTimeline: 'unknown',
         whiteboardLayout: 'unknown',
+        deploymentIdentity: API_GIT_SHA_VALID ? 'ready' : (NODE_ENV === 'production' ? 'missing' : 'not_required'),
       };
       if (checks.knowledgeStoreConfigured) {
         try {
@@ -5027,11 +5030,12 @@ const server = http.createServer(async (req, res) => {
       }
       const healthy = checks.authConfiguration === 'ok' && checks.modelConfigured && checks.knowledgeStore === 'ok'
         && checks.hybridRetrieval === 'ready' && checks.entityGraph === 'ready' && checks.nodeTimeline === 'ready'
-        && checks.whiteboardLayout === 'ready';
+        && checks.whiteboardLayout === 'ready' && checks.deploymentIdentity !== 'missing';
       res.writeHead(healthy ? 200 : 503, { 'Content-Type': 'application/json; charset=utf-8' });
       return res.end(JSON.stringify({
         status: healthy ? 'ok' : 'degraded',
         version: API_VERSION,
+        gitSha: API_GIT_SHA_VALID ? API_GIT_SHA : null,
         authRequired: AUTH_REQUIRED,
         nodeEnv: NODE_ENV,
         allowAnonLocal: ANON_LOCAL_ENABLED,
