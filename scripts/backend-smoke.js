@@ -2,8 +2,9 @@ const fs = require("fs");
 const path = require("path");
 
 const baseUrl = (process.env.MINDGROW_API_BASE || process.env.MINDGROW_API_BASE_URL || "https://mindgrow-api-eyippxdkkh.cn-hangzhou.fcapp.run").replace(/\/$/, "");
-const expectedApiVersion = process.env.MINDGROW_EXPECTED_API_VERSION || "10.6.0";
+const expectedApiVersion = process.env.MINDGROW_EXPECTED_API_VERSION || "10.7.0";
 const accessToken = process.env.MINDGROW_ACCESS_TOKEN || "";
+const bootstrapOnly = process.env.MINDGROW_BOOTSTRAP_ONLY === "true";
 let workspaceId = process.env.MINDGROW_WORKSPACE_ID || "";
 const results = [];
 
@@ -58,6 +59,7 @@ function expectStatus(result, status) {
   }
 
   for (const [name, pathname, options] of [
+    ["Anonymous bootstrap is denied", "/api/bootstrap", { authenticated: false }],
     ["Anonymous knowledge is denied", "/api/knowledge?action=maps", { authenticated: false }],
     ["Anonymous workspace access is denied", "/api/workspaces", { authenticated: false }],
     ["Anonymous Audio Overview is denied", "/api/tools/audio-overview", { method: "POST", body: "{}", authenticated: false }],
@@ -67,50 +69,58 @@ function expectStatus(result, status) {
   }
 
   if (accessToken) {
-    const workspaces = await request("List authenticated workspaces", "/api/workspaces");
-    if (!workspaceId && Array.isArray(workspaces.body?.workspaces) && workspaces.body.workspaces[0]) {
-      workspaceId = workspaces.body.workspaces[0].id;
+    const bootstrap = await request("Load authenticated bootstrap", "/api/bootstrap");
+    if (!workspaceId && bootstrap.body?.workspace?.id) {
+      workspaceId = bootstrap.body.workspace.id;
     }
-    if (!workspaceId) workspaces.ok = false;
+    if (!workspaceId || !Array.isArray(bootstrap.body?.workspaces) || !Array.isArray(bootstrap.body?.maps)
+      || !Array.isArray(bootstrap.body?.categories) || !bootstrap.body?.defaultMap?.map?.id
+      || !Array.isArray(bootstrap.body?.defaultMap?.nodes) || !Array.isArray(bootstrap.body?.defaultMap?.edges)
+      || !Array.isArray(bootstrap.body?.defaultMap?.entityGraph?.entities)
+      || bootstrap.body.defaultMap.map.id !== bootstrap.body.workspace?.defaultMapId) bootstrap.ok = false;
 
-    const maps = await request("List tenant maps", "/api/knowledge?action=maps");
-    await request("List tenant categories", "/api/knowledge?action=categories");
-    if (maps.ok && Array.isArray(maps.body?.maps)) {
-      let mapId;
-      const temporaryMapIds = [];
-      try {
-        for (const mode of ["knowledge", "meeting", "article"]) {
-          const created = await request(`Create temporary ${mode} map`, "/api/knowledge", {
-            method: "POST",
-            body: JSON.stringify({ action: "createMap", name: `Backend smoke ${mode} ${Date.now()}`, mode, description: `${mode} smoke` }),
-          });
-          const createdMap = created.body?.map;
-          if (!createdMap?.id) throw new Error(`Backend did not return a ${mode} map id`);
-          temporaryMapIds.push(createdMap.id);
-          if (createdMap.mode !== mode || String(createdMap.description || "").includes("[MindGrow:")) {
-            created.ok = false;
-            throw new Error(`Backend did not persist clean explicit mode ${mode}`);
+    if (!bootstrapOnly) {
+      const maps = await request("List tenant maps", "/api/knowledge?action=maps");
+      await request("List tenant categories", "/api/knowledge?action=categories");
+      if (maps.ok && Array.isArray(maps.body?.maps)) {
+        let mapId;
+        const temporaryMapIds = [];
+        try {
+          for (const mode of ["knowledge", "meeting", "article"]) {
+            const created = await request(`Create temporary ${mode} map`, "/api/knowledge", {
+              method: "POST",
+              body: JSON.stringify({ action: "createMap", name: `Backend smoke ${mode} ${Date.now()}`, mode, description: `${mode} smoke` }),
+            });
+            const createdMap = created.body?.map;
+            if (!createdMap?.id) throw new Error(`Backend did not return a ${mode} map id`);
+            temporaryMapIds.push(createdMap.id);
+            if (createdMap.mode !== mode || String(createdMap.description || "").includes("[MindGrow:")) {
+              created.ok = false;
+              throw new Error(`Backend did not persist clean explicit mode ${mode}`);
+            }
+            if (mode === "knowledge") mapId = createdMap.id;
           }
-          if (mode === "knowledge") mapId = createdMap.id;
-        }
-        const graph = await request("Create cited temporary graph", "/api/knowledge", {
-          method: "POST",
-          body: JSON.stringify({
-            mapId, source: "article",
-            mindMap: { root: "Smoke citation root", rootCitationIndexes: [1], children: [{ topic: "Smoke child", citationIndexes: [1], items: [], itemCitationIndexes: [] }] },
-            document: { title: "Smoke source", sourceType: "text" },
-            citations: [{ index: 1, quote: "Smoke test source evidence", locator: "paragraph 1" }],
-          }),
-        });
-        const nodeId = graph.body?.node?.id;
-        if (!nodeId || graph.body?.totalCitations < 1) graph.ok = false;
-        const reloaded = await request("Verify cited graph reload", `/api/knowledge?mapId=${encodeURIComponent(mapId)}`);
-        if (!reloaded.body?.nodes?.some((node) => node.id === nodeId && node.citations?.length)) reloaded.ok = false;
-      } finally {
-        for (const temporaryMapId of temporaryMapIds) {
-          await request("Delete temporary map", "/api/knowledge", { method: "POST", body: JSON.stringify({ action: "deleteMap", mapId: temporaryMapId }) });
+          const graph = await request("Create cited temporary graph", "/api/knowledge", {
+            method: "POST",
+            body: JSON.stringify({
+              mapId, source: "article",
+              mindMap: { root: "Smoke citation root", rootCitationIndexes: [1], children: [{ topic: "Smoke child", citationIndexes: [1], items: [], itemCitationIndexes: [] }] },
+              document: { title: "Smoke source", sourceType: "text" },
+              citations: [{ index: 1, quote: "Smoke test source evidence", locator: "paragraph 1" }],
+            }),
+          });
+          const nodeId = graph.body?.node?.id;
+          if (!nodeId || graph.body?.totalCitations < 1) graph.ok = false;
+          const reloaded = await request("Verify cited graph reload", `/api/knowledge?mapId=${encodeURIComponent(mapId)}`);
+          if (!reloaded.body?.nodes?.some((node) => node.id === nodeId && node.citations?.length)) reloaded.ok = false;
+        } finally {
+          for (const temporaryMapId of temporaryMapIds) {
+            await request("Delete temporary map", "/api/knowledge", { method: "POST", body: JSON.stringify({ action: "deleteMap", mapId: temporaryMapId }) });
+          }
         }
       }
+    } else {
+      console.log("SKIP authenticated CRUD: bootstrap-only integration mode");
     }
   } else {
     console.log("SKIP authenticated CRUD: set MINDGROW_ACCESS_TOKEN (and optionally MINDGROW_WORKSPACE_ID) to run tenant-scoped write tests");

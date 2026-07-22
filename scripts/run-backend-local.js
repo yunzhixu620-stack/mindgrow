@@ -9,7 +9,7 @@ const backendEntry = process.env.MINDGROW_LOCAL_BACKEND_ENTRY
   : path.join(projectRoot, "fc-proxy", "index.js");
 const backendPort = 9000;
 const backendBase = `http://127.0.0.1:${backendPort}`;
-const localApiVersion = process.env.MINDGROW_LOCAL_API_VERSION || "10.6.0";
+const localApiVersion = process.env.MINDGROW_LOCAL_API_VERSION || "10.7.0";
 const allowedHealthTables = new Set([
   "maps",
   "document_chunks",
@@ -26,12 +26,35 @@ function startSupabaseStub() {
   return new Promise((resolve, reject) => {
     const server = http.createServer((request, response) => {
       const url = new URL(request.url, "http://127.0.0.1");
+      const workspaceId = "ws_localbootstrapuser";
+      const defaultMapId = `map_${workspaceId}_default`;
+
+      if (request.method === "GET" && url.pathname === "/auth/v1/user") {
+        response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+        response.end(JSON.stringify({ id: "local-bootstrap-user", email: "bootstrap@mindgrow.test" }));
+        return;
+      }
+
       const match = url.pathname.match(/^\/rest\/v1\/([^/]+)$/);
       const table = match?.[1];
+      const rowsByTable = {
+        workspace_members: [{ workspace_id: workspaceId, role: "owner" }],
+        workspaces: [{ id: workspaceId, name: "Bootstrap workspace", owner_id: "local-bootstrap-user", created_at: "2026-07-22T00:00:00.000Z", updated_at: "2026-07-22T00:00:00.000Z" }],
+        maps: [{ id: defaultMapId, workspace_id: workspaceId, name: "默认知识库", description: "", mode: "knowledge", color: "#22d3a7", is_default: true, category_id: null, node_count: 1, created_at: "2026-07-22T00:00:00.000Z", updated_at: "2026-07-22T00:00:00.000Z" }],
+        categories: [],
+        nodes: [{ id: "node_bootstrap", map_id: defaultMapId, content: "Bootstrap ready", desc: "one-request graph", type: "concept", status: "active", source: "manual", confidence: 1, created_at: "2026-07-22T00:00:00.000Z", updated_at: "2026-07-22T00:00:00.000Z" }],
+        edges: [],
+        graph_entities: [],
+        graph_relations: [],
+        graph_evidence: [],
+        source_documents: [],
+        node_citations: [],
+        document_chunks: [],
+      };
 
-      if (request.method === "GET" && allowedHealthTables.has(table)) {
+      if (request.method === "GET" && (Object.prototype.hasOwnProperty.call(rowsByTable, table) || allowedHealthTables.has(table))) {
         response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-        response.end("[]");
+        response.end(JSON.stringify(rowsByTable[table] || []));
         return;
       }
 
@@ -114,6 +137,8 @@ function runLocalSmoke() {
       env: {
         ...process.env,
         MINDGROW_API_BASE: backendBase,
+        MINDGROW_ACCESS_TOKEN: "local-bootstrap-token",
+        MINDGROW_BOOTSTRAP_ONLY: "true",
       },
       stdio: "inherit",
     });

@@ -6,6 +6,7 @@ import { resetTenantData, resolveAuthTransition } from "@/components/auth/auth-t
 import { getAuthRedirectUrl } from "@/lib/auth-urls";
 import { IS_LOCAL_MODE, apiFetch, setActiveUserId, setActiveWorkspaceId } from "@/lib/client-api";
 import { supabase } from "@/lib/supabase-browser";
+import type { Category, EntityGraph, KnowledgeEdge, KnowledgeNode, MindMap } from "@/types";
 
 export interface Workspace {
   id: string;
@@ -17,12 +18,28 @@ export interface Workspace {
   updatedAt: string;
 }
 
+export interface WorkspaceBootstrap {
+  user: { id: string; email: string };
+  workspaces: Workspace[];
+  workspace: Workspace;
+  maps: MindMap[];
+  categories: Category[];
+  defaultMap: {
+    map: MindMap;
+    nodes: KnowledgeNode[];
+    edges: KnowledgeEdge[];
+    entityGraph: EntityGraph;
+  } | null;
+  generatedAt: string;
+}
+
 interface AuthContextValue {
   loading: boolean;
   session: Session | null;
   user: User | null;
   workspaces: Workspace[];
   currentWorkspace: Workspace | null;
+  bootstrap: WorkspaceBootstrap | null;
   message: string;
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (email: string, password: string) => Promise<void>;
@@ -40,10 +57,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [currentWorkspace, setCurrentWorkspace] = useState<Workspace | null>(null);
+  const [bootstrap, setBootstrap] = useState<WorkspaceBootstrap | null>(null);
   const [message, setMessage] = useState("");
   const lastUserIdRef = useRef<string | null>(null);
   const knownWorkspaceIdsRef = useRef<Set<string>>(new Set());
   const workspaceLoadGenerationRef = useRef(0);
+  const bootstrapRef = useRef<WorkspaceBootstrap | null>(null);
+  const bootstrapPromiseRef = useRef<Promise<void> | null>(null);
+  const bootstrapRequestKeyRef = useRef<string | null>(null);
+  const lastBootstrapKeyRef = useRef<string | null>(null);
 
   const resetTenant = useCallback((userId: string | null) => {
     workspaceLoadGenerationRef.current += 1;
@@ -52,30 +74,66 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (savedWorkspaceId) workspaceIds.add(savedWorkspaceId);
     resetTenantData(userId, workspaceIds);
     knownWorkspaceIdsRef.current.clear();
+    bootstrapRef.current = null;
+    bootstrapPromiseRef.current = null;
+    bootstrapRequestKeyRef.current = null;
+    lastBootstrapKeyRef.current = null;
     window.localStorage.removeItem("mindgrow.workspace.v1");
     setActiveUserId(null);
     setActiveWorkspaceId(null);
     setSession(null);
     setWorkspaces([]);
     setCurrentWorkspace(null);
+    setBootstrap(null);
   }, []);
 
   const refreshWorkspaces = useCallback(async () => {
     if (IS_LOCAL_MODE) return;
     const loadGeneration = workspaceLoadGenerationRef.current;
-    const response = await apiFetch("/api/workspaces", { cache: "no-store" });
-    const data = await response.json();
-    if (loadGeneration !== workspaceLoadGenerationRef.current) return;
-    if (!response.ok) throw new Error(data.error || "工作区加载失败");
-    const rows = (data.workspaces || []) as Workspace[];
     const savedId = window.localStorage.getItem("mindgrow.workspace.v1");
-    const selected = rows.find((item) => item.id === savedId) || rows[0] || null;
-    knownWorkspaceIdsRef.current = new Set(rows.map((item) => item.id));
-    if (selected) window.localStorage.setItem("mindgrow.workspace.v1", selected.id);
-    else window.localStorage.removeItem("mindgrow.workspace.v1");
-    setWorkspaces(rows);
-    setCurrentWorkspace(selected);
-    setActiveWorkspaceId(selected?.id || null);
+    const requestKey = `${lastUserIdRef.current || "anonymous"}:${savedId || "default"}`;
+    if (lastBootstrapKeyRef.current === requestKey && bootstrapRef.current) return;
+    if (bootstrapPromiseRef.current && bootstrapRequestKeyRef.current === requestKey) {
+      await bootstrapPromiseRef.current;
+      return;
+    }
+
+    const request = (async () => {
+      const response = await apiFetch("/api/bootstrap", { cache: "no-store" });
+      const data = await response.json();
+      if (loadGeneration !== workspaceLoadGenerationRef.current) return;
+      if (!response.ok) throw new Error(data.error || "工作区加载失败");
+      const rows = (data.workspaces || []) as Workspace[];
+      const selected = (data.workspace || rows.find((item) => item.id === savedId) || rows[0] || null) as Workspace | null;
+      if (!selected) throw new Error("工作区加载失败");
+      const payload: WorkspaceBootstrap = {
+        user: data.user,
+        workspaces: rows,
+        workspace: selected,
+        maps: data.maps || [],
+        categories: data.categories || [],
+        defaultMap: data.defaultMap || null,
+        generatedAt: data.generatedAt || new Date().toISOString(),
+      };
+      knownWorkspaceIdsRef.current = new Set(rows.map((item) => item.id));
+      window.localStorage.setItem("mindgrow.workspace.v1", selected.id);
+      setActiveWorkspaceId(selected.id);
+      setWorkspaces(rows);
+      setCurrentWorkspace(selected);
+      bootstrapRef.current = payload;
+      lastBootstrapKeyRef.current = `${lastUserIdRef.current || "anonymous"}:${selected.id}`;
+      setBootstrap(payload);
+    })();
+    bootstrapPromiseRef.current = request;
+    bootstrapRequestKeyRef.current = requestKey;
+    try {
+      await request;
+    } finally {
+      if (bootstrapPromiseRef.current === request) {
+        bootstrapPromiseRef.current = null;
+        bootstrapRequestKeyRef.current = null;
+      }
+    }
   }, []);
 
   useEffect(() => {
@@ -171,6 +229,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "创建工作区失败");
     window.localStorage.setItem("mindgrow.workspace.v1", data.workspace.id);
+    setActiveWorkspaceId(data.workspace.id);
+    bootstrapRef.current = null;
+    lastBootstrapKeyRef.current = null;
+    setBootstrap(null);
     await refreshWorkspaces();
   }, [refreshWorkspaces]);
 
@@ -179,6 +241,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!selected) return;
     window.localStorage.setItem("mindgrow.workspace.v1", selected.id);
     setActiveWorkspaceId(selected.id);
+    bootstrapRef.current = null;
+    lastBootstrapKeyRef.current = null;
+    setBootstrap(null);
     setCurrentWorkspace(selected);
   }, [workspaces]);
 
@@ -188,6 +253,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     user: session?.user || null,
     workspaces,
     currentWorkspace,
+    bootstrap,
     message,
     signIn,
     signUp,
@@ -196,7 +262,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     createWorkspace,
     selectWorkspace,
     refreshWorkspaces,
-  }), [loading, session, workspaces, currentWorkspace, message, signIn, signUp, resendConfirmation, signOut, createWorkspace, selectWorkspace, refreshWorkspaces]);
+  }), [loading, session, workspaces, currentWorkspace, bootstrap, message, signIn, signUp, resendConfirmation, signOut, createWorkspace, selectWorkspace, refreshWorkspaces]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
