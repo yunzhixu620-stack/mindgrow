@@ -30,11 +30,12 @@ npm run check:deployment:production
 4. 线上 `/health.authRequired === true`；
 5. 线上 `/health.version` 与前端清单一致；
 6. 设置 `MINDGROW_EXPECTED_FRONTEND_SHA` 时，线上前端提交号必须完全匹配。
+7. 线上 `/health.gitSha` 必须是完整 40 位提交号，且 `checks.deploymentIdentity === "ready"`；设置 `MINDGROW_EXPECTED_API_GIT_SHA` 时必须精确匹配后端源码提交。
 
 ## CI
 
 - PR / main push：构建静态站点并校验本地产物；
 - 每小时两次：校验线上前端清单和 API health 的对应关系；
-- 手动发版验收：运行 `Deployment fact` workflow，并输入本次发布的完整 main SHA。
+- 手动发版验收：运行 `Deployment fact` workflow，输入本次前端发布的完整 main SHA，并输入本次后端源码提交的完整 SHA。
 
-后端 `/health.git_sha` 按 Owner 决定留到 S2.10；S2.3 不提前扩展后端运行时字段。
+后端 `/health.gitSha` 已在 S2.10 接入；阿里云环境变量 `MINDGROW_GIT_SHA` 必须指向实际部署源码的完整提交号。前端与后端可来自不同提交，两个输入分别校验，不把版本号或镜像文件冒充源码身份。

@@ -11,6 +11,7 @@ const mode = process.argv.includes("--production") ? "production" : "artifact";
 const frontendBaseUrl = (process.env.MINDGROW_FRONTEND_BASE_URL || "https://yunzhixu620-stack.github.io/mindgrow").replace(/\/$/, "");
 const apiBaseUrl = (process.env.MINDGROW_API_BASE || "https://mindgrow-api-eyippxdkkh.cn-hangzhou.fcapp.run").replace(/\/$/, "");
 const expectedFrontendSha = (process.env.MINDGROW_EXPECTED_FRONTEND_SHA || "").trim().toLowerCase();
+const expectedApiGitSha = (process.env.MINDGROW_EXPECTED_API_GIT_SHA || "").trim().toLowerCase();
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -20,6 +21,17 @@ function validateExpectedSha(fact) {
   if (!expectedFrontendSha) return;
   assert(/^[0-9a-f]{40}$/.test(expectedFrontendSha), "MINDGROW_EXPECTED_FRONTEND_SHA must be a full 40-character Git SHA");
   assert(fact.frontend.gitSha === expectedFrontendSha, `frontend SHA ${fact.frontend.gitSha} does not match expected ${expectedFrontendSha}`);
+}
+
+function validateApiGitSha(health) {
+  const gitSha = String(health?.gitSha || "").trim().toLowerCase();
+  assert(/^[0-9a-f]{40}$/.test(gitSha), "API health.gitSha must be a full 40-character Git SHA");
+  assert(health?.checks?.deploymentIdentity === "ready", "API health.checks.deploymentIdentity must be ready");
+  if (expectedApiGitSha) {
+    assert(/^[0-9a-f]{40}$/.test(expectedApiGitSha), "MINDGROW_EXPECTED_API_GIT_SHA must be a full 40-character Git SHA");
+    assert(gitSha === expectedApiGitSha, `API git SHA ${gitSha} does not match expected ${expectedApiGitSha}`);
+  }
+  return gitSha;
 }
 
 function verifyFact(fact) {
@@ -50,6 +62,7 @@ async function verifyProduction() {
   assert(health.authRequired === true, "API health.authRequired must be true");
   assert(health.version === expectedApiVersion, `API health version ${health.version || "missing"} does not match ${expectedApiVersion}`);
   assert(fact.api.expectedVersion === health.version, "frontend deployment fact and API health versions do not match");
+  const apiGitSha = validateApiGitSha(health);
 
   const report = {
     checkedAt: new Date().toISOString(),
@@ -57,13 +70,14 @@ async function verifyProduction() {
     apiBaseUrl,
     frontendGitSha: fact.frontend.gitSha,
     apiVersion: health.version,
+    apiGitSha,
     authRequired: health.authRequired,
     passed: true,
   };
   const artifactDir = path.join(projectRoot, "artifacts");
   fs.mkdirSync(artifactDir, { recursive: true });
   fs.writeFileSync(path.join(artifactDir, "deployment-fact-report.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");
-  console.log(`Production deployment fact passed: frontend ${fact.frontend.gitSha.slice(0, 7)}, API ${health.version}, auth required`);
+  console.log(`Production deployment fact passed: frontend ${fact.frontend.gitSha.slice(0, 7)}, API ${health.version} @ ${apiGitSha.slice(0, 7)}, auth required`);
 }
 
 async function main() {

@@ -11,6 +11,7 @@ const backendEntry = process.env.MINDGROW_LOCAL_BACKEND_ENTRY
 const backendPort = 9000;
 const backendBase = `http://127.0.0.1:${backendPort}`;
 const localApiVersion = process.env.MINDGROW_LOCAL_API_VERSION || readApiVersion();
+const localApiGitSha = process.env.MINDGROW_LOCAL_API_GIT_SHA || "0000000000000000000000000000000000000000";
 const allowedHealthTables = new Set([
   "maps",
   "document_chunks",
@@ -96,6 +97,7 @@ function startBackend(supabaseUrl) {
       AUTH_REQUIRED: "true",
       FC_SERVER_PORT: String(backendPort),
       MINDGROW_API_KEY: "local-smoke-model-key",
+      MINDGROW_GIT_SHA: localApiGitSha,
       NODE_ENV: "test",
       SUPABASE_KEY: "local-smoke-service-role-key",
       SUPABASE_URL: supabaseUrl,
@@ -144,6 +146,7 @@ function runLocalSmoke() {
         MINDGROW_API_BASE: backendBase,
         MINDGROW_ACCESS_TOKEN: "local-bootstrap-token",
         MINDGROW_BOOTSTRAP_ONLY: "true",
+        MINDGROW_EXPECTED_API_GIT_SHA: localApiGitSha,
       },
       stdio: "inherit",
     });
