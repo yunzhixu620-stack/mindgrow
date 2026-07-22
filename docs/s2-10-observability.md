@@ -21,6 +21,8 @@
 - 阿里云运行环境已显式设置为 `NODE_ENV=production`，避免生产环境缺失部署身份时被误判为可用。
 - 公网 `/health` 返回 `status=ok`、`version=10.11.0`、`gitSha=5ee87d450af8dc4a75fde169064ef5e2d5c96fd8`、`authRequired=true`、`nodeEnv=production`、`deploymentIdentity=ready`。
 - 公网 backend smoke 7/7 通过：CORS、依赖、版本与部署身份正常；匿名 bootstrap、知识库、PATCH、workspace 与 Audio Overview 均被应用鉴权拒绝。
+- GitHub Pages 已发布前端 `5dfff9632a76136b69c7c667d0318121319d69dc`（`gh-pages@cf341ca`）；production fact workflow `29953237638` 精确核对该前端 SHA 与后端 SHA，并通过。
+- 公网前端 E2E 7/7 通过；重新部署后阿里云 `LATEST` 常驻实例仍为实际 1 / 目标 1、运行正常。
 - 本次发布未修改数据库、RLS、用户知识内容、外部依赖或网络出口。
 
 ## 回滚
