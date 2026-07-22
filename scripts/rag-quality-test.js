@@ -294,7 +294,50 @@ check("deterministic entity fallback extracts only explicit article and meeting 
   assert(graph.relations.some((item) => item.type === "proposes"));
   assert(graph.relations.some((item) => item.status === "negated"));
   assert(graph.relations.some((item) => item.type === "responsible_for"));
-  graph.relations.forEach((item) => assert(item.citationIndexes.length > 0));
+  graph.entities.forEach((item) => {
+    assert(item.description.length >= 8);
+    assert(item.descriptionEvidence.length > 0);
+    assert(item.citationIndexes.length > 0);
+  });
+  graph.relations.forEach((item) => {
+    assert(item.shortLabel.length >= 2 && item.shortLabel.length <= 10);
+    assert(!/(?:证据|asserted|historical|negated|proposed)/i.test(item.shortLabel));
+    assert(item.explanation.length >= 8 && item.explanation.length <= 60);
+    assert(item.citationIndexes.length > 0);
+  });
+});
+
+check("deterministic definitions cover Chinese and English forms without admitting noise", () => {
+  const samples = [
+    ["GraphRAG", "GraphRAG 是一种结合实体关系与检索路径的知识检索方法。"],
+    ["DPR", "DPR 指使用双编码器进行稠密段落检索的方法。"],
+    ["BM25", "BM25 意为一种基于词项匹配的稀疏检索方法。"],
+    ["实体链接", "实体链接定义为把文本提及映射到规范实体的过程。"],
+    ["RAG", "RAG refers to retrieval-augmented generation for knowledge-intensive tasks."],
+    ["NLP", "NLP stands for Natural Language Processing in this document."],
+  ];
+  const citations = samples.map((sample, index) => ({
+    index: index + 1,
+    quote: sample[1],
+    content: sample[1],
+    locator: `sample ${index + 1}`,
+    sourceType: "text",
+  }));
+  const allowed = new Set(citations.map((item) => item.index));
+  const raw = deterministicEvidenceEntityGraph(citations, allowed);
+  const accepted = normalizedEntityGraph(raw, allowed, citations, { trustedDeterministic: true });
+  const acceptedNames = new Set(accepted.entities.map((item) => item.name));
+  samples.forEach(([name]) => assert(acceptedNames.has(name), `missing definition entity ${name}`));
+  const expectedUniqueNames = new Set(samples.map(([name]) => name)).size;
+  const retention = accepted.entities.length / expectedUniqueNames;
+  assert(retention >= 1, `definition retention ${retention.toFixed(2)} fell below baseline`);
+
+  const noise = "本段只讨论一般背景，没有定义、本文角色或实体关系。";
+  const empty = deterministicEvidenceEntityGraph([
+    { index: 99, quote: noise, content: noise, locator: "noise", sourceType: "text" },
+  ], new Set([99]));
+  assert.strictEqual(empty.entities.length, 0);
+  assert.strictEqual(empty.relations.length, 0);
 });
 
 check("GraphRAG query planning constrains relation types and hop counts", () => {
@@ -813,7 +856,7 @@ check("deterministic Chinese fallback keeps parsing available when localization 
   assert.strictEqual(fallback.mindMap.children.length, 1);
 });
 
-check("handler-boundary article recovery stays usable without admitting ungrounded fallback entities", () => {
+check("handler-boundary article recovery admits only grounded deterministic entities", () => {
   const content = "[PAGE 1]\nRetrieval-Augmented Generation for Knowledge-Intensive NLP Tasks\nAbstract\nLarge language models have limited access to explicit knowledge. Retrieval-augmented generation combines parametric and non-parametric memory. RAG uses DPR. DPR uses Wikipedia.\n1 Introduction\nThe retriever accesses Wikipedia passages.";
   const response = recoveredChineseArticleResponse({ content, sourceType: "pdf", fileName: "rag.pdf" }, { content, sourceType: "pdf", fileName: "rag.pdf" });
   assert.strictEqual(response.status, 200);
@@ -823,8 +866,17 @@ check("handler-boundary article recovery stays usable without admitting unground
   assert(response.data.citations.length > 0);
   assert(content.replace(/\s+/g, " ").includes(response.data.citations[0].quote.replace(/\s+/g, " ")));
   assert(response.data.mindMap.children.every((child) => child.citationIndexes.length > 0));
-  assert.strictEqual(response.data.entityGraph.entities.length, 0);
-  assert.strictEqual(response.data.entityGraph.relations.length, 0);
+  assert(response.data.entityGraph.entities.length >= 2);
+  assert(response.data.entityGraph.relations.length >= 1);
+  response.data.entityGraph.entities.forEach((entity) => {
+    assert(entity.description.length >= 8);
+    assert(entity.descriptionEvidence.length > 0);
+  });
+  response.data.entityGraph.relations.forEach((relation) => {
+    assert(relation.shortLabel.length >= 2);
+    assert(relation.explanation.length >= 8);
+    assert(relation.citationIndexes.length > 0);
+  });
 });
 
 check("conversation context is used only for real follow-up references", () => {

@@ -2168,7 +2168,7 @@ const RELATION_PREDICATE_PATTERNS = {
   achieves: /(?:达到|取得|实现|获得|achieves?|achieved|obtains?|obtained|reaches?|reached)/i,
   depends_on: /(?:依赖|取决于|depends?\s+on|relies?\s+on|requires?|required)/i,
   retrieves_from: /(?:从.{0,24}(?:检索|召回|获取)|检索自|retrieves?\s+from|retrieved\s+from|fetches?\s+from)/i,
-  has_metric: /(?:指标|衡量|度量|metric|measured\s+by|evaluated\s+with|reports?)/i,
+  has_metric: /(?:指标|衡量|度量|评估|评测|metric|measured\s+by|evaluated\s+with|reports?)/i,
   part_of: /(?:属于|组成部分|隶属于|part\s+of|component\s+of|belongs?\s+to)/i,
   contains: /(?:包含|包括|由.{0,24}组成|contains?|includes?|comprises?)/i,
   contains_concept: /(?:包含|包括|涵盖|contains?|includes?|covers?)/i,
@@ -2185,12 +2185,56 @@ const RELATION_PASSIVE_PATTERNS = {
   responsible_for: /(?:\b(?:is|are|was|were)?\s*(?:assigned|owned)\s+by\b|由)/i,
 };
 
-function escapeGraphRegExp(value) {
+function escapeRegExp(value) {
   return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function graphTextLength(value) {
   return Array.from(String(value || '').trim()).length;
+}
+
+function boundedEvidenceSpan(value, minimumLength, maximumLength) {
+  const text = normalizeSpaces(value);
+  const length = graphTextLength(text);
+  if (length < minimumLength || length > maximumLength) return '';
+  return text;
+}
+
+function graphEvidenceSentences(value) {
+  const text = normalizeSpaces(value);
+  if (!text) return [];
+  return (text.match(/[^。！？.!?;\n]+[。！？.!?;]?/g) || [text])
+    .map((sentence) => normalizeSpaces(sentence))
+    .filter(Boolean);
+}
+
+function sentenceDefinesEntity(sentence, name) {
+  const escapedName = escapeRegExp(String(name || '').trim());
+  if (!escapedName) return false;
+  return new RegExp(
+    `(^|[^a-z0-9])${escapedName}(?:\\s*[（(][^）)]{1,80}[）)])?\\s*(?:是|指|意为|定义为|\\bis\\b|refers?\\s+to\\b|(?:is\\s+)?defined\\s+as\\b|stands?\\s+for\\b)`,
+    'i',
+  ).test(String(sentence || ''));
+}
+
+function sentenceExplainsEntityRole(sentence, name) {
+  if (!normalizedTextMentions(sentence, name)) return false;
+  return Object.keys(RELATION_PREDICATE_PATTERNS).some((type) => (
+    RELATION_PREDICATE_PATTERNS[type].test(sentence)
+  ));
+}
+
+function deterministicEntityDescription(name, citation, preferredEvidence) {
+  const sourceText = String((citation && (citation.quote || citation.content)) || '');
+  const sourceSentences = graphEvidenceSentences(sourceText);
+  const definition = sourceSentences.find((sentence) => sentenceDefinesEntity(sentence, name));
+  if (definition) return boundedEvidenceSpan(definition, 8, 80);
+  const candidates = [preferredEvidence, ...sourceSentences];
+  for (const candidate of candidates) {
+    const bounded = boundedEvidenceSpan(candidate, 8, 80);
+    if (bounded && sentenceExplainsEntityRole(bounded, name)) return bounded;
+  }
+  return '';
 }
 
 function graphEvidenceRows(indexes, evidence) {
@@ -2210,7 +2254,7 @@ function normalizedTextMentions(value, candidate) {
   const term = normalizeForExactMatch(candidate);
   if (!text || !term) return false;
   if (/^[a-z0-9_.+-]+$/i.test(term)) {
-    return new RegExp(`(^|[^a-z0-9])${escapeGraphRegExp(term)}([^a-z0-9]|$)`, 'i').test(text);
+    return new RegExp(`(^|[^a-z0-9])${escapeRegExp(term)}([^a-z0-9]|$)`, 'i').test(text);
   }
   return text.includes(term);
 }
@@ -2310,7 +2354,9 @@ function relationEvidenceSupports(type, rows, sourceEntity, targetEntity) {
         const targetIndex = normalized.indexOf(normalizeForExactMatch(targetName));
         if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return false;
         if (sourceIndex < targetIndex) {
-          const between = normalized.slice(sourceIndex, targetIndex + normalizeForExactMatch(targetName).length);
+          const targetEnd = targetIndex + normalizeForExactMatch(targetName).length;
+          const trailingPredicateAllowance = type === 'retrieves_from' || type === 'evaluated_on' ? 32 : 0;
+          const between = normalized.slice(sourceIndex, targetEnd + trailingPredicateAllowance);
           return predicate.test(between) && !(passive && passive.test(between));
         }
         const between = normalized.slice(targetIndex, sourceIndex + normalizeForExactMatch(sourceName).length);
@@ -2320,9 +2366,10 @@ function relationEvidenceSupports(type, rows, sourceEntity, targetEntity) {
   });
 }
 
-function normalizedEntityGraph(value, allowedIndexes, citations) {
+function normalizedEntityGraph(value, allowedIndexes, citations, options) {
   const input = value && typeof value === 'object' ? value : {};
   const evidence = Array.isArray(citations) ? citations : [];
+  const trustedDeterministic = Boolean(options && options.trustedDeterministic);
   const entities = (Array.isArray(input.entities) ? input.entities : []).slice(0, 40).map((item, index) => {
     const name = String((item && (item.name || item.canonicalName)) || '').trim().slice(0, 300);
     const rawDescription = String((item && item.description) || '').trim().slice(0, 1200);
@@ -2342,7 +2389,8 @@ function normalizedEntityGraph(value, allowedIndexes, citations) {
     const entityCandidate = { name, aliases };
     const grounding = entityDescriptionGroundingStats(rawDescription, descriptionRows);
     const descriptionLength = graphTextLength(rawDescription);
-    const description = descriptionLength >= 30 && descriptionLength <= 80
+    const minimumDescriptionLength = trustedDeterministic ? 8 : 30;
+    const description = descriptionLength >= minimumDescriptionLength && descriptionLength <= 80
       && descriptionEvidence.length > 0
       && evidenceMentionsEntity(descriptionRows, entityCandidate)
       && (grounding.supportedByMinimumAnchors || grounding.supportedByCoverageThreshold)
@@ -2375,7 +2423,9 @@ function normalizedEntityGraph(value, allowedIndexes, citations) {
     const shortLabel = validRelationShortLabel(item && item.shortLabel, sourceEntity, targetEntity)
       ? String(item.shortLabel).trim()
       : (RELATION_SHORT_LABELS[type] || RELATION_SHORT_LABELS.related_to);
-    const explanation = boundedRelationExplanation(item && item.explanation);
+    const explanation = trustedDeterministic
+      ? boundedEvidenceSpan(item && item.explanation, 8, 60)
+      : boundedRelationExplanation(item && item.explanation);
     const rawStatus = String((item && item.status) || 'asserted').trim().toLowerCase();
     const status = RELATION_STATUSES.has(rawStatus) ? rawStatus : 'asserted';
     const citationIndexes = verifiedIndexes(
@@ -2386,7 +2436,8 @@ function normalizedEntityGraph(value, allowedIndexes, citations) {
     const supported = sourceEntity && targetEntity
       && relationEvidenceSupports(type, relationRows, sourceEntity, targetEntity)
       && explanation
-      && explanationGrounding.supportedByMinimumAnchors
+      && (explanationGrounding.supportedByMinimumAnchors
+        || (trustedDeterministic && explanationGrounding.supportedByCoverageThreshold))
       && explanationGrounding.numbersSupported
       && explanationGrounding.polaritySupported;
     const confidence = Math.min(1, Math.max(0, Number(item && item.confidence) || 0.7));
@@ -2640,6 +2691,7 @@ function recoveredChineseArticleResponse(body, context) {
   const allowedIndexes = new Set(citations.map((item) => item.index));
   const entityGraph = normalizedEntityGraph(
     deterministicEvidenceEntityGraph(citations, allowedIndexes), allowedIndexes, citations,
+    { trustedDeterministic: true },
   );
   const indexes = citations.slice(0, 3).map((item) => item.index);
   const citationAt = (position) => indexes.length ? [indexes[Math.min(position, indexes.length - 1)]] : [];
@@ -3040,16 +3092,23 @@ function deterministicEvidenceEntityGraph(citations, allowedIndexes) {
     if (/\d{4}[-年/]\d{1,2}/.test(name)) return 'time';
     return 'concept';
   };
-  const addEntity = (rawName, citation, hint) => {
+  const addEntity = (rawName, citation, hint, preferredEvidence) => {
     let name = cleanName(rawName);
     name = name.replace(/(?:分别|并且|并|来|以).{0,40}$/g, '').trim();
     if (!name || name.length < 2 || !citation || !allowedIndexes.has(citation.index)) return null;
     const quote = String(citation.quote || citation.content || '');
     if (!quote.toLowerCase().includes(name.toLowerCase())) return null;
+    const description = deterministicEntityDescription(name, citation, preferredEvidence);
+    if (!description) return null;
     const key = name.toLowerCase().replace(/[\s_-]+/g, '');
     if (entityByKey.has(key)) {
       const existing = entityByKey.get(key);
       if (!existing.citationIndexes.includes(citation.index)) existing.citationIndexes.push(citation.index);
+      if (!existing.descriptionEvidence.includes(citation.index)
+        && sentenceDefinesEntity(description, name)) {
+        existing.description = description;
+        existing.descriptionEvidence = [citation.index];
+      }
       return existing;
     }
     const entity = {
@@ -3057,7 +3116,8 @@ function deterministicEvidenceEntityGraph(citations, allowedIndexes) {
       name,
       type: entityType(name, hint),
       aliases: [],
-      description: '',
+      description,
+      descriptionEvidence: [citation.index],
       citationIndexes: [citation.index],
       confidence: 0.72,
     };
@@ -3065,18 +3125,30 @@ function deterministicEvidenceEntityGraph(citations, allowedIndexes) {
     entityByKey.set(key, entity);
     return entity;
   };
-  const addRelation = (rawSource, rawTarget, type, label, status, citation, sourceHint, targetHint) => {
-    const source = addEntity(rawSource, citation, sourceHint);
-    const target = addEntity(rawTarget, citation, targetHint);
+  const addRelation = (rawSource, rawTarget, type, status, citation, sourceHint, targetHint, rawEvidence) => {
+    const evidence = boundedEvidenceSpan(rawEvidence, 8, 120);
+    if (!evidence) return;
+    const source = addEntity(rawSource, citation, sourceHint, evidence);
+    const target = addEntity(rawTarget, citation, targetHint, evidence);
     if (!source || !target || source.tempId === target.tempId) return;
+    if (!relationEvidenceSupports(type, [{ quote: evidence }], source, target)) return;
     const key = `${source.tempId}|${target.tempId}|${type}|${status || 'asserted'}`;
     if (relations.some((item) => item._key === key)) return;
+    const shortLabel = RELATION_SHORT_LABELS[type] || RELATION_SHORT_LABELS.related_to;
+    const explanation = boundedEvidenceSpan(
+      `${source.name}${status === 'negated' ? '不是' : shortLabel}${target.name}`,
+      8,
+      60,
+    );
+    if (!explanation) return;
     relations.push({
       _key: key,
       source: source.tempId,
       target: target.tempId,
       type,
-      label,
+      shortLabel,
+      label: shortLabel,
+      explanation,
       status: status || 'asserted',
       citationIndexes: [citation.index],
       confidence: 0.72,
@@ -3093,28 +3165,36 @@ function deterministicEvidenceEntityGraph(citations, allowedIndexes) {
 
   (Array.isArray(citations) ? citations : []).slice(0, 36).forEach((citation) => {
     const text = String(citation.quote || citation.content || '');
+    graphEvidenceSentences(text).forEach((sentence) => {
+      run(/(?:^|[，,:：；;]\s*)([A-Za-z][A-Za-z0-9@.+-]{1,40}|[\u4e00-\u9fff]{2,16})\s*(?:（[^）]{1,80}）|\([^)]{1,80}\))?\s*(?:是|指|意为|定义为)\s*[^。！？!?;\n]{2,70}/g, sentence, (match) => {
+        addEntity(match[1], citation, undefined, match[0]);
+      });
+      run(/(?:^|[,:;]\s*)([A-Z][A-Za-z0-9@.+-]{1,40}(?:\s+[A-Z][A-Za-z0-9@.+-]{1,40}){0,4})\s+(?:is|refers?\s+to|(?:is\s+)?defined\s+as|stands?\s+for)\b[^.!?;\n]{2,70}/gi, sentence, (match) => {
+        addEntity(match[1], citation, undefined, match[0]);
+      });
+    });
     run(/\b([A-Za-z][A-Za-z0-9@.+-]{1,30})\b\s*(?:的[^，。！？!?\n]{0,16})?(使用|采用|依赖)\s*([A-Za-z][A-Za-z0-9@.+-]{1,30}|[\u4e00-\u9fff]{2,16})/g, text, (match) => {
       const type = match[2] === '依赖' ? 'depends_on' : 'uses';
-      addRelation(match[1], match[3], type, match[2], 'asserted', citation);
+      addRelation(match[1], match[3], type, 'asserted', citation, undefined, undefined, match[0]);
     });
     run(/\b([A-Za-z][A-Za-z0-9@.+-]{1,30})\b[^。！？!?\n]{0,50}?从\s*([A-Za-z][A-Za-z0-9.+-]{1,30})\s*(?:索引)?(?:中)?检索/g, text, (match) => {
-      addRelation(match[1], match[2], 'retrieves_from', '检索自', 'asserted', citation);
+      addRelation(match[1], match[2], 'retrieves_from', 'asserted', citation, undefined, undefined, match[0]);
     });
     run(/\b([A-Za-z][A-Za-z0-9@.+-]{1,30})\b[^，。！？!?\n]{0,96}?由\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\s*(?:等人)?[^，。！？!?\n]{0,20}?提出/g, text, (match) => {
-      addRelation(match[2], match[1], 'proposes', '提出', 'historical', citation, 'person');
+      addRelation(match[2], match[1], 'proposes', 'historical', citation, 'person', undefined, match[0]);
     });
     run(/([A-Z][A-Za-z0-9.+-]+(?:\s+[A-Z][A-Za-z0-9.+-]+){0,3})\s*数据集上评估\s*([A-Za-z][A-Za-z0-9@.+-]{1,30})/g, text, (match) => {
-      addRelation(match[1], match[2], 'has_metric', '评测指标', 'asserted', citation, 'dataset', 'metric');
+      addRelation(match[1], match[2], 'has_metric', 'asserted', citation, 'dataset', 'metric', match[0]);
     });
     run(/\b([A-Za-z][A-Za-z0-9@.+-]{1,30})\b\s*不是\s*([^，。！？!?\n]{2,24})/g, text, (match) => {
-      addRelation(match[1], match[2], 'is', '不是', 'negated', citation);
+      addRelation(match[1], match[2], 'is', 'negated', citation, undefined, undefined, match[0]);
     });
     run(/\b([A-Z][A-Za-z0-9@.+-]{1,30})\b\s+(uses|adopts|depends on|relies on)\s+([A-Z][A-Za-z0-9@.+-]{1,30})\b/gi, text, (match) => {
       const depends = /depends|relies/i.test(match[2]);
-      addRelation(match[1], match[3], depends ? 'depends_on' : 'uses', depends ? '依赖' : '使用', 'asserted', citation);
+      addRelation(match[1], match[3], depends ? 'depends_on' : 'uses', 'asserted', citation, undefined, undefined, match[0]);
     });
     run(/(?:^|[，。；;\n])([\u4e00-\u9fff]{2,4})\s*(?:将负责|负责)\s*([^，。；;\n]{2,32})/gm, text, (match) => {
-      addRelation(match[1], match[2], 'responsible_for', '负责', 'asserted', citation, 'person', 'task');
+      addRelation(match[1], match[2], 'responsible_for', 'asserted', citation, 'person', 'task', match[0]);
     });
   });
 
@@ -3155,6 +3235,7 @@ async function ensureEvidenceEntityGraph(value, allowedIndexes, citations, sourc
   }
   const deterministic = normalizedEntityGraph(
     deterministicEvidenceEntityGraph(citations, allowedIndexes), allowedIndexes, citations,
+    { trustedDeterministic: true },
   );
   if (deterministic.relations.length > primary.relations.length
     || (primary.entities.length === 0 && deterministic.entities.length > 0)) return deterministic;
@@ -3244,7 +3325,7 @@ async function handleMeetingTool(body) {
     ...actionItems.map((item, index) => ({ id: `action-${index + 1}`, section: 'evidence', text: `${item.task} ${item.owner} ${item.due}`, citationIndexes: item.citationIndexes })),
   ], citations);
   const entityGraph = usedDeterministicFallback
-    ? normalizedEntityGraph(parsed.entityGraph, allowedIndexes, citations)
+    ? normalizedEntityGraph(parsed.entityGraph, allowedIndexes, citations, { trustedDeterministic: true })
     : await ensureEvidenceEntityGraph(parsed.entityGraph, allowedIndexes, citations, 'meeting');
   return {
     status: 200,
