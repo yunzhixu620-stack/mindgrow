@@ -106,6 +106,20 @@ check("LLM Wiki entities and relations require direct source evidence", () => {
   assert.deepStrictEqual(graph.relations[0].citationIndexes, [2]);
 });
 
+check("entity extraction prompt requires explainable descriptions and concise relations", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "fc-proxy", "index.js"), "utf8");
+  assert.match(source, /"descriptionEvidence":\[1\]/);
+  assert.match(source, /descriptionEvidence 与证明实体出现或其他事实的 citationIndexes 职责不同/);
+  assert.match(source, /原文不能支持解释时，description 输出空字符串且 descriptionEvidence 输出空数组/);
+  assert.match(source, /不强制生成中英文双别名/);
+  assert.match(source, /"shortLabel":"中文 2-10 字关系词"/);
+  assert.match(source, /"explanation":"20-60 字说明关系方向和具体含义"/);
+  assert.match(source, /证据必须同时支持 source、target 以及关系谓词和方向/);
+  assert.match(source, /shortLabel 中文为 2-10 字，其他语言为 2-20 字/);
+  assert.match(source, /不得包含状态、证据数或实体名称/);
+  assert.match(source, /label 仅用于旧数据兼容，新输出以 shortLabel 为准/);
+});
+
 check("article and meeting tools retry evidence-only entity extraction when the primary model omits relations", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "fc-proxy", "index.js"), "utf8");
   assert.match(source, /async function ensureEvidenceEntityGraph/);

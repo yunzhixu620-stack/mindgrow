@@ -54,6 +54,9 @@ export interface AIEntityGraphEntity {
   type: string;
   aliases?: string[];
   description?: string;
+  /** Dedicated evidence for the contextual description; never infer this from citationIndexes. */
+  descriptionEvidence?: number[];
+  /** Evidence that the entity occurs in the source or supports its extracted facts. */
   citationIndexes?: number[];
   confidence?: number;
 }
@@ -62,6 +65,11 @@ export interface AIEntityGraphRelation {
   source: string;
   target: string;
   type: string;
+  /** Primary human-readable relation label for newly generated graphs. */
+  shortLabel?: string;
+  /** Source-grounded explanation of the relation direction and meaning. */
+  explanation?: string;
+  /** Legacy compatibility only; new output should use shortLabel. */
   label?: string;
   status?: "asserted" | "historical" | "negated" | "proposed";
   citationIndexes?: number[];
