@@ -10,6 +10,8 @@
     "lint": "eslint . --ext .js,.ts,.tsx --max-warnings=0",
     "test:unit": "vitest run --reporter=default",
     "test:unit:watch": "vitest",
+    "test:entity-quality": "vitest run src/lib/__tests__/entity-quality-benchmark.test.ts --reporter=verbose",
+    "benchmark:entity-quality:live": "node scripts/entity-quality-live.js",
     "test:e2e:local": "node scripts/e2e-local.js",
     "test:e2e:multi-tenant": "node scripts/e2e-multi-tenant.js",
     "test:e2e:public": "node scripts/e2e-public.js",
