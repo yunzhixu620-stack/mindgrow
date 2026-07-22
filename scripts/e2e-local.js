@@ -105,6 +105,18 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     if (count !== 13) throw new Error(`Expected 13 stored seed nodes, got ${count}`);
   });
 
+  await check("graph hover keeps one-hop neighbors readable and dims unrelated nodes", async () => {
+    const nodeCount = await page.$$eval(".react-flow__node", (nodes) => nodes.length);
+    if (nodeCount < 3) throw new Error("Hover focus fixture needs at least three visible nodes");
+    await page.hover(".react-flow__node");
+    await page.waitForFunction(() => Array.from(document.querySelectorAll(".react-flow__node")).some((node) => Number(node.style.opacity) === 0.25));
+    const focusStyles = await page.$$eval(".react-flow__node", (nodes) => nodes.map((node) => ({ opacity: node.style.opacity, transition: node.style.transition })));
+    if (!focusStyles.some((style) => Number(style.opacity) === 1)) throw new Error("Hovered node and one-hop neighbors were not kept at full opacity");
+    if (!focusStyles.every((style) => style.transition.includes("opacity"))) throw new Error("Graph nodes do not use the 200ms opacity transition");
+    await page.hover("header");
+    await page.waitForFunction(() => Array.from(document.querySelectorAll(".react-flow__node")).every((node) => node.style.opacity !== "0.25"));
+  });
+
   await check("usage guide button opens the guide from the application", async () => {
     try {
       const guide = await page.$('[data-testid="guide-link"]');
