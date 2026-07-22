@@ -10,6 +10,8 @@ import { MODE_LIBRARY_CONFIG, isMapForMode, modeLibraryDescription } from "@/lib
 import Link from "next/link";
 import { OrganizeLibraryDialog } from "@/components/layout/organize-library-dialog";
 import { COMMAND_PALETTE_OPEN_EVENT } from "@/lib/command-search";
+import { useAuth } from "@/components/auth/auth-provider";
+import { needsLibraryOrganization } from "@/lib/knowledge-organizer";
 
 // ============================================================
 // Category header (collapsible folder)
@@ -236,6 +238,7 @@ interface SidebarProps {
 }
 
 export function Sidebar({ onSwitchMap, onMapCreated }: SidebarProps) {
+  const { user, currentWorkspace } = useAuth();
   const {
     maps,
     currentMapId,
@@ -538,7 +541,10 @@ export function Sidebar({ onSwitchMap, onMapCreated }: SidebarProps) {
     category: cat,
     maps: visibleMaps.filter((m) => m.categoryId === cat.id),
   }));
-  const needsOrganizing = currentMode === "knowledge" && (uncategorizedMaps.length >= 4 || (visibleMaps.length >= 12 && categories.length < 2));
+  const needsOrganizing = currentMode === "knowledge" && needsLibraryOrganization(visibleMaps.length, uncategorizedMaps.length, categories.length);
+  const organizerScopeKey = user?.id && currentWorkspace?.id
+    ? `${user.id}:${currentWorkspace.id}`
+    : "local-user:local-workspace";
 
   const MAP_COLORS = ["#22d3a7", "#38bdf8", "#818cf8", "#f472b6", "#fb923c", "#a3e635", "#e879f9", "#f87171"];
 
@@ -905,6 +911,7 @@ export function Sidebar({ onSwitchMap, onMapCreated }: SidebarProps) {
         <OrganizeLibraryDialog
           maps={visibleMaps}
           categories={categories}
+          organizerScopeKey={organizerScopeKey}
           onClose={() => setShowOrganizer(false)}
           onDone={reloadOrganization}
         />

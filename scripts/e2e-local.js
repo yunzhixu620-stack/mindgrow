@@ -1040,8 +1040,8 @@ const expandOneVisibleLevel = async (page, previousCount) => {
         await page.waitForSelector('[data-result-group="entities"] [data-result-kind="entity"]');
       });
       await entityStage("Ctrl+K 详情定位", async () => {
-        await page.click('[data-result-group="entities"] [data-result-kind="entity"]');
         try {
+          await page.$eval('[data-result-group="entities"] [data-result-kind="entity"]', (button) => button.click());
           await page.waitForSelector('[data-testid="entity-detail-panel"]', { timeout: 6000 });
         } catch (error) {
           const diagnostic = await page.evaluate(() => ({
@@ -1144,10 +1144,27 @@ const expandOneVisibleLevel = async (page, previousCount) => {
   await check("one-click organizer previews, applies, and restores the prior structure", async () => {
     await clickByText(page, "button", "知识碎片");
     await page.waitForSelector('[data-testid="knowledge-graph-workspace"][data-graph-mode="knowledge"]');
-    const beforeAssignments = await page.evaluate(() => {
+    const beforeState = await page.evaluate(() => {
       const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
-      return Object.fromEntries(state.maps.filter((map) => !(map.description || "").includes("[MindGrow:")).map((map) => [map.id, map.categoryId || null]));
+      return {
+        assignments: Object.fromEntries(state.maps.filter((map) => !(map.description || "").includes("[MindGrow:")).map((map) => [map.id, map.categoryId || null])),
+        categoryIds: state.categories.map((category) => category.id).sort(),
+      };
     });
+    await page.click('[data-testid="open-library-organizer"]');
+    await page.waitForSelector('[data-testid="organize-library-dialog"]');
+    const applyDisabledBeforePreview = await page.$eval('[data-testid="organize-apply"]', (button) => button.disabled);
+    if (!applyDisabledBeforePreview) throw new Error("Organizer could mutate the library without a preview");
+    await page.click('[data-testid="organize-close"]');
+    await page.waitForFunction(() => !document.querySelector('[data-testid="organize-library-dialog"]'));
+    const stateAfterClose = await page.evaluate(() => {
+      const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+      return {
+        assignments: Object.fromEntries(state.maps.filter((map) => !(map.description || "").includes("[MindGrow:")).map((map) => [map.id, map.categoryId || null])),
+        categoryIds: state.categories.map((category) => category.id).sort(),
+      };
+    });
+    if (JSON.stringify(beforeState) !== JSON.stringify(stateAfterClose)) throw new Error("Opening and closing the organizer changed the library");
     await page.click('[data-testid="open-library-organizer"]');
     await page.waitForSelector('[data-testid="organize-library-dialog"]');
     await page.click('[data-testid="organize-mode-workflow"]');
@@ -1155,16 +1172,36 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     await page.waitForSelector('[data-testid="organize-preview"]');
     const previewCategoryCount = await page.$$eval('[data-testid="organize-preview"] input', (inputs) => inputs.length);
     if (previewCategoryCount < 1) throw new Error("Organizer preview did not create any directory");
+    const assignmentSelectCount = await page.$$eval('[data-testid="organize-preview"] select', (selects) => selects.length);
+    await page.$eval('[data-testid="organize-preview"] select', (select) => {
+      select.value = "";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await page.waitForSelector('[data-testid="organize-kept-maps"]');
+    if (assignmentSelectCount === 1) {
+      const fallbackCategory = await page.$eval('[data-testid="organize-kept-maps"] select', (select) => Array.from(select.options).find((option) => option.value)?.value || "");
+      if (!fallbackCategory) throw new Error("Organizer preview did not expose a category for manual reassignment");
+      await page.select('[data-testid="organize-kept-maps"] select', fallbackCategory);
+    }
+    await page.waitForFunction(() => !document.querySelector('[data-testid="organize-apply"]')?.disabled);
     await page.screenshot({ path: path.join(artifactDir, "desktop-organizer-preview.png") });
     await page.click('[data-testid="organize-apply"]');
-    await page.waitForFunction(() => document.querySelector('[data-testid="organize-status"]')?.textContent.includes("已整理"));
+    await page.waitForFunction(() => {
+      const text = document.querySelector('[data-testid="organize-status"]')?.textContent || "";
+      return text.includes("已整理") || text.includes("未完成") || text.includes("填写") || text.includes("不能重复");
+    });
+    const applyStatus = await page.$eval('[data-testid="organize-status"]', (element) => element.textContent || "");
+    if (!applyStatus.includes("已整理")) throw new Error(`Organizer apply failed after manual adjustment: ${applyStatus}`);
     await page.click('[data-testid="organize-undo"]');
     await page.waitForFunction(() => document.querySelector('[data-testid="organize-status"]')?.textContent.includes("已恢复"));
-    const afterAssignments = await page.evaluate(() => {
+    const afterState = await page.evaluate(() => {
       const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
-      return Object.fromEntries(state.maps.filter((map) => !(map.description || "").includes("[MindGrow:")).map((map) => [map.id, map.categoryId || null]));
+      return {
+        assignments: Object.fromEntries(state.maps.filter((map) => !(map.description || "").includes("[MindGrow:")).map((map) => [map.id, map.categoryId || null])),
+        categoryIds: state.categories.map((category) => category.id).sort(),
+      };
     });
-    if (JSON.stringify(beforeAssignments) !== JSON.stringify(afterAssignments)) throw new Error("Undo did not restore knowledge-library categories");
+    if (JSON.stringify(beforeState) !== JSON.stringify(afterState)) throw new Error("Undo did not restore knowledge-library categories");
     await page.click('[data-testid="organize-close"]');
     await page.waitForFunction(() => !document.querySelector('[data-testid="organize-library-dialog"]'));
   });
