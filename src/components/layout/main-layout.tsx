@@ -6,8 +6,13 @@ import { usePathname } from "next/navigation";
 import { AuthProvider, useAuth } from "@/components/auth/auth-provider";
 import { AuthScreen } from "@/components/auth/auth-screen";
 import { IS_LOCAL_MODE } from "@/lib/client-api";
+import { warmupHealth } from "@/lib/warmup";
 
 export function MainLayout({ children }: { children: React.ReactNode }) {
+  useEffect(() => {
+    void warmupHealth();
+  }, []);
+
   return <AuthProvider><AuthenticatedLayout>{children}</AuthenticatedLayout></AuthProvider>;
 }
 
