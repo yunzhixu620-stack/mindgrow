@@ -210,12 +210,14 @@ export default function Home() {
 
   useEffect(() => {
     if (!currentWorkspaceDefaultMapId || !tenantScope) return;
+    const requestedMode = useMindGrowStore.getState().currentMode;
     ++mapLoadRequestRef.current;
     mapLoadAbortRef.current?.abort();
     prefetchAbortRef.current?.abort();
     prefetchedMapKeysRef.current.clear();
     useMindGrowStore.getState().resetTenantContext();
-    activeModeRef.current = "knowledge";
+    if (requestedMode !== "knowledge") setCurrentMode(requestedMode);
+    activeModeRef.current = requestedMode;
     lastMapByModeRef.current = { knowledge: currentWorkspaceDefaultMapId };
     setMapCatalogReady(false);
     setConfirmedGraphKey(null);
@@ -243,7 +245,7 @@ export default function Home() {
       bootstrapFreshGraphKeyRef.current = graphKey;
       setConfirmedGraphKey(graphKey);
     }
-  }, [activeTenantScopeKey, bootstrapForTenant, currentWorkspaceDefaultMapId, setCategories, setCurrentMapId, setMaps, tenantScope]);
+  }, [activeTenantScopeKey, bootstrapForTenant, currentWorkspaceDefaultMapId, setCategories, setCurrentMapId, setCurrentMode, setMaps, tenantScope]);
 
   useEffect(() => tenantCache.subscribe((event) => {
     if (event.type === "tenant-cleared") prefetchedMapKeysRef.current.clear();
