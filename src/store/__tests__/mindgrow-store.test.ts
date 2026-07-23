@@ -36,6 +36,17 @@ beforeEach(() => {
 });
 
 describe("MindGrow Store graph channels", () => {
+  it("updates the persisted node count shown for one map without changing other maps", () => {
+    useMindGrowStore.getState().setMaps([
+      { id: "map-a", name: "A", description: "", mode: "knowledge", canvasView: "mindmap", color: "#0f0", isDefault: false, categoryId: null, nodeCount: 0, createdAt, updatedAt: createdAt },
+      { id: "map-b", name: "B", description: "", mode: "article", canvasView: "mindmap", color: "#00f", isDefault: false, categoryId: null, nodeCount: 3, createdAt, updatedAt: createdAt },
+    ]);
+
+    useMindGrowStore.getState().updateMapNodeCount("map-a", 6);
+
+    expect(useMindGrowStore.getState().maps.map((map) => map.nodeCount)).toEqual([6, 3]);
+  });
+
   it("hydrates an active map from a matching server request and protects the cached copy", () => {
     selectMap();
     const store = useMindGrowStore.getState();

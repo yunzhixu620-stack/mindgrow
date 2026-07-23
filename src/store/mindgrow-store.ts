@@ -59,6 +59,7 @@ export interface MindGrowState {
   maps: MindMap[];
   setMaps: (maps: MindMap[]) => void;
   addMap: (map: MindMap) => void;
+  updateMapNodeCount: (mapId: string, nodeCount: number) => void;
 
   // Categories
   categories: Category[];
@@ -231,6 +232,11 @@ export const useMindGrowStore = create<MindGrowState>((set, get) => ({
   maps: [],
   setMaps: (maps) => set({ maps }),
   addMap: (map) => set((state) => ({ maps: [map, ...state.maps] })),
+  updateMapNodeCount: (mapId, nodeCount) => set((state) => ({
+    maps: state.maps.map((map) => (
+      map.id === mapId ? { ...map, nodeCount: Math.max(0, nodeCount) } : map
+    )),
+  })),
 
   categories: [],
   setCategories: (cats) => set({ categories: cats }),

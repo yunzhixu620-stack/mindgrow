@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useMindGrowStore } from "@/store/mindgrow-store";
 import { ChatMessage, AIMindMap } from "@/types";
 import { apiFetch, IS_LOCAL_MODE } from "@/lib/client-api";
+import { buildSelectedMindMap } from "@/lib/knowledge-selection";
 import { useSpeechInput } from "@/hooks/use-speech-input";
 import { useLocale } from "@/components/i18n/locale-provider";
 
@@ -379,6 +380,7 @@ export function ChatPanel() {
     setPendingPlacement,
     setNodes,
     setEdges,
+    updateMapNodeCount,
   } = useMindGrowStore();
 
   const [input, setInput] = useState("");
@@ -518,20 +520,7 @@ export function ChatPanel() {
     const requestMapId = currentMapId;
 
     // Build filtered mindMap with only selected nodes
-    const filteredMindMap = {
-      root: pendingMindMap.root,
-      rootDesc: pendingMindMap.rootDesc,
-      rootType: pendingMindMap.rootType,
-      children: selectedChildren
-        .filter((s) => s.items.length > 0)
-        .map((s) => ({
-          topic: pendingMindMap.children[s.childIdx].topic,
-          desc: pendingMindMap.children[s.childIdx].desc,
-          type: pendingMindMap.children[s.childIdx].type,
-          items: s.items,
-        })),
-      relatedTopics: pendingMindMap.relatedTopics,
-    };
+    const filteredMindMap = buildSelectedMindMap(pendingMindMap, selectedChildren);
 
     // Skip if no children selected
     if (filteredMindMap.children.length === 0) {
@@ -570,6 +559,7 @@ export function ChatPanel() {
           if (current.currentMode === "knowledge" && current.currentMapId === requestMapId) {
             setNodes(nodes);
             setEdges(edges);
+            updateMapNodeCount(requestMapId, Array.isArray(nodes) ? nodes.length : 0);
           }
         }
         const current = useMindGrowStore.getState();
@@ -601,7 +591,7 @@ export function ChatPanel() {
       }
       setConfirming(false);
     }
-  }, [pendingMindMap, pendingPlacement, confirming, currentMapId, setNodes, setEdges, addMessage, setPendingMindMap, setPendingPlacement]);
+  }, [pendingMindMap, pendingPlacement, confirming, currentMapId, setNodes, setEdges, updateMapNodeCount, addMessage, setPendingMindMap, setPendingPlacement]);
 
   const handleCancel = useCallback(() => {
     setPendingMindMap(null);

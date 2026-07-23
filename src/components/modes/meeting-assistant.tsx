@@ -84,6 +84,7 @@ export function MeetingAssistant() {
   const setNodes = useMindGrowStore((state) => state.setNodes);
   const setEdges = useMindGrowStore((state) => state.setEdges);
   const setEntityGraph = useMindGrowStore((state) => state.setEntityGraph);
+  const updateMapNodeCount = useMindGrowStore((state) => state.updateMapNodeCount);
   const [title, setTitle] = useState("");
   const [participants, setParticipants] = useState("");
   const [transcript, setTranscript] = useState("");
@@ -157,7 +158,13 @@ export function MeetingAssistant() {
       const reload = await apiFetch(`/api/knowledge?mapId=${encodeURIComponent(savedMapId)}`);
       const graph = await reload.json();
       if (!isActiveMeetingMap(savedMapId)) return;
-      if (reload.ok) { setNodes(graph.nodes || []); setEdges(graph.edges || []); setEntityGraph(graph.entityGraph || { entities: [], relations: [] }); }
+      if (reload.ok) {
+        const savedNodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+        setNodes(savedNodes);
+        setEdges(graph.edges || []);
+        setEntityGraph(graph.entityGraph || { entities: [], relations: [] });
+        updateMapNodeCount(savedMapId, savedNodes.length);
+      }
       setConfirmed(true);
       setNotice(english
         ? `Saved ${data.totalNodes || 0} meeting nodes, ${data.totalCitations || 0} citations, ${data.entityCount || 0} entities, ${data.relationCount || 0} grounded relations, and ${data.indexedChunks || 0} searchable chunks`

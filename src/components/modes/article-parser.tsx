@@ -360,6 +360,7 @@ export function ArticleParser() {
   const setNodes = useMindGrowStore((state) => state.setNodes);
   const setEdges = useMindGrowStore((state) => state.setEdges);
   const setEntityGraph = useMindGrowStore((state) => state.setEntityGraph);
+  const updateMapNodeCount = useMindGrowStore((state) => state.updateMapNodeCount);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [url, setUrl] = useState("");
   const [content, setContent] = useState("");
@@ -639,7 +640,13 @@ export function ArticleParser() {
       const reload = await apiFetch(`/api/knowledge?mapId=${encodeURIComponent(savedMapId)}`);
       const graph = await reload.json();
       if (!isActiveArticleMap(savedMapId)) return;
-      if (reload.ok) { setNodes(graph.nodes || []); setEdges(graph.edges || []); setEntityGraph(graph.entityGraph || { entities: [], relations: [] }); }
+      if (reload.ok) {
+        const savedNodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+        setNodes(savedNodes);
+        setEdges(graph.edges || []);
+        setEntityGraph(graph.entityGraph || { entities: [], relations: [] });
+        updateMapNodeCount(savedMapId, savedNodes.length);
+      }
       setNotice(`已保存 ${data.totalNodes || 0} 个文章知识节点、${data.totalCitations || 0} 条节点引用、${data.entityCount || 0} 个实体、${data.relationCount || 0} 条可溯源关系和 ${data.indexedChunks || 0} 个检索分块${data.indexStatus === "ready" ? "（向量索引就绪）" : data.indexStatus ? `（${data.indexStatus}）` : ""}`);
     } catch (error) { if (isActiveArticleMap(requestMapId)) setNotice(error instanceof Error ? error.message : "保存失败"); }
     finally { if (mountedRef.current) setSaving(false); }
