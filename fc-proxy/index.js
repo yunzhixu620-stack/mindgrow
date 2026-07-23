@@ -22,7 +22,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.21.2';
+const API_VERSION = '10.21.3';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -3106,6 +3106,29 @@ function entityDescriptionGroundingStats(description, rows) {
   };
 }
 
+function graphLanguageProfile(value) {
+  const text = normalizeSpaces(value);
+  const chineseCharacters = (text.match(/[\u3400-\u9fff]/g) || []).length;
+  const latinWords = text.match(/[A-Za-z][A-Za-z0-9'’-]*/g) || [];
+  if (chineseCharacters >= 6 && chineseCharacters >= latinWords.length * 2) return 'cjk';
+  if (latinWords.length >= 8 && chineseCharacters < 4) return 'latin';
+  return 'mixed';
+}
+
+function crossLanguageGroundingSupported(value, rows) {
+  const evidenceText = (Array.isArray(rows) ? rows : [])
+    .map((row) => String((row && (row.quote || row.content)) || ''))
+    .join(' ');
+  const valueLanguage = graphLanguageProfile(value);
+  const evidenceLanguage = graphLanguageProfile(evidenceText);
+  return (valueLanguage === 'cjk' && evidenceLanguage === 'latin')
+    || (valueLanguage === 'latin' && evidenceLanguage === 'cjk');
+}
+
+function descriptionMentionsEntity(value, entity) {
+  return entityNameVariants(entity).some((variant) => normalizedTextMentions(value, variant));
+}
+
 function validRelationShortLabel(value, sourceEntity, targetEntity) {
   const label = String(value || '').trim();
   if (!label || /[()（）\[\]【】]|(?:asserted|historical|negated|proposed|历史|否定|拟议|待确认)|(?:证据|evidence|citations?)/i.test(label)) return false;
@@ -3286,6 +3309,7 @@ const ARTICLE_CORE_ENTITY_GRAPH_PROMPT = [
   '只输出 8-20 个核心实体，优先保留研究任务、模型/方法、关键机制或组件、数据集、指标和有明确定义的核心概念；只输出 3-15 条有直接原文证据的有向关系。',
   '不得把“研究问题、主要贡献、研究背景、相关工作、方法/架构、数据与实验、结果、讨论、局限与启示、结论、Abstract、Introduction、Methods、Results、Discussion、Conclusion”等章节或结构标题当作实体。',
   '不得把 it、this、that、which、what、there、the problem、the question、and this、but it 等代词、连词或不完整句子片段当作实体。',
+  '英文原文中的实体若使用中文规范名，aliases 必须包含证据中逐字出现的英文实体表面名；description 可以用中文解释，但 descriptionEvidence 必须指向同时出现该英文表面名并直接支持解释的原文句子。',
   '优先形成“研究任务 → 方法/模型 → 关键机制/组件 → 数据集/指标 → 结果”的证据链。关系证据不足时宁可少输出或返回空关系，不得用 related_to 凑数。',
 ].join('');
 
@@ -3375,12 +3399,15 @@ function normalizedEntityGraph(value, allowedIndexes, citations, options) {
     const descriptionRows = graphEvidenceRows(descriptionEvidence, evidence);
     const entityCandidate = { name, aliases };
     const grounding = entityDescriptionGroundingStats(rawDescription, descriptionRows);
+    const crossLanguageGrounded = crossLanguageGroundingSupported(rawDescription, descriptionRows)
+      && descriptionMentionsEntity(rawDescription, entityCandidate)
+      && evidenceMentionsEntity(descriptionRows, entityCandidate);
     const descriptionLength = graphTextLength(rawDescription);
     const minimumDescriptionLength = trustedDeterministic ? 8 : 30;
     const descriptionAccepted = descriptionLength >= minimumDescriptionLength && descriptionLength <= 80
       && descriptionEvidence.length > 0
       && evidenceMentionsEntity(descriptionRows, entityCandidate)
-      && (grounding.supportedByMinimumAnchors || grounding.supportedByCoverageThreshold)
+      && (grounding.supportedByMinimumAnchors || grounding.supportedByCoverageThreshold || crossLanguageGrounded)
       && grounding.numbersSupported
       && grounding.polaritySupported;
     const description = descriptionAccepted ? rawDescription : '';
@@ -3402,6 +3429,7 @@ function normalizedEntityGraph(value, allowedIndexes, citations, options) {
       entity,
       nameRejection,
       descriptionAccepted,
+      crossLanguageGrounded,
       accepted: Boolean(accepted),
       coreScore: (relationDegree.get(entity.tempId) || 0) * 20
         + entity.citationIndexes.length * 4 + typeWeight + entity.confidence,
@@ -3439,11 +3467,13 @@ function normalizedEntityGraph(value, allowedIndexes, citations, options) {
     );
     const relationRows = graphEvidenceRows(citationIndexes, evidence);
     const explanationGrounding = entityDescriptionGroundingStats(explanation, relationRows);
+    const crossLanguageExplanation = crossLanguageGroundingSupported(explanation, relationRows);
     const supported = sourceEntity && targetEntity
       && relationEvidenceSupports(type, relationRows, sourceEntity, targetEntity)
       && explanation
       && (explanationGrounding.supportedByMinimumAnchors
-        || (trustedDeterministic && explanationGrounding.supportedByCoverageThreshold))
+        || (trustedDeterministic && explanationGrounding.supportedByCoverageThreshold)
+        || crossLanguageExplanation)
       && explanationGrounding.numbersSupported
       && explanationGrounding.polaritySupported;
     const confidence = Math.min(1, Math.max(0, Number(item && item.confidence) || 0.7));
@@ -3465,6 +3495,7 @@ function normalizedEntityGraph(value, allowedIndexes, citations, options) {
   const relations = acceptedRelationCandidates.slice(0, relationLimit);
   const nameFilteredEntities = entityCandidates.filter((item) => Boolean(item.nameRejection)).length;
   const descriptionFilteredEntities = entityCandidates.filter((item) => !item.nameRejection && !item.descriptionAccepted).length;
+  const crossLanguageGroundedEntities = entityCandidates.filter((item) => item.descriptionAccepted && item.crossLanguageGrounded).length;
   const otherFilteredEntities = entityCandidates.filter((item) => (
     !item.nameRejection && item.descriptionAccepted && !item.accepted
   )).length;
@@ -3474,6 +3505,7 @@ function normalizedEntityGraph(value, allowedIndexes, citations, options) {
     deduplicatedEntities: Math.max(0, rawEntityCount - canonicalEntities.length),
     nameFilteredEntities,
     descriptionFilteredEntities,
+    crossLanguageGroundedEntities,
     otherFilteredEntities,
     budgetFilteredEntities: Math.max(0, acceptedEntityCandidates.length - entities.length),
     acceptedEntities: entities.length,

@@ -172,6 +172,60 @@ describe("article core graph and semantic outline quality", () => {
     expect(proxy.sourceCriticalFacts(source, 20).join(" ")).not.toMatch(/标题|arxiv|发布日期|摘要/);
   });
 
+  it("keeps Chinese entity explanations grounded by dedicated English evidence", () => {
+    const quote = "SoftReason uses the KVQA benchmark to evaluate multi-hop reasoning under the entity-linking protocol.";
+    const evidence = [{
+      index: 1,
+      quote,
+      content: quote,
+      locator: "web sentence 1",
+      sourceType: "url",
+    }];
+    const graph = proxy.normalizedEntityGraph({
+      entities: [
+        {
+          tempId: "E1",
+          name: "SoftReason",
+          type: "model",
+          aliases: [],
+          description: "SoftReason 是一种面向多跳任务的全可微神经软符号演绎推理模型。",
+          descriptionEvidence: [1],
+          citationIndexes: [1],
+          confidence: 0.95,
+        },
+        {
+          tempId: "E2",
+          name: "KVQA",
+          type: "dataset",
+          aliases: [],
+          description: "KVQA 是用于评估实体链接协议下多跳知识问答能力的公开基准数据集。",
+          descriptionEvidence: [1],
+          citationIndexes: [1],
+          confidence: 0.93,
+        },
+      ],
+      relations: [{
+        source: "E1",
+        target: "E2",
+        type: "uses",
+        shortLabel: "使用",
+        explanation: "SoftReason 使用 KVQA 基准评估实体链接协议下的多跳推理能力。",
+        status: "asserted",
+        citationIndexes: [1],
+        confidence: 0.92,
+      }],
+    }, new Set([1]), evidence, { profile: "article_core" });
+
+    expect(graph.entities.map((entity) => entity.name)).toEqual(["SoftReason", "KVQA"]);
+    expect(graph.relations).toHaveLength(1);
+    expect(graph.diagnostics).toMatchObject({
+      crossLanguageGroundedEntities: 2,
+      descriptionFilteredEntities: 0,
+      acceptedEntities: 2,
+      acceptedRelations: 1,
+    });
+  });
+
   it("builds an evidence-backed semantic outline when the article model is unavailable", () => {
     const facts = [
       "研究目标是减少长文档问答中的语义误召回。",
