@@ -12,15 +12,18 @@ import {
   searchLoadedKnowledge,
   type CommandSearchResult,
 } from "@/lib/command-search";
+import { useLocale } from "@/components/i18n/locale-provider";
 
 const LOCAL_GROUPS = [
-  ["maps", "已加载知识库", "▣"],
-  ["nodes", "当前图谱节点", "●"],
-  ["entities", "当前实体", "◇"],
-  ["chat", "最近 10 条对话", "↗"],
+  ["maps", "已加载知识库", "Loaded libraries", "▣"],
+  ["nodes", "当前图谱节点", "Current graph nodes", "●"],
+  ["entities", "当前实体", "Current entities", "◇"],
+  ["chat", "最近 10 条对话", "Latest 10 chats", "↗"],
 ] as const;
 
 export function CommandPalette() {
+  const { locale } = useLocale();
+  const english = locale === "en";
   const { maps, currentMapId, nodes, entityGraph, messages } = useMindGrowStore();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -130,7 +133,7 @@ export function CommandPalette() {
 
   return (
     <div className="fixed inset-0 z-[500] flex items-start justify-center bg-black/55 px-3 pt-[12vh] backdrop-blur-sm" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setOpen(false); }}>
-      <section className="w-full max-w-xl overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--card)] shadow-2xl" role="dialog" aria-modal="true" aria-label="快速搜索" data-testid="command-palette">
+      <section className="w-full max-w-xl overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--card)] shadow-2xl" role="dialog" aria-modal="true" aria-label={english ? "Quick search" : "快速搜索"} data-testid="command-palette">
         <div className="flex items-center gap-3 border-b border-[var(--border)] px-4">
           <span aria-hidden="true" className="text-[var(--primary)]">⌕</span>
           <input
@@ -143,10 +146,10 @@ export function CommandPalette() {
               if (event.key === "ArrowUp") { event.preventDefault(); setActiveIndex((index) => Math.max(index - 1, 0)); }
               if (event.key === "Enter" && results[activeIndex]) { event.preventDefault(); selectResult(results[activeIndex]); }
             }}
-            aria-label="搜索整个工作区"
+            aria-label={english ? "Search the entire workspace" : "搜索整个工作区"}
             aria-controls="command-search-results"
             aria-activedescendant={results[activeIndex] ? `command-result-${results[activeIndex].id}` : undefined}
-            placeholder="搜索知识库、节点、实体、原文引用和最近对话…"
+            placeholder={english ? "Search libraries, nodes, entities, citations, and recent chats…" : "搜索知识库、节点、实体、原文引用和最近对话…"}
             className="h-14 min-w-0 flex-1 bg-transparent text-sm text-[var(--foreground)] outline-none placeholder:text-[var(--text-muted)]"
           />
           <kbd className="rounded border border-[var(--border)] px-1.5 py-1 text-[9px] text-[var(--text-muted)]">Esc</kbd>
@@ -155,14 +158,18 @@ export function CommandPalette() {
         <div id="command-search-results" role="listbox" className="max-h-[55vh] overflow-y-auto p-2" data-testid="command-search-results">
           {results.length === 0 ? (
             <div className="px-4 py-10 text-center text-xs text-[var(--text-muted)]">
-              {workspaceStatus === "loading" ? "正在搜索整个工作区…" : workspaceStatus === "error" ? "工作区搜索暂时不可用，请稍后重试" : "没有匹配结果"}
+              {workspaceStatus === "loading"
+                ? (english ? "Searching the workspace…" : "正在搜索整个工作区…")
+                : workspaceStatus === "error"
+                  ? (english ? "Workspace search is temporarily unavailable" : "工作区搜索暂时不可用，请稍后重试")
+                  : (english ? "No matching results" : "没有匹配结果")}
             </div>
-          ) : LOCAL_GROUPS.map(([key, label, icon]) => {
+          ) : LOCAL_GROUPS.map(([key, labelZh, labelEn, icon]) => {
             const section = groups[key];
             if (section.length === 0) return null;
             return (
               <div key={key} className="mb-2 last:mb-0" data-result-group={key}>
-                <div className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">{label}</div>
+                <div className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">{english ? labelEn : labelZh}</div>
                 {section.map((result) => {
                   const index = results.findIndex((candidate) => candidate.id === result.id);
                   const active = index === activeIndex;
@@ -193,8 +200,8 @@ export function CommandPalette() {
           {visibleWorkspaceResults.length > 0 && (
             <div className="mb-2 last:mb-0" data-result-group="workspace">
               <div className="flex items-center justify-between px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-                <span>整个工作区</span>
-                <span className="font-normal normal-case tracking-normal">已按当前账号隔离</span>
+                <span>{english ? "Entire workspace" : "整个工作区"}</span>
+                <span className="font-normal normal-case tracking-normal">{english ? "Isolated to this account" : "已按当前账号隔离"}</span>
               </div>
               {visibleWorkspaceResults.map((result) => {
                 const index = results.findIndex((candidate) => candidate.id === result.id);
@@ -225,16 +232,16 @@ export function CommandPalette() {
             </div>
           )}
           {workspaceStatus === "loading" && results.length > 0 && (
-            <div className="px-3 py-2 text-[10px] text-[var(--text-muted)]" data-testid="workspace-search-loading">正在补齐整个工作区…</div>
+            <div className="px-3 py-2 text-[10px] text-[var(--text-muted)]" data-testid="workspace-search-loading">{english ? "Adding workspace results…" : "正在补齐整个工作区…"}</div>
           )}
           {workspaceStatus === "error" && results.length > 0 && (
-            <div className="px-3 py-2 text-[10px] text-amber-400">本地结果仍可用，工作区搜索暂时失败</div>
+            <div className="px-3 py-2 text-[10px] text-amber-400">{english ? "Local results remain available; workspace search failed" : "本地结果仍可用，工作区搜索暂时失败"}</div>
           )}
         </div>
 
         <footer className="flex items-center justify-between border-t border-[var(--border)] px-4 py-2 text-[9px] text-[var(--text-muted)]">
-          <span>本地结果即时显示，随后补齐当前登录工作区</span>
-          <span>{shortcut} 打开 · ↑↓ 选择</span>
+          <span>{english ? "Local results appear first, then workspace results" : "本地结果即时显示，随后补齐当前登录工作区"}</span>
+          <span>{shortcut} {english ? "open · ↑↓ select" : "打开 · ↑↓ 选择"}</span>
         </footer>
       </section>
     </div>

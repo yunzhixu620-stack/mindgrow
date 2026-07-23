@@ -2,20 +2,29 @@
 
 import { FormEvent, useState } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
+import { useLocale } from "@/components/i18n/locale-provider";
+import { LocaleSwitcher } from "@/components/i18n/locale-switcher";
 
 export function AuthScreen() {
   const { signIn, signUp, resendConfirmation, message } = useAuth();
+  const { t } = useLocale();
   const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [resending, setResending] = useState(false);
   const [error, setError] = useState("");
+  const localizedMessage = message && t("auth.signIn") === "Sign in"
+    ? message
+      .replace("注册成功。确认邮件已发送，请使用最新邮件中的链接完成验证。", "Account created. Use the newest confirmation email to verify it.")
+      .replace("新的确认邮件已发送。请使用最新邮件中的链接，旧链接会失效。", "A new confirmation email was sent. Use the newest link; older links are invalid.")
+      .replace("确认链接已过期或无效。请在下方输入邮箱并重新发送确认邮件。", "The confirmation link expired or is invalid. Enter your email below and resend it.")
+    : message;
 
   function describeAuthError(raw: string) {
-    if (raw.includes("Invalid login")) return "邮箱或密码不正确";
-    if (raw.includes("Email not confirmed")) return "邮箱尚未确认，请点击最新确认邮件，或在下方重新发送。";
-    if (raw.includes("rate limit")) return "发送过于频繁，请稍后再试。";
+    if (raw.includes("Invalid login")) return t("auth.invalid");
+    if (raw.includes("Email not confirmed")) return t("auth.unconfirmed");
+    if (raw.includes("rate limit")) return t("auth.rateLimit");
     return raw;
   }
 
@@ -23,7 +32,7 @@ export function AuthScreen() {
     event.preventDefault();
     setError("");
     if (password.length < 8) {
-      setError("密码至少需要 8 位");
+      setError(t("auth.passwordLength"));
       return;
     }
     setBusy(true);
@@ -31,7 +40,7 @@ export function AuthScreen() {
       if (mode === "signin") await signIn(email.trim(), password);
       else await signUp(email.trim(), password);
     } catch (reason) {
-      const raw = reason instanceof Error ? reason.message : "登录失败，请重试";
+      const raw = reason instanceof Error ? reason.message : t("auth.failure");
       setError(describeAuthError(raw));
     } finally {
       setBusy(false);
@@ -42,14 +51,14 @@ export function AuthScreen() {
     setError("");
     const normalizedEmail = email.trim();
     if (!normalizedEmail) {
-      setError("请先输入创建账号时使用的邮箱。");
+      setError(t("auth.emailRequired"));
       return;
     }
     setResending(true);
     try {
       await resendConfirmation(normalizedEmail);
     } catch (reason) {
-      const raw = reason instanceof Error ? reason.message : "发送失败，请稍后重试";
+      const raw = reason instanceof Error ? reason.message : t("auth.sendFailure");
       setError(describeAuthError(raw));
     } finally {
       setResending(false);
@@ -58,39 +67,40 @@ export function AuthScreen() {
 
   return (
     <main className="min-h-screen w-full overflow-y-auto bg-[var(--bg-base)] flex items-center justify-center p-5">
-      <div className="w-full max-w-[420px] rounded-3xl border border-[var(--border-strong)] bg-[var(--bg-surface)] p-7 shadow-2xl">
+      <div className="relative w-full max-w-[420px] rounded-3xl border border-[var(--border-strong)] bg-[var(--bg-surface)] p-7 shadow-2xl">
+        <div className="absolute right-5 top-5"><LocaleSwitcher /></div>
         <div className="flex items-center gap-3 mb-7">
           <div className="w-10 h-10 rounded-xl flex items-center justify-center text-black text-xl" style={{ background: "linear-gradient(135deg, #22d3a7, #06b6d4)" }}>✦</div>
           <div>
             <h1 className="text-xl font-semibold">MindGrow</h1>
-            <p className="text-xs text-[var(--text-tertiary)]">你的私有 AI 知识工作区</p>
+            <p className="text-xs text-[var(--text-tertiary)]">{t("auth.subtitle")}</p>
           </div>
         </div>
 
         <div className="grid grid-cols-2 rounded-xl bg-[var(--bg-elevated)] p-1 mb-6">
-          <button onClick={() => setMode("signin")} className={`rounded-lg py-2 text-sm ${mode === "signin" ? "bg-[var(--primary)] text-[var(--primary-foreground)] font-medium" : "text-[var(--text-secondary)]"}`}>登录</button>
-          <button onClick={() => setMode("signup")} className={`rounded-lg py-2 text-sm ${mode === "signup" ? "bg-[var(--primary)] text-[var(--primary-foreground)] font-medium" : "text-[var(--text-secondary)]"}`}>注册</button>
+          <button onClick={() => setMode("signin")} className={`rounded-lg py-2 text-sm ${mode === "signin" ? "bg-[var(--primary)] text-[var(--primary-foreground)] font-medium" : "text-[var(--text-secondary)]"}`}>{t("auth.signIn")}</button>
+          <button onClick={() => setMode("signup")} className={`rounded-lg py-2 text-sm ${mode === "signup" ? "bg-[var(--primary)] text-[var(--primary-foreground)] font-medium" : "text-[var(--text-secondary)]"}`}>{t("auth.signUp")}</button>
         </div>
 
         <form onSubmit={submit} className="space-y-4">
           <label className="block">
-            <span className="block text-xs text-[var(--text-secondary)] mb-1.5">邮箱</span>
+            <span className="block text-xs text-[var(--text-secondary)] mb-1.5">{t("auth.email")}</span>
             <input type="email" required autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" className="w-full rounded-xl border border-[var(--border)] bg-[var(--bg-base)] px-4 py-3 text-sm outline-none focus:border-[var(--primary)]" />
           </label>
           <label className="block">
-            <span className="block text-xs text-[var(--text-secondary)] mb-1.5">密码</span>
-            <input type="password" required minLength={8} autoComplete={mode === "signin" ? "current-password" : "new-password"} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="至少 8 位" className="w-full rounded-xl border border-[var(--border)] bg-[var(--bg-base)] px-4 py-3 text-sm outline-none focus:border-[var(--primary)]" />
+            <span className="block text-xs text-[var(--text-secondary)] mb-1.5">{t("auth.password")}</span>
+            <input type="password" required minLength={8} autoComplete={mode === "signin" ? "current-password" : "new-password"} value={password} onChange={(event) => setPassword(event.target.value)} placeholder={t("auth.passwordHint")} className="w-full rounded-xl border border-[var(--border)] bg-[var(--bg-base)] px-4 py-3 text-sm outline-none focus:border-[var(--primary)]" />
           </label>
-          {(error || message) && <div role="status" className={`rounded-xl px-3 py-2 text-xs ${error ? "bg-red-500/10 text-red-300" : "bg-emerald-500/10 text-emerald-300"}`}>{error || message}</div>}
-          <button disabled={busy} className="w-full rounded-xl bg-[var(--primary)] py-3 text-sm font-semibold text-[var(--primary-foreground)] disabled:opacity-50">{busy ? "请稍候…" : mode === "signin" ? "进入工作区" : "创建账号"}</button>
+          {(error || localizedMessage) && <div role="status" className={`rounded-xl px-3 py-2 text-xs ${error ? "bg-red-500/10 text-red-300" : "bg-emerald-500/10 text-emerald-300"}`}>{error || localizedMessage}</div>}
+          <button disabled={busy} className="w-full rounded-xl bg-[var(--primary)] py-3 text-sm font-semibold text-[var(--primary-foreground)] disabled:opacity-50">{busy ? t("auth.wait") : mode === "signin" ? t("auth.enter") : t("auth.create")}</button>
           <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2.5 text-center">
-            <p className="text-[11px] text-[var(--text-tertiary)]">确认链接失效，或没有收到邮件？</p>
+            <p className="text-[11px] text-[var(--text-tertiary)]">{t("auth.recoveryPrompt")}</p>
             <button type="button" disabled={busy || resending} onClick={resend} className="mt-1 text-xs font-medium text-[var(--primary)] hover:underline disabled:opacity-50">
-              {resending ? "正在发送…" : "重新发送确认邮件"}
+              {resending ? t("auth.resending") : t("auth.resend")}
             </button>
           </div>
         </form>
-        <p className="mt-5 text-center text-[10px] leading-relaxed text-[var(--text-muted)]">登录后，每个工作区的数据独立存储；浏览器不会接触数据库管理密钥。</p>
+        <p className="mt-5 text-center text-[10px] leading-relaxed text-[var(--text-muted)]">{t("auth.privacy")}</p>
       </div>
     </main>
   );

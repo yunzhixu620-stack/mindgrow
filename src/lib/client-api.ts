@@ -6,8 +6,15 @@ import { buildLocalArticleCitations } from "@/lib/pdf-citation";
 import type { TenantScope } from "@/lib/tenant-cache";
 import { useMindGrowStore, type WriteRequestToken } from "@/store/mindgrow-store";
 import type { AIEntityGraph, AIMindMap, Category, Citation, EntityGraph, KnowledgeEdge, KnowledgeNode, MindMap, NodeLayout, WhiteboardGroup } from "@/types";
+import {
+  FEEDBACK_CATEGORIES,
+  FEEDBACK_SEVERITIES,
+  normalizeFeedbackRow,
+  type ProductFeedback,
+} from "@/lib/product-feedback";
 
 const STORAGE_KEY = "mindgrow.local.v2";
+const LOCAL_FEEDBACK_KEY = "mindgrow.local.feedback.v1";
 let activeUserId: string | null = null;
 let activeWorkspaceId: string | null = null;
 
@@ -32,6 +39,20 @@ type LocalState = {
 
 const now = () => new Date().toISOString();
 const makeId = (prefix: string) => `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+function loadLocalFeedback(): ProductFeedback[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(LOCAL_FEEDBACK_KEY) || "[]");
+    return (Array.isArray(parsed) ? parsed : []).map(normalizeFeedbackRow).filter(Boolean) as ProductFeedback[];
+  } catch {
+    return [];
+  }
+}
+
+function saveLocalFeedback(items: ProductFeedback[]) {
+  if (typeof window !== "undefined") window.localStorage.setItem(LOCAL_FEEDBACK_KEY, JSON.stringify(items.slice(0, 50)));
+}
 
 function seedState(): LocalState {
   const createdAt = now();
@@ -263,6 +284,7 @@ function handleKnowledge(path: string, init?: RequestInit): Response {
 
   if (method === "GET") {
     const action = url.searchParams.get("action");
+    if (action === "feedback") return json({ feedback: loadLocalFeedback() });
     if (action === "maps") return json({ maps: state.maps });
     if (action === "categories") return json({ categories: state.categories });
     if (action === "universe") {
@@ -395,6 +417,44 @@ function handleKnowledge(path: string, init?: RequestInit): Response {
 
   if (method !== "POST") return json({ error: "Method not allowed" }, 405);
   const action = body.action;
+  if (action === "submitFeedback") {
+    const message = String(body.message || "").trim().slice(0, 4000);
+    if (!FEEDBACK_CATEGORIES.includes(body.category) || !FEEDBACK_SEVERITIES.includes(body.severity) || message.length < 20) {
+      return json({ error: "Invalid feedback", code: "INVALID_FEEDBACK" }, 400);
+    }
+    if (body.category === "community" && (body.allowContact !== true || !String(body.contactEmail || "").includes("@"))) {
+      return json({ error: "Contact permission is required", code: "CONTACT_PERMISSION_REQUIRED" }, 400);
+    }
+    const timestamp = now();
+    const feedback: ProductFeedback = {
+      id: makeId("feedback"),
+      category: body.category,
+      severity: body.severity,
+      message,
+      locale: body.locale === "en" ? "en" : "zh-CN",
+      productArea: String(body.productArea || "knowledge"),
+      issueTags: [`category:${body.category}`, `severity:${body.severity}`, `area:${body.productArea || "knowledge"}`, `locale:${body.locale === "en" ? "en" : "zh-CN"}`],
+      status: "new",
+      resolutionNote: "",
+      resolvedVersion: "",
+      followUpAcknowledgedAt: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const current = loadLocalFeedback();
+    saveLocalFeedback([feedback, ...current]);
+    return json({ feedback }, 201);
+  }
+  if (action === "acknowledgeFeedback") {
+    const current = loadLocalFeedback();
+    const feedback = current.find((item) => item.id === body.feedbackId);
+    if (!feedback) return json({ error: "Feedback not found", code: "NOT_FOUND" }, 404);
+    if (!feedback.resolvedVersion || !["resolved", "closed"].includes(feedback.status)) return json({ error: "Follow-up not ready", code: "FOLLOW_UP_NOT_READY" }, 409);
+    feedback.followUpAcknowledgedAt = now();
+    feedback.updatedAt = feedback.followUpAcknowledgedAt;
+    saveLocalFeedback(current);
+    return json({ feedback });
+  }
   if (action === "setMapCanvasView") {
     const map = state.maps.find((item) => item.id === (body.mapId || "map_default"));
     if (!map || !["mindmap", "whiteboard"].includes(body.canvasView)) return json({ error: "Invalid canvas view" }, 400);

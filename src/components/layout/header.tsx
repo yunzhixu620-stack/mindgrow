@@ -4,20 +4,24 @@ import { useState, useEffect } from "react";
 import { useMindGrowStore, type AppMode } from "@/store/mindgrow-store";
 import Link from "next/link";
 import { WorkspaceMenu } from "@/components/auth/workspace-menu";
-import { MODE_LIBRARY_CONFIG } from "@/lib/mode-libraries";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
 import { SyncIndicator } from "@/components/ui/sync-indicator";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
+import { LocaleSwitcher } from "@/components/i18n/locale-switcher";
+import { useLocale } from "@/components/i18n/locale-provider";
+import { FeedbackCenter } from "@/components/feedback/feedback-center";
+import type { MessageKey } from "@/lib/i18n";
 
-const MODES: { key: AppMode; label: string; emoji: string; tooltip: string }[] = [
-  { key: "meeting", label: "会议助手", emoji: "🎯", tooltip: "整理会议记录，提取决议和行动项" },
-  { key: "knowledge", label: "知识碎片", emoji: "💡", tooltip: "整合零散知识点，构建知识体系" },
-  { key: "article", label: "文章解析", emoji: "📄", tooltip: "解析文章内容，提炼核心观点" },
+const MODES: { key: AppMode; labelKey: MessageKey; emoji: string; tooltipKey: MessageKey }[] = [
+  { key: "meeting", labelKey: "header.meeting", emoji: "🎯", tooltipKey: "header.meetingTip" },
+  { key: "knowledge", labelKey: "header.knowledge", emoji: "💡", tooltipKey: "header.knowledgeTip" },
+  { key: "article", labelKey: "header.article", emoji: "📄", tooltipKey: "header.articleTip" },
 ];
 
 const GUIDE_HREF = process.env.NODE_ENV === "production" ? "/mindgrow/guide/" : "/guide/";
 
 export function Header() {
+  const { t } = useLocale();
   const { currentMode, setCurrentMode, layoutDirection, setLayoutDirection, nodes } = useMindGrowStore();
   const [isMobile, setIsMobile] = useState(false);
 
@@ -74,7 +78,7 @@ export function Header() {
               <button
                 key={mode.key}
                 onClick={() => setCurrentMode(mode.key)}
-                title={mode.tooltip}
+                title={t(mode.tooltipKey)}
                 className="relative flex items-center gap-1.5 px-3 py-1 rounded-[var(--radius-sm)] text-xs font-medium border-none bg-transparent cursor-pointer whitespace-nowrap group"
                 style={{
                   color: currentMode === mode.key ? "var(--primary-foreground)" : "var(--text-tertiary)",
@@ -95,7 +99,7 @@ export function Header() {
                 }}
               >
                 <span style={{ fontSize: 10, opacity: 0.7 }}>{mode.emoji}</span>
-                {mode.label}
+                {t(mode.labelKey)}
               </button>
             ))}
           </div>
@@ -107,6 +111,8 @@ export function Header() {
       <div className="flex items-center gap-1">
         <SyncIndicator />
         <ThemeToggle />
+        <LocaleSwitcher />
+        <FeedbackCenter />
         <WorkspaceMenu />
         {/* Layout direction only belongs to the knowledge-map workspace. */}
         {!isMobile && currentMode === "knowledge" && (
@@ -114,7 +120,7 @@ export function Header() {
             onClick={() => setLayoutDirection(layoutDirection === "vertical" ? "horizontal" : "vertical")}
             className="w-8 h-8 rounded-[var(--radius-sm)] border-none bg-transparent flex items-center justify-center cursor-pointer"
             style={{ color: "var(--text-tertiary)" }}
-            title={layoutDirection === "vertical" ? "切换为横向布局" : "切换为纵向布局"}
+            title={layoutDirection === "vertical" ? t("header.horizontal") : t("header.vertical")}
             onMouseEnter={(e) => {
               (e.currentTarget as HTMLElement).style.background = "var(--bg-hover)";
               (e.currentTarget as HTMLElement).style.color = "var(--text-secondary)";
@@ -145,7 +151,12 @@ export function Header() {
             color: "var(--primary-hover)",
           }}
         >
-          {currentMode === "knowledge" ? `${nodes.length} 节点` : `${MODE_LIBRARY_CONFIG[currentMode].shortLabel}库 · ${nodes.length}`}
+          {currentMode === "knowledge"
+            ? t("header.nodes", { count: nodes.length })
+            : t("header.libraryNodes", {
+              library: t(MODES.find((mode) => mode.key === currentMode)?.labelKey || "header.knowledge"),
+              count: nodes.length,
+            })}
         </div>
 
         {!isMobile && currentMode === "knowledge" && (
@@ -161,7 +172,7 @@ export function Header() {
           className="flex items-center gap-1 px-2 py-1.5 rounded-[var(--radius-sm)] text-xs no-underline hover:bg-[var(--bg-hover)]"
           style={{ color: "var(--text-tertiary)" }}
         >
-          使用指南
+          {t("header.guide")}
         </a>
 
         {/* Universe link */}
@@ -182,7 +193,7 @@ export function Header() {
             (e.currentTarget as HTMLElement).style.color = "var(--text-tertiary)";
           }}
         >
-          {!isMobile && "🌌 "}知识宇宙
+          {!isMobile && "🌌 "}{t("header.universe")}
         </Link>
       </div>
     </header>
