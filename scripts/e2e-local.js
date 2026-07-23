@@ -25,12 +25,13 @@ let meetingLibraryId = "";
 let articleLibraryId = "";
 const check = async (name, task) => {
   if (E2E_FILTER && !name.toLocaleLowerCase().includes(E2E_FILTER)) return;
+  const startedAt = Date.now();
   try {
     await task();
-    results.push({ name, ok: true });
+    results.push({ name, ok: true, latencyMs: Date.now() - startedAt });
     console.log(`PASS ${name}`);
   } catch (error) {
-    results.push({ name, ok: false, error: error.message });
+    results.push({ name, ok: false, latencyMs: Date.now() - startedAt, error: error.message });
     console.error(`FAIL ${name}: ${error.message}`);
     if (E2E_FILTER && error.stack) console.error(error.stack);
     if (E2E_FAIL_FAST) throw error;
@@ -1602,6 +1603,7 @@ const expandOneVisibleLevel = async (page, previousCount) => {
   if (browser.process() && !browser.process().killed) browser.process().kill();
 
   const failed = results.filter((result) => !result.ok);
+  fs.writeFileSync(path.join(artifactDir, "e2e-local-report.json"), `${JSON.stringify({ checkedAt: new Date().toISOString(), baseUrl: BASE_URL, summary: { passed: results.length - failed.length, failed: failed.length }, results }, null, 2)}\n`, "utf8");
   console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
   if (failed.length) process.exit(1);
 })();
