@@ -21,7 +21,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.13.0';
+const API_VERSION = '10.14.0';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -4305,6 +4305,16 @@ function canonicalGraphEntityIdentity(workspaceId, mapId, entityType, name) {
   };
 }
 
+function workspaceGraphEntityIdentity(workspaceId, entityType, name) {
+  const normalizedName = normalizedEntityName(name);
+  const key = `${String(entityType || 'other')}:${normalizedName}`;
+  return {
+    normalizedName,
+    key,
+    id: stableGraphId('workspace_entity', `${workspaceId}|${key}`),
+  };
+}
+
 function graphEvidenceCitation(row, documentsById) {
   const document = documentsById.get(row.document_id) || {};
   return {
@@ -4345,6 +4355,7 @@ async function loadEntityGraph(workspaceId, mapId) {
         const descriptionIndexes = new Set(normalizeCitationIndexes(item.description_citation_indexes));
         return {
           id: item.id,
+          workspaceEntityId: workspaceGraphEntityIdentity(workspaceId, item.entity_type, item.canonical_name).id,
           canonicalName: item.canonical_name,
           entityType: item.entity_type,
           aliases: Array.isArray(item.aliases) ? item.aliases : [],
@@ -4759,14 +4770,24 @@ async function handleKnowledge(req, context) {
       // The universe used to load every map through a separate API request.
       // Fetch compact workspace-wide graph rows in parallel and group them in
       // the function so the browser performs one authenticated round trip.
-      const [mapRows, nodeRows, edgeRows, entityRows, relationRows] = await Promise.all([
+      const [mapRows, nodeRows, edgeRows, entityRows, relationRows, evidenceRows, documentRows] = await Promise.all([
         supabaseRequest('GET', `maps?workspace_id=eq.${workspace}&select=*&order=is_default.desc,updated_at.desc&limit=500`),
         supabaseRequest('GET', `nodes?workspace_id=eq.${workspace}&status=eq.active&select=id,map_id,content,desc,type,status,source,confidence,created_at,updated_at&limit=12000`),
         supabaseRequest('GET', `edges?workspace_id=eq.${workspace}&select=id,map_id,source_id,target_id,relation,weight,created_at&limit=24000`),
         supabaseRequest('GET', `graph_entities?workspace_id=eq.${workspace}&select=id,map_id,canonical_name,entity_type,aliases,description,description_citation_indexes,confidence,created_at,updated_at&order=confidence.desc&limit=12000`),
         supabaseRequest('GET', `graph_relations?workspace_id=eq.${workspace}&select=id,map_id,source_entity_id,target_entity_id,relation_type,label,explanation,status,confidence,created_at,updated_at&order=confidence.desc&limit=24000`),
+        supabaseRequest('GET', `graph_evidence?workspace_id=eq.${workspace}&select=subject_kind,subject_id,document_id,citation_index,quote,locator&order=citation_index.asc&limit=48000`),
+        supabaseRequest('GET', `source_documents?workspace_id=eq.${workspace}&select=id,title,source_url,file_name,source_type&limit=6000`),
       ]);
-      if (![mapRows, nodeRows, edgeRows, entityRows, relationRows].every(Array.isArray)) throw dependencyError('knowledge_store');
+      if (![mapRows, nodeRows, edgeRows, entityRows, relationRows, evidenceRows, documentRows].every(Array.isArray)) throw dependencyError('knowledge_store');
+      const documentsById = new Map(documentRows.map((item) => [item.id, item]));
+      const evidenceBySubject = new Map();
+      evidenceRows.forEach((row) => {
+        const key = `${row.subject_kind}:${row.subject_id}`;
+        const rows = evidenceBySubject.get(key) || [];
+        rows.push(graphEvidenceCitation(row, documentsById));
+        evidenceBySubject.set(key, rows);
+      });
       const graphByMap = new Map(mapRows.map((row) => [row.id, {
         map: convertMap(row), nodes: [], edges: [], entityGraph: { entities: [], relations: [] }, layouts: [], whiteboardGroups: [],
       }]));
@@ -4781,8 +4802,11 @@ async function handleKnowledge(req, context) {
       entityRows.forEach((row) => {
         const graph = graphByMap.get(row.map_id);
         if (!graph || graph.entityGraph.entities.length >= 2000) return;
+        const entityEvidence = evidenceBySubject.get(`entity:${row.id}`) || [];
+        const descriptionIndexes = new Set(normalizeCitationIndexes(row.description_citation_indexes));
         graph.entityGraph.entities.push({
           id: row.id,
+          workspaceEntityId: workspaceGraphEntityIdentity(workspaceId, row.entity_type, row.canonical_name).id,
           canonicalName: row.canonical_name,
           entityType: row.entity_type,
           aliases: Array.isArray(row.aliases) ? row.aliases : [],
@@ -4790,8 +4814,8 @@ async function handleKnowledge(req, context) {
           confidence: Number(row.confidence || 0),
           createdAt: row.created_at,
           updatedAt: row.updated_at,
-          citations: [],
-          descriptionCitations: [],
+          citations: entityEvidence,
+          descriptionCitations: entityEvidence.filter((citation) => descriptionIndexes.has(citation.index)),
         });
       });
       relationRows.forEach((row) => {
@@ -4809,7 +4833,7 @@ async function handleKnowledge(req, context) {
           confidence: Number(row.confidence || 0),
           createdAt: row.created_at,
           updatedAt: row.updated_at,
-          citations: [],
+          citations: evidenceBySubject.get(`relation:${row.id}`) || [],
         });
       });
       return { status: 200, data: { libraries: Array.from(graphByMap.values()), generatedAt: new Date().toISOString() } };
@@ -5134,6 +5158,15 @@ async function handleKnowledge(req, context) {
   }
 
   if (body.mindMap && body.mindMap.root) {
+    if (String(body.source || '').toLocaleLowerCase() === 'meeting' && body.confirmedForLongTerm !== true) {
+      return {
+        status: 409,
+        data: {
+          error: '请先确认会议纪要，再加入长期知识库',
+          code: 'MEETING_CONFIRMATION_REQUIRED',
+        },
+      };
+    }
     const requestedMapId = String(body.mapId || context.defaultMapId);
     const mapId = await resolveMapForSource(workspaceId, requestedMapId, String(body.source || ''));
     const graph = await createGraph(
@@ -5166,6 +5199,7 @@ async function handleKnowledge(req, context) {
         relationCount: graph.entityIndex ? graph.entityIndex.relations : 0,
         relationEvidenceCount: graph.entityIndex ? graph.entityIndex.evidence : 0,
         entityIndexStatus: graph.entityIndex ? graph.entityIndex.status : 'not_requested',
+        longTermCommitted: true,
         mapId,
       },
     };
@@ -5367,6 +5401,9 @@ module.exports = {
   },
   __bootstrapInternal: { selectBootstrapWorkspace, selectBootstrapDefaultMap },
   __organizerInternal: { normalizeOrganizationProposal },
+  __knowledgeLifecycleInternal: {
+    workspaceGraphEntityIdentity,
+  },
   buildDocumentChunks,
   buildMeetingCitations,
   fallbackMeetingAnalysis,
@@ -5420,6 +5457,7 @@ module.exports = {
   __entityGraphInternal: {
     normalizedEntityName,
     canonicalGraphEntityIdentity,
+    workspaceGraphEntityIdentity,
     normalizedEntityGraphForWrite,
   },
 };

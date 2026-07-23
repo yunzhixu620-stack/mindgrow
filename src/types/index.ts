@@ -29,6 +29,8 @@ export type EntityGroundingStatus = "grounded" | "legacy";
 
 export interface GraphEntity {
   id: string;
+  /** Stable workspace-wide projection id; map-local ids remain the evidence ownership boundary. */
+  workspaceEntityId?: string;
   canonicalName: string;
   entityType: string;
   aliases: string[];

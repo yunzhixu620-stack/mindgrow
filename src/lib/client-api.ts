@@ -524,6 +524,9 @@ function handleKnowledge(path: string, init?: RequestInit): Response {
 
   const mapId = body.mapId || "map_default";
   if (body.mindMap?.root) {
+    if (String(body.source || "").toLocaleLowerCase() === "meeting" && body.confirmedForLongTerm !== true) {
+      return json({ error: "请先确认会议纪要，再加入长期知识库", code: "MEETING_CONFIRMATION_REQUIRED" }, 409);
+    }
     const targetTopic = body.placement?.confidence >= 0.45 ? String(body.placement.targetTopic || "") : "";
     const result = addMindMap(state, mapId, body.mindMap, body.source || "ai_generated", body.citations || [], targetTopic);
     if (body.entityGraph) {
@@ -539,6 +542,7 @@ function handleKnowledge(path: string, init?: RequestInit): Response {
       reusedNodes: result.reusedNodes.length,
       entityCount: state.entityGraphs[mapId]?.entities.length || 0,
       relationCount: state.entityGraphs[mapId]?.relations.length || 0,
+      longTermCommitted: true,
     });
   }
   if (!body.content) return json({ error: "Content is required" }, 400);

@@ -845,14 +845,21 @@ const expandOneVisibleLevel = async (page, previousCount) => {
       return state.maps.find((map) => map.id === mapId);
     }, meetingLibraryId);
     if (meetingLibrary?.mode !== "meeting") throw new Error("Meeting board did not enter its own explicit-mode knowledge library");
+    const persistedMeetingNodesBefore = await page.evaluate((mapId) => JSON.parse(localStorage.getItem("mindgrow.local.v2")).nodes[mapId]?.length || 0, meetingLibraryId);
     await page.type('textarea[placeholder*="会议记录"]', "今天讨论知识助手发布计划。决定本周完成登录测试。小王负责回归验证，周五前完成。风险是文章解析接口可能超时。");
     await clickByText(page, "button", "生成结构化会议纪要");
     await page.waitForSelector('[data-testid="answer-card"]');
+    const draftPersisted = await page.$eval('[data-testid="meeting-draft-status"]', (element) => element.getAttribute("data-persisted"));
+    if (draftPersisted !== "false") throw new Error("Meeting analysis entered long-term knowledge before confirmation");
+    const persistedMeetingNodesAfterAnalysis = await page.evaluate((mapId) => JSON.parse(localStorage.getItem("mindgrow.local.v2")).nodes[mapId]?.length || 0, meetingLibraryId);
+    if (persistedMeetingNodesAfterAnalysis !== persistedMeetingNodesBefore) throw new Error("Meeting analysis mutated persistent knowledge before confirmation");
     const meetingAnswerSections = await page.$$eval('[data-testid="answer-card"] > section', (sections) => sections.map((section) => section.textContent.trim()));
     if (!["结论", "证据", "AI 延伸"].every((label) => meetingAnswerSections.some((section) => section.includes(label)))) throw new Error("Meeting answer is not separated into conclusion, evidence, and AI extension");
     await page.waitForFunction(() => document.querySelectorAll(".react-flow__node").length >= 3);
-    await clickByText(page, "button", "保存到会议知识库");
+    await clickByText(page, "button", "确认并加入长期知识库");
     await page.waitForFunction(() => document.body.innerText.includes("会议知识节点"));
+    const confirmedPersisted = await page.$eval('[data-testid="meeting-draft-status"]', (element) => element.getAttribute("data-persisted"));
+    if (confirmedPersisted !== "true") throw new Error("Meeting confirmation did not update the long-term knowledge state");
     const savedMeetingNodes = await page.evaluate((mapId) => JSON.parse(localStorage.getItem("mindgrow.local.v2")).nodes[mapId]?.length || 0, meetingLibraryId);
     if (savedMeetingNodes === 0) throw new Error("Meeting result was saved outside the meeting library");
     const microphone = await page.$('button[aria-label="开始语音输入"]');
@@ -970,9 +977,21 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     if (!networkSummary.includes("强关系") || !networkSummary.includes("无强关系实体已隐藏")) throw new Error(`Default entity graph is not the strong-relation view: ${networkSummary}`);
     const globalNodeCount = await page.$$eval('[data-testid="entity-network-node"]', (nodes) => nodes.length);
     if (globalNodeCount < 2) throw new Error("Obsidian entity network did not render enough entities");
-    await page.hover('[data-testid="entity-network-node"]');
-    await page.waitForSelector('[data-testid="entity-hover-card"]', { visible: true });
-    await page.$eval('[data-testid="entity-network-node"]', (node) => {
+    let hoveredEntityNode = null;
+    for (const node of await page.$$('[data-testid="entity-network-node"]')) {
+      const box = await node.boundingBox();
+      if (!box || box.width < 2 || box.height < 2 || box.x < 0 || box.y < 0) continue;
+      const viewport = page.viewport();
+      if (viewport && (box.x + box.width > viewport.width || box.y + box.height > viewport.height)) continue;
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      const hoverVisible = await page.waitForFunction(() => {
+        const card = document.querySelector('[data-testid="entity-hover-card"]');
+        return card && getComputedStyle(card).display !== "none";
+      }, { timeout: 1200 }).then(() => true).catch(() => false);
+      if (hoverVisible) { hoveredEntityNode = node; break; }
+    }
+    if (!hoveredEntityNode) throw new Error("No visible entity node exposed its hover explanation");
+    await hoveredEntityNode.evaluate((node) => {
       node.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
     });
     await page.waitForSelector('[data-testid="entity-detail-panel"]');
@@ -1054,8 +1073,20 @@ const expandOneVisibleLevel = async (page, previousCount) => {
         }
         const commandEntityTitle = await page.$eval('[data-testid="entity-detail-panel"]', (panel) => panel.textContent);
         if (!commandEntityTitle.includes(entityQuery)) throw new Error("Command palette did not focus the selected entity");
-        await page.click('button[aria-label="关闭实体详情"]');
-        await page.waitForFunction(() => !document.querySelector('[data-testid="entity-detail-panel"]'));
+        await page.waitForFunction(() => !document.querySelector('[data-testid="command-palette"]'), { timeout: 6000 });
+        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        try {
+          await page.$eval('[data-testid="entity-detail-panel"] button[aria-label="关闭实体详情"]', (button) => button.click());
+          await page.waitForFunction(() => !document.querySelector('[data-testid="entity-detail-panel"]'), { timeout: 6000 });
+        } catch (error) {
+          const diagnostic = await page.evaluate(() => ({
+            events: window.__mindgrowEntityCommandEvents,
+            paletteOpen: Boolean(document.querySelector('[data-testid="command-palette"]')),
+            entityPanelOpen: Boolean(document.querySelector('[data-testid="entity-detail-panel"]')),
+            entityPanelCount: document.querySelectorAll('[data-testid="entity-detail-panel"]').length,
+          }));
+          throw new Error(`${error.message}; closeDiagnostic=${JSON.stringify(diagnostic)}`);
+        }
       });
     });
     await entityStage("关系证据链", async () => {

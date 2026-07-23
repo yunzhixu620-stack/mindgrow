@@ -143,6 +143,34 @@ async function waitForHealthyBackend(timeoutMs = 30000) {
   throw new Error(`Timed out waiting for ${backendBase}/health (${lastStatus})`);
 }
 
+async function testUnifiedUniverseAndMeetingGate() {
+  const headers = {
+    Authorization: "Bearer local-bootstrap-token",
+    "Content-Type": "application/json",
+    "X-Workspace-Id": "ws_localbootstrapuser",
+  };
+  const universe = await fetch(`${backendBase}/api/knowledge?action=universe`, { headers });
+  const universeBody = await universe.json();
+  if (universe.status !== 200 || !Array.isArray(universeBody.libraries) || universeBody.libraries.length !== 1) {
+    throw new Error(`Unified universe aggregate failed (HTTP ${universe.status})`);
+  }
+
+  const unconfirmed = await fetch(`${backendBase}/api/knowledge`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      mapId: "map_ws_localbootstrapuser_default",
+      source: "meeting",
+      mindMap: { root: "Unconfirmed meeting", children: [] },
+    }),
+  });
+  const unconfirmedBody = await unconfirmed.json();
+  if (unconfirmed.status !== 409 || unconfirmedBody.code !== "MEETING_CONFIRMATION_REQUIRED") {
+    throw new Error(`Meeting confirmation gate failed (HTTP ${unconfirmed.status}, ${unconfirmedBody.code || "no code"})`);
+  }
+  console.log("Unified universe aggregate and meeting confirmation gate passed");
+}
+
 function runLocalSmoke() {
   return new Promise((resolve, reject) => {
     const smoke = spawn(process.execPath, [path.join(__dirname, "backend-smoke.js")], {
@@ -216,6 +244,7 @@ async function main() {
 
     await waitForHealthyBackend();
     console.log(`Local backend is healthy at ${backendBase}`);
+    await testUnifiedUniverseAndMeetingGate();
     exitCode = await runLocalSmoke();
   } catch (error) {
     console.error(`Local backend test failed: ${error.message}`);

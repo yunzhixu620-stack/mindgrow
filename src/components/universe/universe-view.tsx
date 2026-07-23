@@ -11,6 +11,7 @@ import { EntityDetailPanel } from "@/components/entity/entity-detail-panel";
 import type { Citation } from "@/types";
 import { graphEdgeFocusOpacity, graphNodeFocusOpacity, oneHopNodeIds } from "@/lib/graph-hover";
 import { THEME_CHANGE_EVENT } from "@/lib/theme";
+import { groupWorkspaceEntities } from "@/lib/unified-entity-graph";
 import {
   fetchUniverseLibraries,
   universeFallbackWarning,
@@ -36,6 +37,9 @@ export interface GraphNode {
   vy: number;
   radius: number;
   color: string;
+  sourceMapCount?: number;
+  sourceMapIds?: string[];
+  entityOccurrences?: { mapId: string; entityId: string }[];
 }
 
 export interface GraphLink {
@@ -93,12 +97,24 @@ export function buildUniverseData(libraries: LibraryGraph[]): { nodes: GraphNode
   const libraryTerms = new Map<string, Set<string>>();
   const exactConcepts = new Map<string, GraphNode[]>();
   const libraryCount = Math.max(1, libraries.length);
-
-  libraries.forEach((library, libraryIndex) => {
+  const clusterPositions = new Map(libraries.map((library, libraryIndex) => {
     const clusterAngle = (libraryIndex / libraryCount) * Math.PI * 2 - Math.PI / 2;
     const clusterDistance = libraryCount === 1 ? 0 : 340 + libraryCount * 28;
-    const clusterX = Math.cos(clusterAngle) * clusterDistance;
-    const clusterY = Math.sin(clusterAngle) * clusterDistance;
+    return [library.map.id, {
+      x: Math.cos(clusterAngle) * clusterDistance,
+      y: Math.sin(clusterAngle) * clusterDistance,
+    }] as const;
+  }));
+  const workspaceEntityGroups = groupWorkspaceEntities(libraries);
+  const groupByOccurrence = new Map(workspaceEntityGroups.flatMap((group) => (
+    group.occurrences.map((occurrence) => [`${occurrence.mapId}:${occurrence.entity.id}`, group] as const)
+  )));
+  const addedWorkspaceEntityIds = new Set<string>();
+
+  libraries.forEach((library) => {
+    const cluster = clusterPositions.get(library.map.id) || { x: 0, y: 0 };
+    const clusterX = cluster.x;
+    const clusterY = cluster.y;
     const hubId = `library:${library.map.id}`;
     nodes.push({
       id: hubId,
@@ -155,20 +171,53 @@ export function buildUniverseData(libraries: LibraryGraph[]): { nodes: GraphNode
     });
 
     const entityNodeIds = new Map<string, string>();
-    library.entityGraph.entities.slice(0, 60).forEach((entity, entityIndex) => {
-      const graphId = `${library.map.id}:entity:${entity.id}`;
+    library.entityGraph.entities.slice(0, 60).forEach((entity) => {
+      const workspaceGroup = groupByOccurrence.get(`${library.map.id}:${entity.id}`);
+      if (!workspaceGroup) return;
+      const graphId = `entity:${workspaceGroup.id}`;
       entityNodeIds.set(entity.id, graphId);
+      if (addedWorkspaceEntityIds.has(graphId)) return;
+      addedWorkspaceEntityIds.add(graphId);
+      const centers = workspaceGroup.sourceMapIds
+        .map((mapId) => clusterPositions.get(mapId))
+        .filter((value): value is { x: number; y: number } => Boolean(value));
+      const center = centers.reduce((sum, value) => ({ x: sum.x + value.x, y: sum.y + value.y }), { x: 0, y: 0 });
+      const baseX = center.x / Math.max(1, centers.length);
+      const baseY = center.y / Math.max(1, centers.length);
       const seed = hashNumber(graphId);
-      const angle = ((scopedNodes.length + entityIndex) / Math.max(1, scopedNodes.length + library.entityGraph.entities.length)) * Math.PI * 2 + (seed % 31) / 31;
-      const distance = 120 + (seed % 190);
+      const angle = ((seed % 360) / 360) * Math.PI * 2;
+      const sharedAcrossMaps = workspaceGroup.sourceMapIds.length > 1;
+      const distance = sharedAcrossMaps ? 35 + (seed % 80) : 120 + (seed % 190);
+      const primary = workspaceGroup.primary;
       const graphNode: GraphNode = {
-        id: graphId, mapId: library.map.id, mapName: library.map.name, label: entity.canonicalName,
-        type: "entity", refKind: "entity", refId: entity.id, x: clusterX + Math.cos(angle) * distance,
-        y: clusterY + Math.sin(angle) * distance, vx: 0, vy: 0, radius: 6.5, color: "#a78bfa",
+        id: graphId,
+        mapId: primary.mapId,
+        mapName: sharedAcrossMaps
+          ? `${workspaceGroup.sourceMapIds.length} 个知识库：${workspaceGroup.sourceMapNames.join("、")}`
+          : primary.mapName,
+        label: workspaceGroup.canonicalName,
+        type: "entity",
+        refKind: "entity",
+        refId: primary.entity.id,
+        x: baseX + Math.cos(angle) * distance,
+        y: baseY + Math.sin(angle) * distance,
+        vx: 0,
+        vy: 0,
+        radius: sharedAcrossMaps ? 9 : 6.5,
+        color: sharedAcrossMaps ? "#f59e0b" : "#a78bfa",
+        sourceMapCount: workspaceGroup.sourceMapIds.length,
+        sourceMapIds: workspaceGroup.sourceMapIds,
+        entityOccurrences: workspaceGroup.occurrences.map((occurrence) => ({
+          mapId: occurrence.mapId,
+          entityId: occurrence.entity.id,
+        })),
       };
       nodes.push(graphNode);
-      topicTerms(`${entity.canonicalName} ${entity.description}`).forEach((term) => terms.add(term));
-      const exact = normalizedLabel(entity.canonicalName);
+      workspaceGroup.occurrences.forEach((occurrence) => {
+        const targetTerms = libraryTerms.get(occurrence.mapId);
+        topicTerms(`${occurrence.entity.canonicalName} ${occurrence.entity.description}`).forEach((term) => targetTerms?.add(term));
+      });
+      const exact = normalizedLabel(workspaceGroup.canonicalName);
       if (exact.length >= 2) {
         const entries = exactConcepts.get(exact) || [];
         entries.push(graphNode);
@@ -247,7 +296,12 @@ export function buildUniverseData(libraries: LibraryGraph[]): { nodes: GraphNode
     }
   }
 
-  return { nodes, links, crossLibraryCount: links.filter((link) => link.kind === "cross-library").length };
+  const sharedEntityCount = workspaceEntityGroups.filter((group) => group.sourceMapIds.length > 1).length;
+  return {
+    nodes,
+    links,
+    crossLibraryCount: sharedEntityCount + links.filter((link) => link.kind === "cross-library").length,
+  };
 }
 
 function simulateForceLayout(nodes: GraphNode[], links: GraphLink[], iterations = 72) {
@@ -664,12 +718,43 @@ export function UniverseView() {
   const selectedEntityNode = selectedEntityNodeId
     ? positionedNodes.find((node) => node.id === selectedEntityNodeId && node.refKind === "entity") || null
     : null;
-  const selectedEntityLibrary = selectedEntityNode
-    ? visibleLibraries.find((library) => library.map.id === selectedEntityNode.mapId) || null
-    : null;
-  const selectedUniverseEntity = selectedEntityNode && selectedEntityLibrary
-    ? selectedEntityLibrary.entityGraph.entities.find((entity) => entity.id === selectedEntityNode.refId) || null
-    : null;
+  const selectedEntityContext = useMemo(() => {
+    if (!selectedEntityNode) return null;
+    const occurrences = selectedEntityNode.entityOccurrences || [{ mapId: selectedEntityNode.mapId, entityId: selectedEntityNode.refId }];
+    const occurrenceIds = new Set(occurrences.map((item) => item.entityId));
+    const sourceLibraries = visibleLibraries.filter((library) => occurrences.some((item) => item.mapId === library.map.id));
+    const records = occurrences.flatMap((occurrence) => {
+      const library = sourceLibraries.find((item) => item.map.id === occurrence.mapId);
+      const entity = library?.entityGraph.entities.find((item) => item.id === occurrence.entityId);
+      return entity ? [{ library, entity }] : [];
+    });
+    const primary = records.find((record) => (
+      record.library?.map.id === selectedEntityNode.mapId && record.entity.id === selectedEntityNode.refId
+    )) || records[0];
+    if (!primary?.library) return null;
+    const citationKey = (citation: Citation) => `${citation.documentId || "source"}:${citation.index}:${citation.quote}`;
+    const mergeCitations = (items: Citation[][]) => Array.from(new Map(items.flat().map((citation) => [citationKey(citation), citation])).values());
+    const mergedEntity = {
+      ...primary.entity,
+      aliases: Array.from(new Set(records.flatMap((record) => [record.entity.canonicalName, ...(record.entity.aliases || [])])))
+        .filter((alias) => alias && alias !== primary.entity.canonicalName),
+      citations: mergeCitations(records.map((record) => record.entity.citations || [])),
+      descriptionCitations: mergeCitations(records.map((record) => record.entity.descriptionCitations || [])),
+    };
+    const relations = sourceLibraries.flatMap((library) => library.entityGraph.relations)
+      .filter((relation) => occurrenceIds.has(relation.sourceId) || occurrenceIds.has(relation.targetId))
+      .map((relation) => ({
+        ...relation,
+        sourceId: occurrenceIds.has(relation.sourceId) ? mergedEntity.id : relation.sourceId,
+        targetId: occurrenceIds.has(relation.targetId) ? mergedEntity.id : relation.targetId,
+      }))
+      .filter((relation) => relation.sourceId !== relation.targetId);
+    const entities = [
+      mergedEntity,
+      ...sourceLibraries.flatMap((library) => library.entityGraph.entities).filter((entity) => !occurrenceIds.has(entity.id)),
+    ];
+    return { entity: mergedEntity, entities, relations, library: primary.library };
+  }, [selectedEntityNode, visibleLibraries]);
   const hoveredLink = hoveredLinkId ? universeData.links.find((link) => link.id === hoveredLinkId) || null : null;
 
   const closeUniverseEntity = useCallback(() => setSelectedEntityNodeId(null), []);
@@ -722,7 +807,7 @@ export function UniverseView() {
 
       <div className="absolute left-4 top-16 z-30 max-w-[min(620px,calc(100%-2rem))] rounded-2xl border border-[var(--border-default)] bg-[var(--tooltip-bg)] p-4 shadow-[var(--shadow-md)] backdrop-blur-xl">
         <div className="text-sm font-semibold text-[var(--text-primary)]">🌌 {modeConfig.label}宇宙</div>
-        <div className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">{visibleLibraries.length} 个知识库 · {totalNodes} 个节点 · <span data-testid="universe-cross-library-count" data-count={universeData.crossLibraryCount}>{universeData.crossLibraryCount}</span> 条跨库关系</div>
+        <div className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">{visibleLibraries.length} 个知识库 · {totalNodes} 个节点 · <span data-testid="universe-cross-library-count" data-count={universeData.crossLibraryCount}>{universeData.crossLibraryCount}</span> 个共享实体与跨库关系</div>
         <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-[var(--text-secondary)]">
           <span><i className="mr-1 inline-block h-px w-4 bg-[var(--canvas-edge)] align-middle" />库内层级</span>
           <span><i className="mr-1 inline-block h-px w-4 border-t border-dashed border-pink-300/70 align-middle" />概念关联</span>
@@ -748,12 +833,12 @@ export function UniverseView() {
         </div>
       )}
 
-      {selectedUniverseEntity && selectedEntityLibrary && selectedEntityNode && (
+      {selectedEntityContext && selectedEntityNode && (
         <EntityDetailPanel
-          entity={selectedUniverseEntity}
-          entities={selectedEntityLibrary.entityGraph.entities}
-          relations={selectedEntityLibrary.entityGraph.relations}
-          mapName={selectedEntityLibrary.map.name}
+          entity={selectedEntityContext.entity}
+          entities={selectedEntityContext.entities}
+          relations={selectedEntityContext.relations}
+          mapName={selectedEntityNode.mapName}
           onClose={closeUniverseEntity}
           onLocate={locateUniverseEntity}
           onOpenLibrary={openSelectedEntityLibrary}

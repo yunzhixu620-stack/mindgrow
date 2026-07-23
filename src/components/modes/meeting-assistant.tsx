@@ -48,6 +48,7 @@ export function MeetingAssistant() {
   const [result, setResult] = useState<MeetingResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [confirmed, setConfirmed] = useState(false);
   const [notice, setNotice] = useState("");
   const mountedRef = useRef(true);
 
@@ -67,7 +68,7 @@ export function MeetingAssistant() {
   async function generate() {
     if (transcript.trim().length < 10) { setNotice("请先输入或录入会议内容"); return; }
     const requestMapId = currentMapId;
-    setBusy(true); setNotice(""); setResult(null); setEntityGraph({ entities: [], relations: [] });
+    setBusy(true); setNotice(""); setResult(null); setConfirmed(false); setEntityGraph({ entities: [], relations: [] });
     try {
       const response = await apiFetch("/api/tools/meeting", {
         method: "POST",
@@ -108,17 +109,20 @@ export function MeetingAssistant() {
           document: { title: result.title, sourceType: "meeting", fileName: "" },
           extraction: { pageCount: 0, tablePages: [], imagePages: [], scannedPages: [], truncated: false },
           entityGraph: result.entityGraph,
+          confirmedForLongTerm: true,
         }),
       });
       const data = await response.json();
       if (!isActiveMeetingMap(requestMapId)) return;
       if (!response.ok) throw new Error(data.error || "保存失败");
+      if (data.longTermCommitted !== true) throw new Error("服务器未确认长期知识写入，请重试");
       const savedMapId = String(data.mapId || requestMapId);
       if (savedMapId !== requestMapId) setCurrentMapId(savedMapId);
       const reload = await apiFetch(`/api/knowledge?mapId=${encodeURIComponent(savedMapId)}`);
       const graph = await reload.json();
       if (!isActiveMeetingMap(savedMapId)) return;
       if (reload.ok) { setNodes(graph.nodes || []); setEdges(graph.edges || []); setEntityGraph(graph.entityGraph || { entities: [], relations: [] }); }
+      setConfirmed(true);
       setNotice(`已保存 ${data.totalNodes || 0} 个会议知识节点、${data.totalCitations || 0} 条引用、${data.entityCount || 0} 个实体、${data.relationCount || 0} 条可溯源关系和 ${data.indexedChunks || 0} 个可检索分块`);
     } catch (error) { if (isActiveMeetingMap(requestMapId)) setNotice(error instanceof Error ? error.message : "保存失败"); }
     finally { if (mountedRef.current) setSaving(false); }
@@ -130,7 +134,7 @@ export function MeetingAssistant() {
     <section className="h-full w-full overflow-y-auto bg-[var(--background)]" data-mode-library-id={currentMapId} data-testid="meeting-content-workspace">
       <div className="mx-auto max-w-6xl p-4">
         <div className="mb-6 flex flex-col gap-3 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4 md:flex-row md:items-center md:justify-between">
-          <div><h2 className="text-lg font-semibold">🎯 会议助手</h2><p className="mt-1 text-xs text-[var(--text-tertiary)]">实时口述或粘贴会议原文，提取决议、行动项和风险；内容只进入会议板块。</p></div>
+          <div><h2 className="text-lg font-semibold">🎯 会议助手</h2><p className="mt-1 text-xs text-[var(--text-tertiary)]">先生成可检查的草稿；只有你明确确认后，会议内容才会进入长期知识库和统一知识宇宙。</p></div>
           <div className="rounded-xl border border-sky-400/30 bg-sky-400/10 px-3 py-2 text-xs text-sky-200"><span className="font-semibold">独立会议知识库</span><span className="mx-2 opacity-40">·</span>{currentMap?.name || "会议知识库"}<span className="mx-2 opacity-40">·</span>{nodeCount} 节点</div>
         </div>
         <div className={`grid gap-5 ${result ? "lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]" : "mx-auto max-w-2xl"}`}>
@@ -150,6 +154,13 @@ export function MeetingAssistant() {
         </div>
 
       {result && <div className="space-y-3 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4 animate-fade-in">
+        <div
+          className={`rounded-xl border px-3 py-2 text-xs ${confirmed ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200" : "border-amber-300/30 bg-amber-300/10 text-amber-100"}`}
+          data-testid="meeting-draft-status"
+          data-persisted={confirmed ? "true" : "false"}
+        >
+          {confirmed ? "已确认：这份会议纪要已进入长期知识库和统一知识宇宙。" : "当前仅为预览草稿：可先核对结论与引用，尚未写入长期知识库。"}
+        </div>
         <AnswerCard
           title={result.title || "会议纪要"}
           conclusion={[
@@ -170,7 +181,7 @@ export function MeetingAssistant() {
           audit={result.citationAudit}
           sourceType="meeting"
         />
-        <button onClick={() => void save()} disabled={saving || answerRefused} className="w-full rounded-xl border border-[var(--primary-border)] bg-[var(--primary-subtle)] py-2.5 text-sm font-medium text-[var(--primary-hover)] disabled:opacity-40">{saving ? "正在保存…" : answerRefused ? "证据不足，暂不保存" : "保存到会议知识库"}</button>
+        <button onClick={() => void save()} disabled={saving || answerRefused || confirmed} className="w-full rounded-xl border border-[var(--primary-border)] bg-[var(--primary-subtle)] py-2.5 text-sm font-medium text-[var(--primary-hover)] disabled:opacity-40">{saving ? "正在保存…" : answerRefused ? "证据不足，暂不保存" : confirmed ? "已确认并进入长期知识库" : "确认并加入长期知识库"}</button>
       </div>}
         </div>
       </div>
