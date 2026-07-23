@@ -41,7 +41,8 @@ const proxy = require("../../../fc-proxy/index.js") as {
       title: string;
       summary: string;
       decisions: unknown[];
-      actionItems: unknown[];
+      actionItems: Array<{ task: string; owner?: string; due?: string; citationIndexes?: number[] }>;
+      openQuestions: Array<{ text: string; citationIndexes?: number[] }>;
       actionItemStatus: string;
       citations: Array<{ quote: string; charStart: number; charEnd: number }>;
     };
@@ -138,5 +139,21 @@ describe("knowledge quality contracts", () => {
     for (const citation of result.data.citations) {
       expect(citation.charEnd - citation.charStart).toBe(citation.quote.length);
     }
+  });
+
+  it("keeps explicit open questions, owners and Chinese deadlines in the fixed meeting structure", async () => {
+    const result = await proxy.handleMeetingTool({
+      title: "QA-v18 发布评审会",
+      participants: "李明、王芳、赵强",
+      transcript: "李明：我们确认 v18 数据库迁移今天上线。王芳：前端由王芳负责，7月24日18点前完成缓存清理和发布。赵强：文章链接抓取对 arXiv 需要在 HTML 失败后降级 PDF。团队确认采用该方案。未决问题：Audio Overview 是否使用阿里云 TTS，明天再评估。",
+    });
+    expect(result.status).toBe(200);
+    expect(result.data.openQuestions.map((item) => item.text).join(" ")).toContain("Audio Overview");
+    expect(result.data.actionItems).toHaveLength(1);
+    expect(result.data.actionItems[0]).toMatchObject({
+      owner: "王芳",
+      due: "7月24日18点前",
+    });
+    expect(result.data.actionItems[0].citationIndexes?.length).toBeGreaterThan(0);
   });
 });

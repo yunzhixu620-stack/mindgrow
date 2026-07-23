@@ -22,7 +22,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.20.0';
+const API_VERSION = '10.20.1';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -3847,6 +3847,30 @@ function isExplicitMeetingAction(value) {
   return /(?:[\u4e00-\u9fffA-Za-z0-9_-]{1,30})(?:负责|将在|需在|需要在|应在|必须在|请在)|(?:完成|提交|复测|修复|部署|跟进|发送|整理).{0,30}(?:截止|期限|之前|前完成)|(?:owner|responsible|action item|will\s+(?:deliver|send|fix|deploy|review))/i.test(text);
 }
 
+function isExplicitMeetingOpenQuestion(value) {
+  const text = normalizeSpaces(value);
+  if (!text) return false;
+  return /(?:未决问题|开放问题|待讨论|待评估|待确认是否|尚待|仍需评估|还需评估|后续评估|明天再评估|待确定|待决定|open question|to be decided|\bTBD\b)/i.test(text);
+}
+
+function meetingOwnerFromEvidence(value) {
+  const text = normalizeSpaces(value);
+  const match = text.match(/由\s*([\u4e00-\u9fff]{2,4})\s*负责/)
+    || text.match(/(?:^|[：:，,。；;\s])([\u4e00-\u9fff]{2,4})\s*(?:将负责|负责)/)
+    || text.match(/(?:owner|responsible)[：:\s]+([A-Za-z][A-Za-z .'-]{1,60})/i);
+  return match ? String(match[1] || '').trim() : '';
+}
+
+function meetingDueFromEvidence(value) {
+  const text = normalizeSpaces(value);
+  const explicit = text.match(/(?:截止|期限(?:为|至)?|due(?:\s+on)?)[：:\s]*((?:[0-9]{4}[-/.年])?[0-9]{1,2}(?:[-/.月][0-9]{1,2}日?)?(?:\s*[0-9]{1,2}(?:点|时|:[0-9]{2})(?:[0-9]{1,2}分)?)?(?:前|之前)?)/i);
+  if (explicit) return String(explicit[1] || '').trim();
+  const chineseDate = text.match(/([0-9]{1,2}月[0-9]{1,2}日(?:\s*[0-9]{1,2}(?:点|时)(?:[0-9]{1,2}分)?)?(?:前|之前)?)/);
+  if (chineseDate) return String(chineseDate[1] || '').trim();
+  const isoDate = text.match(/([0-9]{4}[-/.][0-9]{1,2}[-/.][0-9]{1,2}(?:\s+[0-9]{1,2}:[0-9]{2})?(?:前|之前)?)/);
+  return isoDate ? String(isoDate[1] || '').trim() : '';
+}
+
 function fallbackMeetingAnalysis(title, transcript, citations, allowedIndexes) {
   const evidence = Array.isArray(citations) && citations.length
     ? citations
@@ -3885,14 +3909,14 @@ function fallbackMeetingAnalysis(title, transcript, citations, allowedIndexes) {
   const risks = exactItems.filter((item) => (
     /(因为|由于|导致|根因|风险|失败|错误|回滚|未刷新|旧文档|because|caused|risk|fail)/i.test(item.text)
   )).slice(0, 30);
-  const openQuestions = exactItems.filter((item) => negativeDecision.test(item.text)).slice(0, 30);
+  const openQuestions = exactItems.filter((item) => (
+    negativeDecision.test(item.text) || isExplicitMeetingOpenQuestion(item.text)
+  )).slice(0, 30);
   const actionItems = exactItems.filter((item) => isExplicitMeetingAction(item.text)).slice(0, 50).map((item) => {
-    const ownerMatch = item.text.match(/(?:^|[，,。；;\s])([\u4e00-\u9fff]{2,4})\s*(?:将负责|负责)/);
-    const dueMatch = item.text.match(/(?:截止|期限(?:为|至)?|due(?:\s+on)?)[：:\s]*([0-9]{4}[-/.年][0-9]{1,2}(?:[-/.月][0-9]{1,2}日?)?)/i);
     return {
       task: item.text,
-      owner: ownerMatch ? ownerMatch[1] : '',
-      due: dueMatch ? dueMatch[1] : '',
+      owner: meetingOwnerFromEvidence(item.text),
+      due: meetingDueFromEvidence(item.text),
       status: '待办',
       citationIndexes: item.citationIndexes,
     };
@@ -4168,7 +4192,8 @@ async function handleMeetingTool(body) {
   const citations = buildMeetingCitations(transcript);
   const documentChunks = buildDocumentChunks(transcript, 'meeting', '');
   const allowedIndexes = new Set(citations.map((item) => item.index));
-  let parsed = fallbackMeetingAnalysis(title, transcript, citations, allowedIndexes);
+  const deterministicAnalysis = fallbackMeetingAnalysis(title, transcript, citations, allowedIndexes);
+  let parsed = deterministicAnalysis;
   let usedDeterministicFallback = true;
   if (MEETING_AI_ENHANCEMENT) {
     usedDeterministicFallback = false;
@@ -4210,31 +4235,51 @@ async function handleMeetingTool(body) {
     const text = String(typeof item === 'string' ? item : (item && item.text) || '').trim().slice(0, 1200);
     return { text, citationIndexes: verifiedIndexes(item && item.citationIndexes, allowedIndexes, text, citations, citations) };
   };
-  const decisions = (Array.isArray(parsed.decisions) ? parsed.decisions : []).slice(0, 30).map(citedText).filter((item) => item.text);
-  const risks = (Array.isArray(parsed.risks) ? parsed.risks : []).slice(0, 30).map(citedText).filter((item) => item.text);
-  const openQuestions = (Array.isArray(parsed.openQuestions) ? parsed.openQuestions : []).slice(0, 30).map(citedText).filter((item) => item.text);
+  const mergeCitedItems = (primary, deterministic, maximum) => {
+    const seen = new Set();
+    return [...(Array.isArray(primary) ? primary : []), ...(Array.isArray(deterministic) ? deterministic : [])]
+      .map(citedText)
+      .filter((item) => {
+        const key = normalizeSpaces(item.text).toLowerCase();
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .slice(0, maximum);
+  };
+  const decisions = mergeCitedItems(parsed.decisions, deterministicAnalysis.decisions, 30);
+  const risks = mergeCitedItems(parsed.risks, deterministicAnalysis.risks, 30);
+  const openQuestions = mergeCitedItems(parsed.openQuestions, deterministicAnalysis.openQuestions, 30);
   const topics = (Array.isArray(parsed.topics) ? parsed.topics : []).slice(0, 20).map((item) => ({
     title: String((item && item.title) || '').trim().slice(0, 500),
     citationIndexes: verifiedIndexes(item && item.citationIndexes, allowedIndexes, item && item.title, citations, citations),
     details: (Array.isArray(item && item.details) ? item.details : []).slice(0, 20).map(citedText).filter((detail) => detail.text),
   })).filter((item) => item.title);
   const placeholderAction = /^(待确认|待补充|后续跟进|暂无|无|none|n\/a)$/i;
-  const actionItems = (Array.isArray(parsed.actionItems) ? parsed.actionItems : []).slice(0, 50).map((item) => {
+  const seenActions = new Set();
+  const actionItems = [
+    ...(Array.isArray(parsed.actionItems) ? parsed.actionItems : []),
+    ...(Array.isArray(deterministicAnalysis.actionItems) ? deterministicAnalysis.actionItems : []),
+  ].slice(0, 80).map((item) => {
     const task = String((item && item.task) || '').trim().slice(0, 1000);
     const owner = String((item && item.owner) || '').trim().slice(0, 200);
     const explicitDue = String((item && item.due) || '').trim().slice(0, 200);
     const citationIndexes = verifiedIndexes(item && item.citationIndexes, allowedIndexes, `${task} ${owner} ${explicitDue}`, citations, citations);
     const citedEvidence = citationIndexes.map((index) => String((citations[index - 1] && citations[index - 1].quote) || '')).join(' ');
-    const dueMatch = citedEvidence.match(/(?:截止|期限(?:为|至)?|due(?:\s+on)?)[：:\s]*([0-9]{4}[-/.年][0-9]{1,2}(?:[-/.月][0-9]{1,2}日?)?)/i);
     return {
       task,
-      owner,
-      due: explicitDue || (dueMatch ? dueMatch[1] : ''),
+      owner: owner || meetingOwnerFromEvidence(citedEvidence),
+      due: explicitDue || meetingDueFromEvidence(citedEvidence),
       status: String((item && item.status) || '待办').trim().slice(0, 100),
       citationIndexes,
       explicitAction: isExplicitMeetingAction(task) || isExplicitMeetingAction(citedEvidence),
     };
-  }).filter((item) => item.task && item.explicitAction && !placeholderAction.test(item.task))
+  }).filter((item) => {
+    const key = normalizeSpaces(item.task).toLowerCase();
+    if (!key || seenActions.has(key) || !item.explicitAction || placeholderAction.test(item.task)) return false;
+    seenActions.add(key);
+    return true;
+  }).slice(0, 50)
     .map(({ explicitAction: _explicitAction, ...item }) => item);
   const summaryCandidate = String(parsed.summary || mindMap.rootDesc || '').trim();
   const summaryMatch = summaryCandidate.match(/^.*?[。！？!?]/s);

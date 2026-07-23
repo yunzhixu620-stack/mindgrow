@@ -4,8 +4,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/client-api";
 import { useMindGrowStore } from "@/store/mindgrow-store";
 import { useSpeechInput } from "@/hooks/use-speech-input";
-import { mindMapToPreviewGraph } from "@/lib/mindmap-preview";
-import { aiEntityGraphToEntityGraph } from "@/lib/entity-graph";
 import { AnswerCard } from "@/components/answer/answer-card";
 import type { AIEntityGraph, AIMindMap, Citation, CitationAudit } from "@/types";
 import { useLocale } from "@/components/i18n/locale-provider";
@@ -112,7 +110,7 @@ export function MeetingAssistant() {
   async function generate() {
     if (transcript.trim().length < 10) { setNotice(english ? "Add or dictate meeting content first" : "请先输入或录入会议内容"); return; }
     const requestMapId = currentMapId;
-    setBusy(true); setNotice(""); setResult(null); setConfirmed(false); setEntityGraph({ entities: [], relations: [] });
+    setBusy(true); setNotice(""); setResult(null); setConfirmed(false);
     try {
       const response = await apiFetch("/api/tools/meeting", {
         method: "POST",
@@ -123,12 +121,6 @@ export function MeetingAssistant() {
       if (!isActiveMeetingMap(requestMapId)) return;
       if (!response.ok) throw new Error(data.error || (english ? "Generation failed" : "生成失败"));
       setResult(data);
-      if (data.mindMap) {
-        const preview = mindMapToPreviewGraph(data.mindMap, "meeting", data.citations || []);
-        setNodes(preview.nodes);
-        setEdges(preview.edges);
-      }
-      setEntityGraph(aiEntityGraphToEntityGraph(data.entityGraph, data.citations || [], `meeting:${requestMapId}:${Date.now()}`));
     } catch (error) { if (isActiveMeetingMap(requestMapId)) setNotice(error instanceof Error ? error.message : (english ? "Generation failed" : "生成失败")); }
     finally { if (mountedRef.current) setBusy(false); }
   }
@@ -207,7 +199,7 @@ export function MeetingAssistant() {
         >
           {confirmed
             ? (english ? "Confirmed: these notes are now in long-term knowledge and the unified universe." : "已确认：这份会议纪要已进入长期知识库和统一知识宇宙。")
-            : (english ? "Preview draft: review conclusions and citations before saving to long-term knowledge." : "当前仅为预览草稿：可先核对结论与引用，尚未写入长期知识库。")}
+            : (english ? "Preview draft: the graph on the right remains the saved long-term library until you confirm." : "当前仅为预览草稿：右侧仍显示已保存的长期知识图谱；确认后才会合并更新。")}
         </div>
         <MeetingStructuredOverview result={result} />
         <details className="rounded-xl border border-[var(--border)] bg-[var(--background)] p-3">
