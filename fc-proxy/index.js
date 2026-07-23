@@ -29,7 +29,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.21.15';
+const API_VERSION = '10.21.16';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -3143,7 +3143,10 @@ function structureItemGrounded(item, sourceText) {
   if (!value) return false;
   const source = normalizeSpaces(sourceText).toLowerCase();
   const genericPlaceholder = /(未明确.{0,24}(?:需|需要).{0,16}(?:补充|确认)|需结合(?:其他)?(?:文档|材料)补充|(?:输入|原文|材料|文档)(?:中)?(?:未|没有)(?:提供|说明|明确).{0,18}(?:机制|细节|内容)|not specified.{0,30}(?:needs?|requires?).{0,20}(?:clarification|details)|details? (?:need|needs) to be provided)/i;
-  if (genericPlaceholder.test(value) && !source.includes(value.toLowerCase())) return false;
+  const genericInputGap = /(?:输入|原文|材料|文档)/.test(value)
+    && /(?:截断|未|没有|缺少|无明确)/.test(value)
+    && /(?:机制|细节|内容|说明)/.test(value);
+  if ((genericPlaceholder.test(value) || genericInputGap) && !source.includes(value.toLowerCase())) return false;
   const numbers = value.match(/\d+(?:\.\d+)?(?:%|％)?/g) || [];
   if (numbers.some((number) => !source.includes(number.toLowerCase()))) return false;
   const anchors = queryAnchors(value);
