@@ -29,7 +29,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.21.24';
+const API_VERSION = '10.21.25';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true'
@@ -4775,7 +4775,7 @@ function buildMeetingCitations(transcript) {
 function isExplicitMeetingAction(value) {
   const text = normalizeSpaces(value);
   if (!text || /(?:未形成|没有形成|无|无需|不需要|尚未确定|尚未分配).{0,12}(?:行动项|待办|任务|负责人)/i.test(text)) return false;
-  return /(?:[\u4e00-\u9fffA-Za-z0-9_-]{1,30})(?:负责|将在|需在|需要在|应在|必须在|请在)|(?:完成|提交|复测|修复|部署|跟进|发送|整理).{0,30}(?:截止|期限|之前|前完成)|(?:owner|responsible|action item|will\s+(?:deliver|send|fix|deploy|review))/i.test(text);
+  return /(?:[\u4e00-\u9fffA-Za-z0-9_-]{1,30})(?:负责|将在|需在|需要在|应在|必须在|请在)|(?:完成|提交|复测|修复|部署|跟进|发送|整理).{0,30}(?:截止|期限|之前|前完成)|(?:owner|responsible|action item)|(?:(?:I|we)\s+(?:will|'ll|must|need to|commit to|am happy to)|I'm\s+happy\s+to|(?:I|we)'ll|will)\s+(?:deliver|send|fix|deploy|review|merge|seek|demote|advance|update|file|write|land|complete)/i.test(text);
 }
 
 function isExplicitMeetingOpenQuestion(value) {
@@ -4788,12 +4788,14 @@ function meetingOwnerFromEvidence(value) {
   const text = normalizeSpaces(value);
   const match = text.match(/由\s*([\u4e00-\u9fff]{2,4})\s*负责/)
     || text.match(/(?:^|[：:，,。；;\s])([\u4e00-\u9fff]{2,4})\s*(?:将负责|负责)/)
-    || text.match(/(?:owner|responsible)[：:\s]+([A-Za-z][A-Za-z .'-]{1,60})/i);
+    || text.match(/(?:owner|responsible)[：:\s]+([A-Za-z][A-Za-z .'-]{1,60})/i)
+    || text.match(/^([A-Z][A-Z0-9_-]{1,8})\s*:\s*.*\b(?:I\s+(?:will|must|need to|commit to|am happy to)|I'll|I'm\s+happy\s+to)\b/i);
   return match ? String(match[1] || '').trim() : '';
 }
 
 function meetingDueFromEvidence(value) {
   const text = normalizeSpaces(value);
+  if (/(?:by|before)\s+the\s+next\s+meeting|下次会议(?:前|之前)/i.test(text)) return '下次会议前';
   const explicit = text.match(/(?:截止|期限(?:为|至)?|due(?:\s+on)?)[：:\s]*((?:[0-9]{4}[-/.年])?[0-9]{1,2}(?:[-/.月][0-9]{1,2}日?)?(?:\s*[0-9]{1,2}(?:点|时|:[0-9]{2})(?:[0-9]{1,2}分)?)?(?:前|之前)?)/i);
   if (explicit) return String(explicit[1] || '').trim();
   const chineseDate = text.match(/([0-9]{1,2}月[0-9]{1,2}日(?:\s*[0-9]{1,2}(?:点|时)(?:[0-9]{1,2}分)?)?(?:前|之前)?)/);
@@ -4816,24 +4818,26 @@ function isMeetingMetadataFact(value) {
 function explicitMeetingDecision(value) {
   const text = normalizeSpaces(value);
   if (!text || isMeetingMetadataFact(text) || /[?？]\s*$/.test(text)) return false;
-  if (/(?:no|without|lack of)\s+consensus|(?:未|没有|尚未).{0,8}(?:达成|形成).{0,8}共识|(?:未|没有|尚未).{0,8}(?:批准|通过|确认|同意|决定)|not approved|did not (?:advance|reach)|seeking consensus|ask(?:ing)? for consensus/i.test(text)) {
+  if (/(?:no|without|lack of)\s+consensus|(?:assuming|if)\b.{0,100}\bconsensus|when you advance|please.{0,80}(?:conclusion|write)|(?:未|没有|尚未).{0,8}(?:达成|形成).{0,8}共识|(?:未|没有|尚未).{0,8}(?:批准|通过|确认|同意|决定)|not approved|did not (?:advance|reach)|seeking consensus|ask(?:ing)? for consensus/i.test(text)) {
     return false;
   }
-  return /(?:consensus\s+(?:to|for|on)|consensus (?:was|has been) reached|reaches?\s+stage\s*\d|advanced?\s+(?:through\s+stage\s*[\d.]+\s+)?to\s+stage\s*\d|proposal\s+(?:was\s+)?withdrawn|PR\s*#?\d+\s+(?:was\s+)?merged|(?:decided|approved|confirmed|agreed)\s+to|(?:决定|决议|批准|通过|确认|同意|达成共识|提案已撤回|已进入\s*Stage))/i.test(text);
+  return /(?:consensus\s+(?:to|for|on)|consensus (?:was|has been) reached|reaches?\s+stage\s*\d|advanced?\s+(?:through\s+stage\s*\d+(?:\.\d+)?\s+)?to\s+stage\s*\d|proposal\s+(?:was\s+)?withdrawn|PR\s*#?\d+\s+(?:was\s+)?merged|(?:decided|approved|confirmed|agreed)\s+to|(?:决定|决议|批准|通过|确认|同意|达成共识|提案已撤回|已进入\s*Stage))/i.test(text);
 }
 
 function deterministicMeetingDecisionText(value) {
   const text = normalizeSpaces(value).replace(/^(?:[-*•]+|\d+[.)])\s*/, '');
   let match = text.match(/consensus\s+to\s+merge\s+(?:the\s+)?PR\b/i);
   if (match) return '已达成合并该 PR 的共识。';
-  match = text.match(/consensus\s+for\s+stage\s*([\d.]+)/i);
+  match = text.match(/consensus\s+for\s+stage\s*(\d+(?:\.\d+)?)/i);
   if (match) return `已达成进入 Stage ${match[1]} 的共识。`;
-  match = text.match(/^(.{2,100}?)\s+reaches?\s+stage\s*([\d.]+)/i);
+  match = text.match(/^(.{2,100}?)\s+reaches?\s+stage\s*(\d+(?:\.\d+)?)/i);
   if (match) return `${normalizeSpaces(match[1])} 已进入 Stage ${match[2]}。`;
-  match = text.match(/(?:the\s+)?proposal\s+advanced?\s+(?:through\s+stage\s*([\d.]+)\s+)?to\s+stage\s*([\d.]+)/i);
+  match = text.match(/(?:the\s+)?proposal\s+advanced?\s+(?:through\s+stage\s*(\d+(?:\.\d+)?)\s+)?to\s+stage\s*(\d+(?:\.\d+)?)/i);
   if (match) return match[1]
     ? `该提案已从 Stage ${match[1]} 推进至 Stage ${match[2]}。`
     : `该提案已推进至 Stage ${match[2]}。`;
+  if (/consensus\s+(?:to|for)\s+withdraw(?:ing)?\s+(?:the\s+)?proposal/i.test(text)
+    || /consensus\s+for\s+withdrawing\s+(?:this|the)\s+proposal/i.test(text)) return '该提案已撤回。';
   if (/proposal\s+(?:was\s+)?withdrawn/i.test(text)) return '该提案已撤回。';
   match = text.match(/PR\s*#?(\d+)\s+(?:was\s+)?merged/i);
   if (match) return `PR #${match[1]} 已合并。`;
@@ -4915,6 +4919,29 @@ function fallbackMeetingAnalysis(title, transcript, citations, allowedIndexes) {
     },
     entityGraph: deterministicEvidenceEntityGraph(evidence, allowed),
   };
+}
+
+function normalizedMeetingDecisions(value, citations, allowedIndexes) {
+  const evidenceByIndex = new Map((Array.isArray(citations) ? citations : [])
+    .map((item) => [Number(item && item.index), item]));
+  const merged = new Map();
+  (Array.isArray(value) ? value : []).forEach((item) => {
+    const indexes = normalizeCitationIndexes(item && item.citationIndexes, allowedIndexes);
+    const evidence = indexes.map((index) => evidenceByIndex.get(index)).filter(Boolean)
+      .map((citation) => normalizeSpaces(citation.quote || citation.content));
+    const explicitEvidence = evidence.find((text) => explicitMeetingDecision(text));
+    if (!explicitEvidence) return;
+    const text = deterministicMeetingDecisionText(explicitEvidence);
+    const key = normalizeSpaces(text).toLowerCase();
+    if (!key) return;
+    const existing = merged.get(key);
+    if (existing) {
+      existing.citationIndexes = [...new Set([...existing.citationIndexes, ...indexes])].slice(0, 12);
+      return;
+    }
+    merged.set(key, { text, citationIndexes: indexes });
+  });
+  return [...merged.values()].slice(0, 30);
 }
 
 function citationAudit(claims, citations) {
@@ -5228,8 +5255,19 @@ async function handleMeetingTool(body) {
       child.itemCitationIndexes && child.itemCitationIndexes[index], allowedIndexes, item, citations, citations,
     )),
   }));
-  const meetingCoverage = ensureMindMapSourceCoverage(mindMap, transcript, citations, allowedIndexes);
+  const meetingCoverage = ensureMindMapSourceCoverage(
+    mindMap,
+    transcript,
+    citations,
+    allowedIndexes,
+    { maxAppendedFacts: 8, maximumFactLength: 240, rejectMarkdownFacts: true },
+  );
   mindMap = meetingCoverage.mindMap;
+  const meetingBudget = applyKnowledgeNodeBudget(
+    mindMap,
+    { kind: 'meeting', minimum: 6, maximum: 20 },
+  );
+  mindMap = meetingBudget.mindMap;
   const citedText = (item) => {
     const text = String(typeof item === 'string' ? item : (item && item.text) || '').trim().slice(0, 1200);
     return { text, citationIndexes: verifiedIndexes(item && item.citationIndexes, allowedIndexes, text, citations, citations) };
@@ -5246,7 +5284,11 @@ async function handleMeetingTool(body) {
       })
       .slice(0, maximum);
   };
-  const decisions = mergeCitedItems(parsed.decisions, deterministicAnalysis.decisions, 30);
+  const decisions = normalizedMeetingDecisions(
+    [...(Array.isArray(parsed.decisions) ? parsed.decisions : []), ...deterministicAnalysis.decisions],
+    citations,
+    allowedIndexes,
+  );
   const risks = mergeCitedItems(parsed.risks, deterministicAnalysis.risks, 30);
   const openQuestions = mergeCitedItems(parsed.openQuestions, deterministicAnalysis.openQuestions, 30);
   const topics = (Array.isArray(parsed.topics) ? parsed.topics : []).slice(0, 20).map((item) => ({
@@ -5311,7 +5353,7 @@ async function handleMeetingTool(body) {
       citations,
       documentChunks,
       citationAudit: audit,
-      sourceCoverage: meetingCoverage.audit,
+      sourceCoverage: { ...meetingCoverage.audit, nodeBudget: meetingBudget.audit },
       sourceType: 'meeting',
       degraded: usedDeterministicFallback,
     },

@@ -95,6 +95,13 @@ const proxy = require("../../../fc-proxy/index.js") as {
       openQuestions: Array<{ text: string; citationIndexes?: number[] }>;
       actionItemStatus: string;
       citations: Array<{ quote: string; charStart: number; charEnd: number }>;
+      mindMap: {
+        root: string;
+        children: Array<{ topic: string; items: string[] }>;
+      };
+      sourceCoverage: {
+        nodeBudget: { maximum: number; actual: number; overflowCompressed: number };
+      };
     };
   }>;
 };
@@ -367,6 +374,7 @@ describe("knowledge quality contracts", () => {
         "来源：https://raw.githubusercontent.com/tc39/notes/main/meetings/2026-05/may-19.md",
         "Presenter: Michael Ficarra (MF)",
         "MF: After this change, drop would reject this input immediately and throw a range error.",
+        "MF: Assuming that this is consensus, please write in the conclusion that we have consensus for accepting this needs-consensus PR.",
         "### Speaker's Summary of Key Points",
         "### Conclusion",
         "* Consensus to merge the PR.",
@@ -375,9 +383,33 @@ describe("knowledge quality contracts", () => {
 
     expect(result.status).toBe(200);
     expect(result.data.summary).toBe("已达成合并该 PR 的共识。");
-    expect(result.data.decisions.map((item) => item.text)).toContain("已达成合并该 PR 的共识。");
+    expect(result.data.decisions.map((item) => item.text)).toEqual(["已达成合并该 PR 的共识。"]);
     expect(result.data.openQuestions).toEqual([]);
     expect(result.data.summary).not.toMatch(/raw\.githubusercontent|Presenter/);
     expect(result.data.decisions[0].citationIndexes?.length).toBeGreaterThan(0);
+  });
+
+  it("captures an explicit next-meeting commitment and caps the saved meeting outline", async () => {
+    const transcript = [
+      "JHD: If the tests are not merged by the next meeting, I'm happy to demote the proposal to stage 2.7. I'll commit to that.",
+      "RGN: The tests are actively under review.",
+      "### Conclusion",
+      "* Error stack accessor reaches stage 3.",
+      "* If tests aren’t merged by the next meeting, will seek demotion to stage 2.7.",
+      ...Array.from({ length: 30 }, (_, index) => `Discussion detail ${index + 1}: the committee reviewed implementation evidence and compatibility risk ${index + 1}.`),
+    ].join("\n");
+    const result = await proxy.handleMeetingTool({
+      title: "Error stack accessor for stage 3",
+      participants: "Jordan Harband, TC39 delegates",
+      transcript,
+    });
+
+    expect(result.status).toBe(200);
+    expect(result.data.summary).toBe("Error stack accessor 已进入 Stage 3。");
+    expect(result.data.actionItems.some((item) => item.owner === "JHD" && item.due === "下次会议前")).toBe(true);
+    const nodeCount = 1 + result.data.mindMap.children.length
+      + result.data.mindMap.children.reduce((sum, child) => sum + child.items.length, 0);
+    expect(nodeCount).toBeLessThanOrEqual(20);
+    expect(result.data.sourceCoverage.nodeBudget).toMatchObject({ maximum: 20, actual: nodeCount });
   });
 });
