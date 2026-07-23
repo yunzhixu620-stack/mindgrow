@@ -48,6 +48,13 @@ import {
   WHITEBOARD_LARGE_MAP_THRESHOLD,
 } from "@/components/mindmap/whiteboard-layout";
 import { WhiteboardGroupNode, type WhiteboardGroupNodeData } from "@/components/mindmap/whiteboard-group-node";
+import {
+  buildDisplayHierarchy,
+  getOutlineCollapsedNodes,
+  isDisplayOverviewNode,
+  progressiveCollapseState,
+  visibleHierarchyNodeIds,
+} from "@/components/mindmap/progressive-outline";
 
 // ============================================================
 // Branch color palette
@@ -57,8 +64,6 @@ const BRANCH_COLORS = [
   "#f43f5e", "#8b5cf6", "#ec4899", "#14b8a6",
 ];
 
-const DISPLAY_OVERVIEW_PREFIX = "__mindgrow_overview__";
-const MAX_UNGROUPED_ROOTS = 5;
 const LOCAL_TENANT_SCOPE: TenantScope = { userId: "local-user", workspaceId: "local-workspace" };
 const WHITEBOARD_GROUP_COLORS = ["#22d3a7", "#38bdf8", "#818cf8", "#a78bfa", "#f59e0b", "#f472b6"];
 
@@ -94,90 +99,6 @@ const RELATION_STATUS_LABELS: Record<NonNullable<KnowledgeEdge["relationStatus"]
   negated: "否定",
   proposed: "待确认",
 };
-
-function isDisplayOverviewNode(nodeId: string) {
-  return nodeId.startsWith(DISPLAY_OVERVIEW_PREFIX);
-}
-
-/**
- * Expand exactly one level at a time. Newly revealed children that have their
- * own children stay collapsed, so opening a large overview never floods the
- * canvas with the entire descendant tree.
- */
-function progressiveCollapseState(
-  nodeId: string,
-  current: Set<string>,
-  edges: KnowledgeEdge[],
-) {
-  const next = new Set(current);
-  if (!next.has(nodeId)) {
-    next.add(nodeId);
-    return next;
-  }
-
-  next.delete(nodeId);
-  const parents = new Set(
-    edges.filter((edge) => edge.relation === "contains").map((edge) => edge.sourceId),
-  );
-  for (const edge of edges) {
-    if (edge.relation !== "contains" || edge.sourceId !== nodeId) continue;
-    if (parents.has(edge.targetId)) next.add(edge.targetId);
-  }
-  return next;
-}
-
-/**
- * A knowledge map can accumulate many independent source roots over time. They
- * are valid retrieval entities, so rewriting the stored GraphRAG topology just
- * to improve the canvas would add false semantic relationships. Instead, add a
- * display-only overview parent once the root count becomes hard to scan. The
- * original roots become visual children while stored nodes, citations and
- * retrieval edges remain untouched.
- */
-function buildDisplayHierarchy(
-  dbNodes: KnowledgeNode[],
-  dbEdges: KnowledgeEdge[],
-  mapId: string | null,
-  overviewLabel: string,
-) {
-  const childIds = new Set(
-    dbEdges.filter((edge) => edge.relation === "contains").map((edge) => edge.targetId),
-  );
-  const roots = dbNodes.filter((node) => !childIds.has(node.id));
-  if (roots.length <= MAX_UNGROUPED_ROOTS) {
-    return { nodes: dbNodes, edges: dbEdges, syntheticNodeCount: 0 };
-  }
-
-  const overviewId = `${DISPLAY_OVERVIEW_PREFIX}:${mapId || "current"}`;
-  const timestamps = roots.map((node) => node.createdAt).filter(Boolean).sort();
-  const createdAt = timestamps[0] || "1970-01-01T00:00:00.000Z";
-  const updatedAt = roots.map((node) => node.updatedAt).filter(Boolean).sort().at(-1) || createdAt;
-  const overviewNode: KnowledgeNode = {
-    id: overviewId,
-    content: overviewLabel,
-    desc: `统一收纳 ${roots.length} 个一级主题，仅调整画布展示层级；原节点层级与内容保持不变。`,
-    type: "topic",
-    status: "active",
-    source: "template",
-    confidence: 1,
-    createdAt,
-    updatedAt,
-  };
-  const overviewEdges: KnowledgeEdge[] = roots.map((root, index) => ({
-    id: `${overviewId}:edge:${index}`,
-    sourceId: overviewId,
-    targetId: root.id,
-    relation: "contains",
-    weight: 1,
-    createdAt,
-  }));
-
-  return {
-    nodes: [overviewNode, ...dbNodes],
-    edges: [...overviewEdges, ...dbEdges],
-    syntheticNodeCount: 1,
-  };
-}
 
 // ============================================================
 // Custom Node Component
@@ -467,55 +388,6 @@ function buildEntityNetworkGraph(
   return { nodes, edges, branchMap: new Map<string, number>() };
 }
 
-function getOutlineCollapsedNodes(dbNodes: KnowledgeNode[], dbEdges: KnowledgeEdge[]) {
-  const childrenOf = new Map<string, string[]>();
-  const childSet = new Set<string>();
-  for (const edge of dbEdges) {
-    if (edge.relation !== "contains") continue;
-    childSet.add(edge.targetId);
-    const children = childrenOf.get(edge.sourceId) || [];
-    children.push(edge.targetId);
-    childrenOf.set(edge.sourceId, children);
-  }
-  const roots = dbNodes.filter((node) => !childSet.has(node.id));
-  const collapsed = new Set<string>();
-
-  // Dense multi-source maps open as one display-only overview card. Expanding
-  // that card is handled as an explicit "show everything" action below, so no
-  // original branch is silently downgraded or left partially folded.
-  const displayOverview = roots.find((node) => isDisplayOverviewNode(node.id));
-  if (displayOverview) {
-    collapsed.add(displayOverview.id);
-    return collapsed;
-  }
-
-  const firstLevelByRoot = new Map<string, string[]>();
-  let outlineVisibleCount = roots.length;
-  for (const root of roots) {
-    const firstLevel = childrenOf.get(root.id) || [];
-    firstLevelByRoot.set(root.id, firstLevel);
-    outlineVisibleCount += firstLevel.length;
-    for (const child of firstLevel) {
-      if ((childrenOf.get(child) || []).length) collapsed.add(child);
-    }
-  }
-
-  // As knowledge accumulates, keep recent trees expanded and compress older trees to root cards.
-  // Expanding an older root reveals its first level while those branches remain safely folded.
-  const MAX_OUTLINE_NODES = 12;
-  if (roots.length > 1 && outlineVisibleCount > MAX_OUTLINE_NODES) {
-    const oldestRoots = [...roots].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-    for (const root of oldestRoots) {
-      if (outlineVisibleCount <= MAX_OUTLINE_NODES) break;
-      const firstLevel = firstLevelByRoot.get(root.id) || [];
-      if (!firstLevel.length) continue;
-      collapsed.add(root.id);
-      outlineVisibleCount -= firstLevel.length;
-    }
-  }
-  return collapsed;
-}
-
 // ============================================================
 // Tree Layout
 // ============================================================
@@ -703,13 +575,10 @@ function buildGraph(
 
   // Collect all visible IDs (respecting collapse)
   const childrenOfAll = new Map<string, string[]>();
-  const childSetAll = new Set<string>();
   for (const edge of scopedEdges) {
-    if (edge.relation === "contains") { childSetAll.add(edge.targetId); const l = childrenOfAll.get(edge.sourceId) || []; l.push(edge.targetId); childrenOfAll.set(edge.sourceId, l); }
+    if (edge.relation === "contains") { const l = childrenOfAll.get(edge.sourceId) || []; l.push(edge.targetId); childrenOfAll.set(edge.sourceId, l); }
   }
-  const visibleIds = new Set<string>();
-  function collectVisible(nid: string) { visibleIds.add(nid); if (collapsed.has(nid)) return; for (const c of childrenOfAll.get(nid) || []) collectVisible(c); }
-  for (const root of roots) collectVisible(root.id);
+  const visibleIds = visibleHierarchyNodeIds(scopedNodes, scopedEdges, collapsed);
 
   const descendantCount = new Map<string, number>();
   const countDescendants = (nodeId: string): number => {

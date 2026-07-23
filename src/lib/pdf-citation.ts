@@ -32,24 +32,34 @@ export function buildLocalArticleCitations(
   fileName?: string,
   limit = 8,
 ) {
-  const segments: { quote: string; pageNumber: number | null }[] = [];
-  let currentPage: number | null = null;
-
-  for (const rawLine of String(content || "").replace(/\r\n?/g, "\n").split("\n")) {
-    const line = rawLine.trim();
-    const marker = line.match(PAGE_MARKER) || line.match(ENGLISH_PAGE_MARKER);
-    if (marker) {
-      currentPage = Number(marker[1]);
-      continue;
+  const normalized = String(content || "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[ \f\v]+/g, " ")
+    .replace(/ *\n */g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  const markers: { position: number; page: number }[] = [];
+  const pageMarker = /^\s*\[(?:(?:第\s*)?(\d+)\s*页|page\s+(\d+))\]\s*$/gim;
+  let pageMatch: RegExpExecArray | null;
+  while ((pageMatch = pageMarker.exec(normalized)) !== null) {
+    markers.push({ position: pageMatch.index, page: Number(pageMatch[1] || pageMatch[2]) });
+  }
+  const segments: { quote: string; pageNumber: number | null; charStart: number; charEnd: number; sentenceIndex: number }[] = [];
+  const matcher = /[^。！？!?\n]+(?:[。！？!?]+|(?=\n|$))/g;
+  let sentenceIndex = 0;
+  let found: RegExpExecArray | null;
+  while ((found = matcher.exec(normalized)) !== null && segments.length < Math.max(1, limit)) {
+    const raw = found[0];
+    const leading = raw.length - raw.trimStart().length;
+    const quote = raw.trim();
+    const charStart = found.index + leading;
+    const charEnd = charStart + quote.length;
+    const marker = quote.match(PAGE_MARKER) || quote.match(ENGLISH_PAGE_MARKER);
+    if (!marker && quote.length >= 12) {
+      const page = markers.filter((item) => item.position <= charStart).slice(-1)[0]?.page || null;
+      segments.push({ quote, pageNumber: page, charStart, charEnd, sentenceIndex });
     }
-    if (!line) continue;
-    const sentences = line.split(/(?<=[。！？!?])\s*/).map((item) => item.trim()).filter(Boolean);
-    for (const sentence of sentences) {
-      if (sentence.length < 12) continue;
-      segments.push({ quote: sentence.slice(0, 180), pageNumber: currentPage });
-      if (segments.length >= Math.max(1, limit)) break;
-    }
-    if (segments.length >= Math.max(1, limit)) break;
+    sentenceIndex += 1;
   }
 
   return segments.map((segment, index): Citation => ({
@@ -59,6 +69,9 @@ export function buildLocalArticleCitations(
       ? `第 ${segment.pageNumber} 页`
       : `原文片段 ${index + 1}`,
     pageNumber: sourceType === "pdf" ? segment.pageNumber : null,
+    charStart: segment.charStart,
+    charEnd: segment.charEnd,
+    sentenceIndex: segment.sentenceIndex,
     sourceType: sourceType || "text",
     fileName,
   }));

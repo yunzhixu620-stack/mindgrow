@@ -132,8 +132,8 @@ function benchmarkMetrics(): QualityMetrics {
     groundedAcceptedEntities += accepted.entities.filter((entity) => (
       entity.description.trim().length >= 30 && entity.descriptionEvidence.length > 0
     )).length;
-    entityTruePositive += [...acceptedNames].filter((name) => expectedNames.has(name)).length;
-    entityFalsePositive += [...acceptedNames].filter((name) => !expectedNames.has(name)).length;
+    entityTruePositive += Array.from(acceptedNames).filter((name) => expectedNames.has(name)).length;
+    entityFalsePositive += Array.from(acceptedNames).filter((name) => !expectedNames.has(name)).length;
     acceptedRelations += accepted.relations.length;
     relationTruePositive += acceptedRelationKeys.filter((key) => expectedRelationSet.has(key)).length;
     if (accepted.entities.length === 0) emptyGraphs += 1;

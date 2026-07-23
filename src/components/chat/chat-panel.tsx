@@ -149,7 +149,16 @@ function MindMapPreview({
   isProcessing,
 }: {
   mindMap: AIMindMap;
-  placement: { targetTopic: string; confidence: number; reason: string } | null;
+  placement: {
+    targetTopic: string;
+    confidence: number;
+    reason: string;
+    supplement?: boolean;
+    predictedReuse?: number;
+    predictedReuseRate?: number;
+    total?: number;
+    warning?: string;
+  } | null;
   onConfirm: (selected: { childIdx: number; items: string[] }[]) => void;
   onCancel: () => void;
   isProcessing: boolean;
@@ -221,10 +230,16 @@ function MindMapPreview({
   return (
     <div className="bg-[var(--muted)] rounded-2xl rounded-bl-sm p-4 space-y-3 animate-fade-in-up">
       {/* Placement suggestion */}
-      {placement && (
+      {placement?.targetTopic && (
         <div className="text-xs text-[var(--muted-foreground)] bg-[var(--background)] rounded-lg px-3 py-2 flex items-center gap-2">
           <span>📌</span>
           <span>建议归入「{placement.targetTopic}」（{Math.round(placement.confidence * 100)}%）</span>
+        </div>
+      )}
+      {placement?.supplement && (
+        <div data-testid="supplement-reuse-plan" className={`rounded-lg border px-3 py-2 text-xs ${placement.warning ? "border-amber-400/30 bg-amber-400/10 text-amber-100" : "border-emerald-400/30 bg-emerald-400/10 text-emerald-100"}`}>
+          <div className="font-semibold">补充模式 · 预计复用 {Math.round((placement.predictedReuseRate || 0) * 100)}%</div>
+          <div className="mt-1 text-[10px] opacity-80">{placement.warning || "优先更新已有主题，确认后再写入。"}</div>
         </div>
       )}
 
@@ -563,7 +578,7 @@ export function ChatPanel() {
           id: `msg_${Date.now()}_confirm`,
           role: "assistant",
           content: data.reusedNodes
-            ? `✅ 已新增 ${data.totalNodes || 0} 个节点，并复用 ${data.reusedNodes} 个相似节点；知识已自动耦合到现有主题。`
+            ? `✅ 已新增 ${data.totalNodes || 0} 个节点，并复用 ${data.reusedNodes} 个相似节点（复用率 ${Math.round((data.reuseRate || 0) * 100)}%）。${data.reuseWarning || "知识已自动耦合到现有主题。"}`
             : `✅ 已创建 ${data.totalNodes || 0} 个知识节点！思维导图已更新 🌱`,
           timestamp: new Date().toISOString(),
         });

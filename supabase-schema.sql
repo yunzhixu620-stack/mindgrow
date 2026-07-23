@@ -153,8 +153,11 @@ CREATE TABLE IF NOT EXISTS node_citations (
   node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
   document_id TEXT NOT NULL REFERENCES source_documents(id) ON DELETE CASCADE,
   citation_index INTEGER NOT NULL CHECK (citation_index > 0),
-  quote TEXT NOT NULL CHECK (char_length(quote) BETWEEN 1 AND 1000),
+  quote TEXT NOT NULL CHECK (char_length(quote) BETWEEN 1 AND 4000),
   locator TEXT NOT NULL DEFAULT '',
+  char_start INTEGER,
+  char_end INTEGER,
+  sentence_index INTEGER,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (node_id, document_id, citation_index)
 );

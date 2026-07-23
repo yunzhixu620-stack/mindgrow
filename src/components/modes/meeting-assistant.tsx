@@ -21,6 +21,7 @@ interface MeetingResult {
   actionItems: { task: string; owner?: string; due?: string; status?: string; citationIndexes?: number[] }[];
   risks: CitedText[];
   openQuestions: CitedText[];
+  actionItemStatus?: "present" | "none";
   mindMap: AIMindMap;
   entityGraph?: AIEntityGraph;
   citations: Citation[];
@@ -32,7 +33,47 @@ function meetingDueLabel(item: MeetingResult["actionItems"][number]) {
   const explicitDue = String(item.due || "").trim();
   if (explicitDue) return explicitDue;
   const match = String(item.task || "").match(/(?:截止|期限(?:为|至)?|due(?:\s+on)?)[：:\s]*([0-9]{4}[-/.年][0-9]{1,2}(?:[-/.月][0-9]{1,2}日?)?)/i);
-  return match?.[1] || "待确认";
+  return match?.[1] || "原文未说明";
+}
+
+function MeetingStructuredOverview({ result }: { result: MeetingResult }) {
+  const citations = new Map(result.citations.map((citation) => [citation.index, citation]));
+  const Evidence = ({ indexes = [] }: { indexes?: number[] }) => (
+    <span className="ml-1 inline-flex flex-wrap gap-1 align-middle">
+      {indexes.map((index) => {
+        const citation = citations.get(index);
+        return citation ? <span key={index} title={`${citation.locator || "会议原文"}：${citation.quote}`} className="rounded-full border border-sky-400/25 bg-sky-400/10 px-1.5 py-0.5 text-[10px] text-sky-200">[{index}]</span> : null;
+      })}
+    </span>
+  );
+  const Section = ({ title, children }: { title: string; children: React.ReactNode }) => (
+    <section className="rounded-xl border border-[var(--border)] bg-[var(--background)] p-3">
+      <h4 className="mb-2 text-xs font-bold text-[var(--text-primary)]">{title}</h4>
+      {children}
+    </section>
+  );
+  return <div className="space-y-2" data-testid="meeting-fixed-structure">
+    <Section title="一句话结论">
+      <p className="leading-relaxed text-[var(--text-secondary)]">{result.summary || "原文未形成可核验结论"}<Evidence indexes={result.summaryCitationIndexes} /></p>
+    </Section>
+    <div className="grid gap-2 md:grid-cols-2">
+      <Section title="已确认决议">
+        {result.decisions.length ? <ul className="space-y-1.5">{result.decisions.map((item, index) => <li key={index} className="text-[var(--text-secondary)]">• {item.text}<Evidence indexes={item.citationIndexes} /></li>)}</ul> : <p className="text-[var(--text-tertiary)]">本段未形成已确认决议</p>}
+      </Section>
+      <Section title="未决问题">
+        {result.openQuestions.length ? <ul className="space-y-1.5">{result.openQuestions.map((item, index) => <li key={index} className="text-[var(--text-secondary)]">• {item.text}<Evidence indexes={item.citationIndexes} /></li>)}</ul> : <p className="text-[var(--text-tertiary)]">本段没有明确未决问题</p>}
+      </Section>
+    </div>
+    <Section title="行动项 · 负责人 · 截止时间">
+      {result.actionItems.length ? <div className="overflow-x-auto"><table className="w-full min-w-[520px] text-left text-xs">
+        <thead className="text-[var(--text-tertiary)]"><tr><th className="pb-2 pr-3">行动项</th><th className="pb-2 pr-3">负责人</th><th className="pb-2">截止时间</th></tr></thead>
+        <tbody>{result.actionItems.map((item, index) => <tr key={index} className="border-t border-[var(--border)]"><td className="py-2 pr-3 text-[var(--text-secondary)]">{item.task}<Evidence indexes={item.citationIndexes} /></td><td className="py-2 pr-3">{item.owner || "原文未说明"}</td><td className="py-2">{meetingDueLabel(item)}</td></tr>)}</tbody>
+      </table></div> : <p className="text-[var(--text-tertiary)]">本段未形成行动项</p>}
+    </Section>
+    <Section title="原文证据">
+      <p className="text-[var(--text-tertiary)]">结论、决议、未决问题和行动项后的编号均对应独立原文句子；悬停编号即可核对原话。</p>
+    </Section>
+  </div>;
 }
 
 export function MeetingAssistant() {
@@ -168,7 +209,10 @@ export function MeetingAssistant() {
             ? (english ? "Confirmed: these notes are now in long-term knowledge and the unified universe." : "已确认：这份会议纪要已进入长期知识库和统一知识宇宙。")
             : (english ? "Preview draft: review conclusions and citations before saving to long-term knowledge." : "当前仅为预览草稿：可先核对结论与引用，尚未写入长期知识库。")}
         </div>
-        <AnswerCard
+        <MeetingStructuredOverview result={result} />
+        <details className="rounded-xl border border-[var(--border)] bg-[var(--background)] p-3">
+          <summary className="cursor-pointer text-xs font-semibold text-[var(--primary-hover)]">展开完整证据核验</summary>
+          <div className="mt-3"><AnswerCard
           title={result.title || "会议纪要"}
           conclusion={[
             ...(result.summary ? [{ text: result.summary, citationIndexes: result.summaryCitationIndexes, auditText: result.summary }] : []),
@@ -177,7 +221,7 @@ export function MeetingAssistant() {
           evidence={[
             ...result.actionItems.map((item) => ({
               text: item.task,
-              detail: `负责人：${item.owner || "待确认"} · 截止：${meetingDueLabel(item)}`,
+              detail: `负责人：${item.owner || "原文未说明"} · 截止：${meetingDueLabel(item)}`,
               citationIndexes: item.citationIndexes,
               auditText: `${item.task} ${item.owner || ""} ${item.due || ""}`,
             })),
@@ -187,7 +231,8 @@ export function MeetingAssistant() {
           citations={result.citations}
           audit={result.citationAudit}
           sourceType="meeting"
-        />
+        /></div>
+        </details>
         <button onClick={() => void save()} disabled={saving || answerRefused || confirmed} className="w-full rounded-xl border border-[var(--primary-border)] bg-[var(--primary-subtle)] py-2.5 text-sm font-medium text-[var(--primary-hover)] disabled:opacity-40">{saving ? (english ? "Saving…" : "正在保存…") : answerRefused ? (english ? "Insufficient evidence — not saved" : "证据不足，暂不保存") : confirmed ? (english ? "Confirmed and saved" : "已确认并进入长期知识库") : (english ? "Confirm and add to long-term knowledge" : "确认并加入长期知识库")}</button>
       </div>}
         </div>

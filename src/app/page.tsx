@@ -27,6 +27,7 @@ import { useLocale } from "@/components/i18n/locale-provider";
 import { MobileBottomNav } from "@/components/mobile/bottom-nav";
 import { COMMAND_ENTITY_FOCUS_EVENT, COMMAND_NAVIGATE_EVENT, type CommandSearchResult } from "@/lib/command-search";
 import { matchesBootstrapTenant } from "@/lib/bootstrap";
+import { isNewerRemoteMapVersion, subscribeMapVersions } from "@/lib/map-version-sync";
 
 const LOCAL_TENANT_SCOPE: TenantScope = { userId: "local-user", workspaceId: "local-workspace" };
 
@@ -87,6 +88,8 @@ export default function Home() {
   const [onboardingBusy, setOnboardingBusy] = useState(false);
   const [onboardingError, setOnboardingError] = useState("");
   const [onboardingFocusTarget, setOnboardingFocusTarget] = useState<"article" | null>(null);
+  const [remoteMapVersions, setRemoteMapVersions] = useState<Record<string, number>>({});
+  const [mapReloadVersion, setMapReloadVersion] = useState(0);
   const createRef = useRef<HTMLInputElement>(null);
   const catCreateRef = useRef<HTMLInputElement>(null);
   const activeModeRef = useRef<AppMode>("knowledge");
@@ -100,6 +103,17 @@ export default function Home() {
   const pendingCommandNavigationRef = useRef<CommandSearchResult | null>(null);
   const activeTenantScopeKeyRef = useRef<string | null>(activeTenantScopeKey);
   activeTenantScopeKeyRef.current = activeTenantScopeKey;
+
+  useEffect(() => {
+    if (!currentWorkspaceId) return;
+    return subscribeMapVersions((message) => {
+      setRemoteMapVersions((current) => {
+        const known = current[message.mapId] || 0;
+        if (!isNewerRemoteMapVersion(message, currentWorkspaceId, known)) return current;
+        return { ...current, [message.mapId]: message.version };
+      });
+    });
+  }, [currentWorkspaceId]);
 
   const persistOnboardingState = useCallback((next: "dismissed" | "completed") => {
     if (activeTenantScopeKey) {
@@ -633,7 +647,7 @@ export default function Home() {
       controller.abort();
       if (mapLoadAbortRef.current === controller) mapLoadAbortRef.current = null;
     };
-  }, [currentMapId, currentMode, tenantScope, mapsSignature, mapCatalogReady, setNodes, setEdges, setEntityGraph, loadChatHistory]);
+  }, [currentMapId, currentMode, tenantScope, mapsSignature, mapCatalogReady, mapReloadVersion, setNodes, setEdges, setEntityGraph, loadChatHistory]);
 
   // Warm the first library owned by every board after the catalog arrives.
   // Later top-tab switches can then paint from memory while revalidation runs.
@@ -740,12 +754,34 @@ export default function Home() {
       ? <MeetingAssistant key={`meeting:${currentMapId}`} />
       : currentMode === "article"
         ? <ArticleParser key={`article:${currentMapId}`} />
-        : <ChatPanel key={`knowledge:${currentMapId}`} />;
+      : <ChatPanel key={`knowledge:${currentMapId}`} />;
+  const remoteMapVersion = remoteMapVersions[currentMapId] || 0;
+  const remoteVersionBanner = remoteMapVersion ? (
+    <div className="fixed left-1/2 top-14 z-[240] flex max-w-[calc(100vw-24px)] -translate-x-1/2 items-center gap-3 rounded-xl border border-amber-300/30 bg-[#1d1910]/95 px-3 py-2 text-xs text-amber-100 shadow-2xl backdrop-blur" data-testid="remote-map-version-banner">
+      <span>{useMindGrowStore.getState().isMapDirty(currentMapId) ? "知识库已在其他页面更新；当前页还有未保存编辑。" : "知识库已在其他页面更新。"}</span>
+      <button type="button" onClick={() => {
+        if (tenantScope) tenantCache.clearMap(tenantScope, currentMapId);
+        setRemoteMapVersions((current) => {
+          const next = { ...current };
+          delete next[currentMapId];
+          return next;
+        });
+        setMapReloadVersion((value) => value + 1);
+        void reloadAll();
+      }} className="shrink-0 rounded-lg bg-amber-200 px-2 py-1 font-semibold text-amber-950">刷新</button>
+      <button type="button" onClick={() => setRemoteMapVersions((current) => {
+        const next = { ...current };
+        delete next[currentMapId];
+        return next;
+      })} className="shrink-0 text-amber-200/70 hover:text-amber-100">稍后</button>
+    </div>
+  ) : null;
 
   // Mobile layout
   if (isMobile) {
     return (
-      <main className="flex flex-col h-full w-full overflow-hidden bg-[var(--bg-base)]">
+      <main className="relative flex flex-col h-full w-full overflow-hidden bg-[var(--bg-base)]">
+        {remoteVersionBanner}
         {/* Mobile utility bar: product navigation lives only at the bottom. */}
         <div className="flex h-11 shrink-0 items-center border-b border-[var(--border)] bg-[var(--card)] px-1.5" data-testid="mobile-view-toolbar">
           <button
@@ -1137,7 +1173,8 @@ export default function Home() {
   // All product boards share the same library → content → graph workspace.
   // Meeting and article keep isolated libraries but reuse the map interaction.
   return (
-    <main className="flex h-full w-full overflow-hidden" data-testid={`${currentMode}-workspace`} data-current-map-id={currentMapId} data-library-busy={modeLibraryBusy ? "true" : "false"}>
+    <main className="relative flex h-full w-full overflow-hidden" data-testid={`${currentMode}-workspace`} data-current-map-id={currentMapId} data-library-busy={modeLibraryBusy ? "true" : "false"}>
+      {remoteVersionBanner}
       <Sidebar onSwitchMap={handleSwitchMap} onMapCreated={handleCreatedMap} />
       {showNewUserEmptyState ? onboardingPanel : <>
         <div className={currentMode === "knowledge" ? "flex h-full shrink-0" : "h-full w-[clamp(360px,36vw,520px)] shrink-0 border-r border-[var(--border)]"}>

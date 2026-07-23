@@ -186,7 +186,7 @@ P2.1 的范围只到单文档/单会议建图、正式实体与关系的证据�
 
 1. 建立唯一的 `readArticleSource`/等价服务，知识碎片与文章解析只调用它；
 2. 服务内部统一复用 `assertPublicUrl`、`fetchArticleText`、逐跳 SSRF 重校、超时、正文抽取、重试和错误码；
-3. arXiv 顺序为 HTML 正文 → 官方 PDF → 官方 metadata；每次降级仍执行 SSRF 与大小限制；
+3. arXiv 顺序为 HTML 正文 → 官方 PDF；每次降级仍执行 SSRF 与大小限制。HTML 与 PDF 都无法提取可核验正文时必须拒绝，不得用摘要 metadata 冒充全文；
 4. PDF 无法提取足够原文时明确失败，不允许拿标题或 URL 猜测正文；
 5. A01–A10 十篇 LLM Wiki 相关文章 URL、F07/F08 链接输入全部复跑，输出逐条成功/失败、耗时、正文字符数和降级路径。
 

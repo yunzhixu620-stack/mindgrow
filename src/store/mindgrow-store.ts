@@ -140,8 +140,26 @@ export interface MindGrowState {
   // Pending AI mind map
   pendingMindMap: AIMindMap | null;
   setPendingMindMap: (mindMap: AIMindMap | null) => void;
-  pendingPlacement: { targetTopic: string; confidence: number; reason: string } | null;
-  setPendingPlacement: (placement: { targetTopic: string; confidence: number; reason: string } | null) => void;
+  pendingPlacement: {
+    targetTopic: string;
+    confidence: number;
+    reason: string;
+    supplement?: boolean;
+    predictedReuse?: number;
+    predictedReuseRate?: number;
+    total?: number;
+    warning?: string;
+  } | null;
+  setPendingPlacement: (placement: {
+    targetTopic: string;
+    confidence: number;
+    reason: string;
+    supplement?: boolean;
+    predictedReuse?: number;
+    predictedReuseRate?: number;
+    total?: number;
+    warning?: string;
+  } | null) => void;
 
   // Search
   searchQuery: string;

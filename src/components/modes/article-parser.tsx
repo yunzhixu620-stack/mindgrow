@@ -9,6 +9,17 @@ import { mindMapToPreviewGraph } from "@/lib/mindmap-preview";
 import { aiEntityGraphToEntityGraph } from "@/lib/entity-graph";
 import { AnswerCard } from "@/components/answer/answer-card";
 import { PdfCitationViewer } from "@/components/article/pdf-citation-viewer";
+import {
+  ARTICLE_STAGE_DEFINITIONS,
+  articleStageForError,
+  createArticleSourceRequest,
+  initialArticleStages,
+  isArticleSourceStage,
+  resetArticleStagesFrom,
+  updateArticleStage,
+  type ArticleSourceKind,
+  type ArticleStageId,
+} from "@/lib/article-pipeline";
 import type { AIEntityGraph, AIMindMap, Citation, CitationAudit } from "@/types";
 import { useLocale } from "@/components/i18n/locale-provider";
 
@@ -32,7 +43,7 @@ interface ArticleResult {
   mimeType?: string;
   sourceStatus?: {
     readStatus: "ready";
-    acquisition: "remote_fetch" | "local_pdf_extraction" | "pasted_text";
+    acquisition: string;
     characterCount: number;
     citationCount: number;
     finalUrl?: string;
@@ -46,6 +57,17 @@ interface PdfExtraction {
   imagePages: number[];
   scannedPages: number[];
   warnings?: string[];
+}
+
+interface PreparedArticleSource {
+  preparedSource: true;
+  content: string;
+  sourceUrl?: string;
+  sourceType: ArticleSourceKind;
+  fileName?: string;
+  mimeType?: string;
+  acquisition: string;
+  sourceStatus: NonNullable<ArticleResult["sourceStatus"]>;
 }
 interface AudioOverview {
   title: string;
@@ -305,6 +327,26 @@ function articleApiError(data: Record<string, unknown>, fallback: string) {
   return code ? `${message}（错误代码：${code}）` : message;
 }
 
+function articlePipelineError(data: Record<string, unknown>, fallback: string) {
+  const error = new Error(articleApiError(data, fallback)) as Error & { code?: string };
+  error.code = typeof data.code === "string" ? data.code : "";
+  return error;
+}
+
+async function pipelineFetch(
+  path: string,
+  options: RequestInit,
+  controller: AbortController,
+  timeoutMs: number,
+) {
+  const timeout = window.setTimeout(() => controller.abort("ARTICLE_STAGE_TIMEOUT"), timeoutMs);
+  try {
+    return await apiFetch(path, { ...options, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
 export function ArticleParser() {
   const { locale } = useLocale();
   const english = locale === "en";
@@ -318,6 +360,7 @@ export function ArticleParser() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [url, setUrl] = useState("");
   const [content, setContent] = useState("");
+  const [sourceKind, setSourceKind] = useState<ArticleSourceKind | null>(null);
   const [pdf, setPdf] = useState<(PdfExtraction & { name: string; pages: number }) | null>(null);
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [pdfViewerCitation, setPdfViewerCitation] = useState<Citation | null>(null);
@@ -332,12 +375,20 @@ export function ArticleParser() {
   const [qaBusy, setQaBusy] = useState(false);
   const [qaMessages, setQaMessages] = useState<ArticleQaMessage[]>([]);
   const [notice, setNotice] = useState("");
+  const [articleStages, setArticleStages] = useState(initialArticleStages);
+  const [activeStage, setActiveStage] = useState<ArticleStageId | null>(null);
+  const [failedStage, setFailedStage] = useState<ArticleStageId | null>(null);
   const speech = useScriptSpeech(audio?.segments || []);
   const mountedRef = useRef(true);
+  const preparedSourceRef = useRef<PreparedArticleSource | null>(null);
+  const parseAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     mountedRef.current = true;
-    return () => { mountedRef.current = false; };
+    return () => {
+      mountedRef.current = false;
+      parseAbortRef.current?.abort("ARTICLE_WORKSPACE_CLOSED");
+    };
   }, []);
 
   const isActiveArticleMap = (mapId: string) => {
@@ -345,50 +396,183 @@ export function ArticleParser() {
     return mountedRef.current && latest.currentMode === "article" && latest.currentMapId === mapId;
   };
 
+  function clearPipelineResult() {
+    parseAbortRef.current?.abort("ARTICLE_SOURCE_CHANGED");
+    parseAbortRef.current = null;
+    preparedSourceRef.current = null;
+    setArticleStages(initialArticleStages());
+    setActiveStage(null);
+    setFailedStage(null);
+    setBusy(false);
+    setResult(null);
+    setAudio(null);
+    setSelectedCitation(null);
+    setEntityGraph({ entities: [], relations: [] });
+    speech.stop();
+  }
+
+  function selectUrl(value: string) {
+    clearPipelineResult();
+    setUrl(value);
+    setSourceKind(value.trim() ? "url" : null);
+    setContent("");
+    setPdf(null);
+    setPdfFile(null);
+    setPdfViewerCitation(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  function selectText(value: string) {
+    clearPipelineResult();
+    setContent(value);
+    setSourceKind(value.trim() ? "text" : null);
+    setUrl("");
+    setPdf(null);
+    setPdfFile(null);
+    setPdfViewerCitation(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
   async function choosePdf(file?: File) {
     if (!file) return;
-    setPdfBusy(true); setNotice(""); setResult(null); setAudio(null); setPdfViewerCitation(null); speech.stop();
+    clearPipelineResult();
+    setSourceKind(null);
+    setUrl("");
+    setContent("");
+    setPdfBusy(true); setNotice(""); setPdfViewerCitation(null);
     try {
       const extracted = await extractPdfText(file);
       setContent(extracted.text);
       setUrl("");
       setPdfFile(file);
       setPdf({ name: file.name, pages: extracted.pageCount, pageCount: extracted.pageCount, truncated: extracted.truncated, tablePages: extracted.tablePages, imagePages: extracted.imagePages, scannedPages: extracted.scannedPages, warnings: extracted.warnings });
+      setSourceKind("pdf");
       setNotice(`已读取 ${extracted.pageCount} 页${extracted.warnings.length ? `；${extracted.warnings.join("；")}` : ""}`);
     } catch (error) {
+      setContent("");
+      setSourceKind(null);
       setPdf(null);
       setPdfFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
       setNotice(error instanceof Error ? error.message : "PDF 读取失败");
     } finally { setPdfBusy(false); }
   }
 
-  async function parse() {
-    if (!url.trim() && content.trim().length < 50) { setNotice("请输入文章网址、选择 PDF，或粘贴至少 50 个字的正文"); return; }
-    const requestMapId = currentMapId;
-    setBusy(true); setNotice(""); setResult(null); setAudio(null); setSelectedCitation(null); setPdfViewerCitation(null); setEntityGraph({ entities: [], relations: [] }); speech.stop();
+  async function parse(retryFrom?: ArticleStageId) {
+    let sourceRequest: Record<string, unknown>;
     try {
-      const response = await apiFetch(`/api/tools/article?client=10.3.2&request=${Date.now()}`, {
+      sourceRequest = createArticleSourceRequest({
+        kind: sourceKind,
+        url,
+        content,
+        pdf: pdf ? {
+          name: pdf.name,
+          pageCount: pdf.pageCount,
+          truncated: pdf.truncated,
+          tablePages: pdf.tablePages,
+          imagePages: pdf.imagePages,
+          scannedPages: pdf.scannedPages,
+        } : null,
+      });
+    } catch {
+      setNotice("请输入文章网址、选择 PDF，或粘贴至少 50 个字的正文");
+      return;
+    }
+    const requestMapId = currentMapId;
+    parseAbortRef.current?.abort("ARTICLE_PIPELINE_RESTARTED");
+    const controller = new AbortController();
+    parseAbortRef.current = controller;
+    const startStage = retryFrom || "read";
+    setArticleStages((stages) => resetArticleStagesFrom(stages, startStage));
+    setFailedStage(null);
+    setActiveStage(startStage);
+    setBusy(true); setNotice(""); setResult(null); setAudio(null); setSelectedCitation(null); setPdfViewerCitation(null); setEntityGraph({ entities: [], relations: [] }); speech.stop();
+    let currentStage: ArticleStageId = startStage;
+    const markStage = (stage: ArticleStageId, status: "active" | "done" | "failed") => {
+      setArticleStages((stages) => updateArticleStage(stages, stage, status));
+      if (status === "active") setActiveStage(stage);
+    };
+    try {
+      let prepared = preparedSourceRef.current;
+      const rerunSource = !prepared || isArticleSourceStage(startStage);
+      if (rerunSource) {
+        currentStage = "read";
+        markStage("read", "active");
+        const sourceResponse = await pipelineFetch(`/api/tools/article-source?client=10.4.0&request=${Date.now()}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(sourceRequest),
+        }, controller, 35_000);
+        const sourceData = await sourceResponse.json() as Record<string, unknown>;
+        if (!sourceResponse.ok) throw articlePipelineError(sourceData, "文章来源读取失败");
+        markStage("read", "done");
+        currentStage = "extract";
+        markStage("extract", "active");
+        prepared = sourceData as unknown as PreparedArticleSource;
+        if (!prepared.preparedSource || prepared.content.trim().length < 50) {
+          throw articlePipelineError({ code: "ARTICLE_CONTENT_EMPTY" }, "未能提取到足够正文");
+        }
+        preparedSourceRef.current = prepared;
+        markStage("extract", "done");
+      }
+      if (!prepared) throw articlePipelineError({ code: "ARTICLE_PREPARED_SOURCE_MISSING" }, "文章来源准备失败");
+
+      const analysisStart: ArticleStageId = rerunSource || isArticleSourceStage(startStage) ? "summary" : startStage;
+      currentStage = analysisStart;
+      markStage(analysisStart, "active");
+      const response = await pipelineFetch(`/api/tools/article?client=10.4.0&request=${Date.now()}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          url: url.trim(), content: content.trim(),
-          sourceType: pdf ? "pdf" : (content.trim() ? "text" : "url"),
-          fileName: pdf?.name, mimeType: pdf ? "application/pdf" : undefined,
+          preparedSource: true,
+          content: prepared.content,
+          sourceUrl: prepared.sourceUrl,
+          sourceType: prepared.sourceType,
+          fileName: prepared.fileName,
+          mimeType: prepared.mimeType,
+          acquisition: prepared.acquisition,
           extraction: pdf ? { pageCount: pdf.pageCount, truncated: pdf.truncated, tablePages: pdf.tablePages, imagePages: pdf.imagePages, scannedPages: pdf.scannedPages } : undefined,
         }),
-      });
-      const data = await response.json();
+      }, controller, 60_000);
+      const data = await response.json() as ArticleResult & Record<string, unknown>;
       if (!isActiveArticleMap(requestMapId)) return;
-      if (!response.ok) throw new Error(articleApiError(data, "解析失败"));
-      setResult(data);
-      if (data.mindMap) {
-        const preview = mindMapToPreviewGraph(data.mindMap, "article", data.citations || []);
-        setNodes(preview.nodes);
-        setEdges(preview.edges);
+      if (!response.ok) throw articlePipelineError(data, "文章分析失败");
+      if (!data.summary?.trim()) throw articlePipelineError({ code: "ARTICLE_SUMMARY_EMPTY" }, "摘要生成失败");
+      if (analysisStart === "summary") markStage("summary", "done");
+      currentStage = "citations";
+      if (analysisStart !== "graph") markStage("citations", "active");
+      if (!Array.isArray(data.citations) || data.citations.length === 0) {
+        throw articlePipelineError({ code: "ARTICLE_CITATIONS_EMPTY" }, "未定位到可核验的原文引用");
       }
+      if (analysisStart !== "graph") markStage("citations", "done");
+      currentStage = "graph";
+      markStage("graph", "active");
+      if (!data.mindMap?.root) throw articlePipelineError({ code: "ARTICLE_GRAPH_EMPTY" }, "知识图谱生成失败");
+      setResult(data);
+      const preview = mindMapToPreviewGraph(data.mindMap, "article", data.citations || []);
+      setNodes(preview.nodes);
+      setEdges(preview.edges);
       setEntityGraph(aiEntityGraphToEntityGraph(data.entityGraph, data.citations || [], `article:${requestMapId}:${Date.now()}`));
-    } catch (error) { if (isActiveArticleMap(requestMapId)) setNotice(error instanceof Error ? error.message : "解析失败"); }
-    finally { if (mountedRef.current) setBusy(false); }
+      markStage("graph", "done");
+      setActiveStage(null);
+    } catch (error) {
+      if (isActiveArticleMap(requestMapId)) {
+        const rawCode = error && typeof error === "object" && "code" in error ? String(error.code || "") : "";
+        const abortCode = error instanceof DOMException && error.name === "AbortError" ? "ARTICLE_STAGE_TIMEOUT" : "";
+        const stage = articleStageForError(rawCode || abortCode, currentStage);
+        markStage(stage, "failed");
+        setActiveStage(null);
+        setFailedStage(stage);
+        const label = ARTICLE_STAGE_DEFINITIONS.find((item) => item.id === stage)?.label || "解析";
+        const message = controller.signal.aborted && controller.signal.reason === "ARTICLE_STAGE_TIMEOUT"
+          ? `${label}超时，可从该阶段重试`
+          : (error instanceof Error ? error.message : `${label}失败`);
+        setNotice(message);
+      }
+    } finally {
+      if (parseAbortRef.current === controller) parseAbortRef.current = null;
+      if (mountedRef.current) setBusy(false);
+    }
   }
 
   async function createAudioOverview() {
@@ -508,6 +692,10 @@ export function ArticleParser() {
 
   const citationByIndex = new Map((result?.citations || []).map((item) => [item.index, item]));
   const answerRefused = result?.citationAudit?.refusalReason === "ALL_KEY_CLAIMS_UNSUPPORTED";
+  const canParse = sourceKind === "url"
+    ? Boolean(url.trim())
+    : (sourceKind === "pdf" ? Boolean(pdf && content.trim().length >= 50) : (sourceKind === "text" && content.trim().length >= 50));
+  const activeStageLabel = ARTICLE_STAGE_DEFINITIONS.find((stage) => stage.id === activeStage)?.label;
   const showCitations = (indexes: number[] = []) => (
     <span className="ml-1 inline-flex flex-wrap gap-1 align-middle">
       {indexes.map((index) => <button key={index} type="button" onClick={() => { const citation = citationByIndex.get(index); if (citation) openCitation(citation); }} className="rounded bg-[var(--primary-subtle)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--primary-hover)] hover:ring-1 hover:ring-[var(--primary)]" aria-label={`查看引用 ${index}`}>[{index}]</button>)}
@@ -520,14 +708,35 @@ export function ArticleParser() {
       <div className="mb-6 flex flex-col gap-3 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4 md:flex-row md:items-center md:justify-between"><div><h2 className="text-lg font-semibold">📄 {english ? "Article Parser" : "文章解析"}</h2><p className="mt-1 text-xs text-[var(--text-tertiary)]">{english ? "Parse public pages, pasted text, or PDFs. Every insight, graph node, and audio segment links back to source evidence." : "支持公开网页、粘贴正文和 PDF；要点、导图节点与音频脚本均可回到原文引用，内容只进入文章板块。"}</p></div><div className="rounded-xl border border-violet-400/30 bg-violet-400/10 px-3 py-2 text-xs text-violet-200"><span className="font-semibold">{english ? "Dedicated article library" : "独立文章知识库"}</span><span className="mx-2 opacity-40">·</span>{currentMap?.name || (english ? "Article library" : "文章知识库")}<span className="mx-2 opacity-40">·</span>{english ? `${nodeCount} nodes` : `${nodeCount} 节点`}</div></div>
       <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4">
       <div className="space-y-3">
-        <input type="url" value={url} onChange={(event) => { setUrl(event.target.value); if (event.target.value) { setPdf(null); setPdfFile(null); setPdfViewerCitation(null); setContent(""); } }} placeholder={english ? "https://… public article URL" : "https://… 公开文章网址"} className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2.5 text-sm outline-none focus:border-[var(--primary)]" />
+        <input data-testid="article-url-input" type="url" value={url} onChange={(event) => selectUrl(event.target.value)} placeholder={english ? "https://… public article URL" : "https://… 公开文章网址"} className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2.5 text-sm outline-none focus:border-[var(--primary)]" />
         <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 text-[10px] text-[var(--text-muted)]"><span className="h-px bg-[var(--border)]" />{english ? "or" : "或"}<span className="h-px bg-[var(--border)]" /></div>
         <input ref={fileInputRef} type="file" accept="application/pdf,.pdf" className="hidden" onChange={(event) => void choosePdf(event.target.files?.[0])} />
         <button type="button" onClick={() => fileInputRef.current?.click()} disabled={pdfBusy} className="w-full rounded-xl border border-dashed border-[var(--primary-border)] bg-[var(--primary-subtle)] px-3 py-2.5 text-xs text-[var(--primary-hover)] disabled:opacity-40">{pdfBusy ? (english ? "Reading PDF…" : "正在读取 PDF…") : pdf ? (english ? `PDF: ${pdf.name} (${pdf.pages} pages)` : `PDF：${pdf.name}（${pdf.pages} 页）`) : (english ? "Choose a PDF (max 15 MB)" : "选择 PDF 文件（最大 15MB）")}</button>
         <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 text-[10px] text-[var(--text-muted)]"><span className="h-px bg-[var(--border)]" />{english ? "or paste text" : "或粘贴正文"}<span className="h-px bg-[var(--border)]" /></div>
-        <textarea value={content} onChange={(event) => { setContent(event.target.value); setPdf(null); setPdfFile(null); setPdfViewerCitation(null); }} rows={9} placeholder={english ? "Paste article text. Extracted PDF text also appears here for review before parsing." : "粘贴文章正文。PDF 文字也会显示在这里，便于解析前核对。"} className="w-full resize-y rounded-xl border border-[var(--border)] bg-[var(--background)] p-3 text-sm leading-relaxed outline-none focus:border-[var(--primary)]" />
+        <textarea data-testid="article-text-input" value={content} onChange={(event) => selectText(event.target.value)} rows={9} placeholder={english ? "Paste article text. Extracted PDF text also appears here for review before parsing." : "粘贴文章正文。PDF 文字也会显示在这里，便于解析前核对。"} className="w-full resize-y rounded-xl border border-[var(--border)] bg-[var(--background)] p-3 text-sm leading-relaxed outline-none focus:border-[var(--primary)]" />
+        {(busy || failedStage || articleStages.some((stage) => stage.status === "done")) && <div className="rounded-xl border border-[var(--border)] bg-[var(--background)] p-3" data-testid="article-pipeline">
+          <div className="grid grid-cols-5 gap-1.5">
+            {articleStages.map((stage, index) => {
+              const tone = stage.status === "done"
+                ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200"
+                : stage.status === "active"
+                  ? "border-cyan-400/40 bg-cyan-400/10 text-cyan-100"
+                  : stage.status === "failed"
+                    ? "border-rose-400/40 bg-rose-400/10 text-rose-200"
+                    : "border-[var(--border)] bg-[var(--card)] text-[var(--text-muted)]";
+              const marker = stage.status === "done" ? "✓" : stage.status === "failed" ? "!" : String(index + 1);
+              return <div key={stage.id} data-stage={stage.id} data-status={stage.status} className={`min-w-0 rounded-lg border px-1.5 py-2 text-center text-[10px] ${tone}`}>
+                <div className="mx-auto mb-1 flex h-5 w-5 items-center justify-center rounded-full border border-current font-semibold">{stage.status === "active" ? <span className="h-2 w-2 animate-pulse rounded-full bg-current" /> : marker}</div>
+                <span className="block truncate">{english ? ({ read: "Read", extract: "Extract", summary: "Summary", citations: "Citations", graph: "Graph" } as const)[stage.id] : stage.label}</span>
+              </div>;
+            })}
+          </div>
+          {failedStage && <button type="button" onClick={() => void parse(failedStage)} disabled={busy} className="mt-2 w-full rounded-lg border border-rose-400/30 bg-rose-400/10 px-3 py-2 text-xs font-medium text-rose-100 disabled:opacity-40" data-testid="article-stage-retry">
+            {english ? `Retry ${failedStage}` : `重试“${ARTICLE_STAGE_DEFINITIONS.find((stage) => stage.id === failedStage)?.label}”`}
+          </button>}
+        </div>}
         {notice && <div role="status" className="rounded-lg bg-[var(--bg-elevated)] px-3 py-2 text-xs text-[var(--text-secondary)]">{notice}</div>}
-        <button onClick={() => void parse()} disabled={busy || pdfBusy || (!url.trim() && content.trim().length < 50)} className="w-full rounded-xl bg-[var(--primary)] py-2.5 text-sm font-semibold text-[var(--primary-foreground)] disabled:opacity-40">{busy ? (english ? "Reading, locating citations, and verifying sources…" : "正在阅读、定位引用并核对原文…") : (english ? "Parse article" : "解析文章")}</button>
+        <button data-testid="article-parse-button" onClick={() => void parse()} disabled={busy || pdfBusy || !canParse} className="w-full rounded-xl bg-[var(--primary)] py-2.5 text-sm font-semibold text-[var(--primary-foreground)] disabled:opacity-40">{busy ? (english ? `${activeStageLabel || "Processing"}…` : `正在${activeStageLabel || "处理"}…`) : (english ? "Parse article" : "解析文章")}</button>
       </div>
 
       {result && <div className="mt-5 space-y-3 animate-fade-in">

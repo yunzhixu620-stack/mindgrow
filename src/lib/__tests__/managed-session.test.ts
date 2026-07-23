@@ -3,11 +3,15 @@ import { sendWithManagedSession, type ManagedSessionAuth } from "@/lib/managed-s
 
 function auth(tokens: Array<string | null>, refreshError = false): ManagedSessionAuth {
   let index = 0;
+  const sessionAt = (position: number) => {
+    const token = tokens[position];
+    return token ? { access_token: token } : null;
+  };
   return {
-    getSession: vi.fn(async () => ({ data: { session: tokens[0] ? { access_token: tokens[0] } : null } })),
+    getSession: vi.fn(async () => ({ data: { session: sessionAt(0) } })),
     refreshSession: vi.fn(async () => {
       index += 1;
-      return { data: { session: tokens[index] ? { access_token: tokens[index] } : null }, error: refreshError ? new Error("refresh failed") : undefined };
+      return { data: { session: sessionAt(index) }, error: refreshError ? new Error("refresh failed") : undefined };
     }),
   };
 }
@@ -89,7 +93,7 @@ describe("managed Supabase session requests", () => {
     let releaseRefresh: ((value: { data: { session: { access_token: string } } }) => void) | undefined;
     const sessionAuth: ManagedSessionAuth = {
       getSession: vi.fn(async () => ({ data: { session: { access_token: "expired-token" } } })),
-      refreshSession: vi.fn(() => new Promise((resolve) => { releaseRefresh = resolve; })),
+      refreshSession: vi.fn(() => new Promise<{ data: { session: { access_token: string } } }>((resolve) => { releaseRefresh = resolve; })),
     };
     const send = vi.fn(async (headers: Headers) => new Response(null, {
       status: headers.get("Authorization") === "Bearer expired-token" ? 401 : 200,

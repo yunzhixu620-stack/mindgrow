@@ -7,6 +7,7 @@ const https = require('https');
 const dns = require('dns').promises;
 const net = require('net');
 const crypto = require('crypto');
+const zlib = require('zlib');
 
 const DASHSCOPE_KEY = process.env.MINDGROW_API_KEY || '';
 const SUPABASE_URL = (process.env.SUPABASE_URL || '').replace(/\/$/, '');
@@ -21,7 +22,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.19.0';
+const API_VERSION = '10.20.0';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -693,6 +694,16 @@ function retrieveEvidence(question, nodes) {
 
 function inFilter(values) {
   return `(${values.map((value) => encodeURIComponent(String(value))).join(',')})`;
+}
+
+function splitIntoBatches(values, maximum) {
+  const items = Array.isArray(values) ? values : [];
+  const size = Math.max(1, Number(maximum) || 80);
+  const batches = [];
+  for (let index = 0; index < items.length; index += size) {
+    batches.push(items.slice(index, index + size));
+  }
+  return batches;
 }
 
 async function retrieveNodeEvidence(question, mapId, workspaceId) {
@@ -1603,8 +1614,14 @@ function compactGroundedEvidence(evidence, limit = 5) {
 
 function deterministicEvidenceAnswer(evidence, intent) {
   const selected = compactGroundedEvidence(evidence, 5);
-  selected.trace = evidence.trace || null;
-  const lines = selected.map((node, index) => {
+  const directlyGrounded = selected.filter((node) => (
+    (node.sourceKind === 'document_chunk' || node.sourceKind === 'entity_graph_evidence')
+    && Array.isArray(node.citations)
+    && node.citations.some((citation) => String((citation && citation.quote) || '').trim())
+  ));
+  if (directlyGrounded.length === 0) return noEvidenceAnswer(intent, evidence);
+  directlyGrounded.trace = evidence.trace || null;
+  const lines = directlyGrounded.map((node, index) => {
     const citation = Array.isArray(node.citations) ? node.citations[0] : null;
     const quote = String((citation && citation.quote) || node.desc || node.content || '').replace(/\s+/g, ' ').trim().slice(0, 700);
     return `${index + 1}. ${quote} 〔来源 ${index + 1}〕`;
@@ -1615,17 +1632,59 @@ function deterministicEvidenceAnswer(evidence, intent) {
       intent,
       type: 'answer',
       reply: `## 结论\n\n模型生成的回答未通过证据校验，以下仅返回可直接核验的原文。\n\n## 关键依据\n\n${lines.join('\n')}\n\n## 局限与待核验\n\n系统没有补充证据之外的解释；如需完整结论，请补充资料或缩小问题范围。`,
-      sources: selected.map((node, index) => {
+      sources: directlyGrounded.map((node, index) => {
         const citation = Array.isArray(node.citations) ? node.citations[0] : null;
         return { id: node.id, title: citation && citation.title ? citation.title : node.content, index: index + 1, quote: citation ? citation.quote : '', locator: citation ? citation.locator : '', sourceUrl: citation ? citation.sourceUrl : '' };
       }),
       grounded: true,
       abstained: false,
-      coverage: selected.some((node) => node.expanded) ? 'partial' : 'direct',
+      coverage: directlyGrounded.some((node) => node.expanded) ? 'partial' : 'direct',
       missingInformation: [],
       retrievalTrace: evidence.trace || null,
     },
   };
+}
+
+function noEvidenceAnswer(intent, evidence, missingInformation) {
+  return {
+    status: 200,
+    data: {
+      intent,
+      type: 'answer',
+      reply: '当前知识库没有相关证据',
+      sources: [],
+      grounded: true,
+      abstained: true,
+      refusalReason: 'NO_EVIDENCE',
+      coverage: 'partial',
+      missingInformation: Array.isArray(missingInformation) ? missingInformation.slice(0, 8) : [],
+      retrievalTrace: evidence && evidence.trace ? evidence.trace : null,
+    },
+  };
+}
+
+function hasDirectAnswerEvidence(evidence) {
+  const rows = Array.isArray(evidence) ? evidence : [];
+  const traceCount = Number(evidence && evidence.trace && evidence.trace.candidateChunks);
+  if (Number.isFinite(traceCount) && traceCount <= 0) return false;
+  return rows.some((node) => (
+    node && (node.sourceKind === 'document_chunk' || node.sourceKind === 'entity_graph_evidence')
+    && (
+      String(node.content || '').trim().length > 0
+      || (Array.isArray(node.citations) && node.citations.some((citation) => String((citation && citation.quote) || '').trim()))
+    )
+  ));
+}
+
+function preModelAnswerDecision(evidence, intent, articleRequest) {
+  if (Array.isArray(evidence) && evidence.length > 0 && hasDirectAnswerEvidence(evidence)) return null;
+  return noEvidenceAnswer(
+    intent,
+    evidence,
+    articleRequest && articleRequest.task !== 'qa'
+      ? ['当前文章知识库中没有可执行该任务的论文原文']
+      : undefined,
+  );
 }
 
 async function answerQuestion(input, mapId, intent, workspaceId, history, articleRequest) {
@@ -1664,22 +1723,8 @@ async function answerQuestion(input, mapId, intent, workspaceId, history, articl
   } else {
     evidence = await retrieveGraphEvidence(retrievalQuery, mapId, workspaceId);
   }
-  if (evidence.length === 0) {
-    return {
-      status: 200,
-      data: {
-        intent,
-        type: 'answer',
-        reply: articleRequest && articleRequest.task !== 'qa'
-          ? `已识别为${articleTaskLabel(articleRequest.task)}任务，但当前文章知识库中没有足够的论文原文执行。请先保存相关论文，或补充更明确的论文标题和范围。`
-          : '当前知识库中没有足够证据回答这个问题。你可以先补充相关资料，我不会用猜测代替知识库证据。',
-        sources: [],
-        grounded: true,
-        abstained: true,
-        retrievalTrace: evidence.trace || null,
-      },
-    };
-  }
+  const preModelDecision = preModelAnswerDecision(evidence, intent, articleRequest);
+  if (preModelDecision) return preModelDecision;
   if (evidence.trace && evidence.trace.needsDisambiguation) {
     const candidates = (Array.isArray(evidence.trace.disambiguationCandidates)
       ? evidence.trace.disambiguationCandidates : []).slice(0, 5);
@@ -1780,23 +1825,12 @@ async function answerQuestion(input, mapId, intent, workspaceId, history, articl
       ...parsedMissingInformation,
     ])].slice(0, 8);
     if (usedIds.length === 0) {
-      return {
-        status: 200,
-        data: {
-          intent,
-          type: 'answer',
-          reply: articleRequest && articleRequest.task === 'translate'
-            ? '翻译结果没有返回可验证的字符串证据 ID，暂不展示模型正文。请重试或缩小翻译范围。'
-            : (parsed.answer || '当前知识库中没有足够证据回答这个问题。'),
-          sources: [],
-          grounded: true,
-          abstained: true,
-          coverage: 'partial',
-          missingInformation: resolvedMissingInformation.length > 0
-            ? resolvedMissingInformation : ['缺少直接支持该结论的来源'],
-          retrievalTrace: evidence.trace || null,
-        },
-      };
+      return noEvidenceAnswer(
+        intent,
+        evidence,
+        resolvedMissingInformation.length > 0
+          ? resolvedMissingInformation : ['缺少直接支持该结论的来源'],
+      );
     }
     const usedRaw = usedIds.map((id) => evidence.find((node) => node.id === id)).filter(Boolean);
     const used = (!articleRequest || articleRequest.task === 'qa')
@@ -1871,6 +1905,102 @@ function safeBase64Url(value) {
     .replace(/=+$/g, '');
 }
 
+function requestedKnowledgeNodeBudget(input, hasUrl) {
+  if (hasUrl) return { kind: 'url', minimum: 12, maximum: 20 };
+  if (String(input || '').length >= 400) return { kind: 'long_text', minimum: 10, maximum: 20 };
+  return { kind: 'short_text', minimum: 4, maximum: 8 };
+}
+
+function mindMapNodeCount(mindMap) {
+  return 1 + (Array.isArray(mindMap && mindMap.children) ? mindMap.children : []).reduce(
+    (total, child) => total + 1 + (Array.isArray(child && child.items) ? child.items.length : 0),
+    0,
+  );
+}
+
+function applyKnowledgeNodeBudget(mindMap, budget) {
+  const input = mindMap && typeof mindMap === 'object' ? mindMap : {};
+  const children = (Array.isArray(input.children) ? input.children : []).slice(0, Math.min(6, budget.maximum - 1))
+    .map((child) => ({
+      ...child,
+      items: Array.isArray(child && child.items) ? [...child.items] : [],
+      itemCitationIndexes: Array.isArray(child && child.itemCitationIndexes) ? [...child.itemCitationIndexes] : [],
+    }));
+  let remaining = Math.max(0, budget.maximum - 1 - children.length);
+  const keptItems = children.map(() => []);
+  const keptIndexes = children.map(() => []);
+  let cursor = 0;
+  while (remaining > 0 && children.some((child, index) => keptItems[index].length < child.items.length)) {
+    const childIndex = cursor % Math.max(1, children.length);
+    if (keptItems[childIndex].length < children[childIndex].items.length) {
+      const itemIndex = keptItems[childIndex].length;
+      keptItems[childIndex].push(children[childIndex].items[itemIndex]);
+      keptIndexes[childIndex].push(children[childIndex].itemCitationIndexes[itemIndex] || []);
+      remaining -= 1;
+    }
+    cursor += 1;
+  }
+  const output = {
+    ...input,
+    children: children.map((child, index) => ({
+      ...child,
+      items: keptItems[index],
+      itemCitationIndexes: keptIndexes[index],
+    })),
+  };
+  return {
+    mindMap: output,
+    audit: {
+      ...budget,
+      proposed: mindMapNodeCount(input),
+      actual: mindMapNodeCount(output),
+      overflowCompressed: Math.max(0, mindMapNodeCount(input) - mindMapNodeCount(output)),
+    },
+  };
+}
+
+function canonicalizeSupplementMindMap(mindMap, storedNodes) {
+  const nodes = Array.isArray(storedNodes) ? storedNodes : [];
+  let total = 0;
+  let predictedReuse = 0;
+  const canonical = (value, type, threshold) => {
+    total += 1;
+    const match = nodes.filter((node) => node.type === type)
+      .map((node) => {
+        const leftKey = String(value || '').toLocaleLowerCase().replace(/[\s\-_/()[\]（）【】]+/g, '');
+        const rightKey = String(node.content || '').toLocaleLowerCase().replace(/[\s\-_/()[\]（）【】]+/g, '');
+        return { node, score: leftKey && leftKey === rightKey ? 1 : contentSimilarity(value, node.content) };
+      })
+      .filter((item) => item.score >= threshold)
+      .sort((left, right) => right.score - left.score)[0];
+    if (!match) return value;
+    predictedReuse += 1;
+    return match.node.content;
+  };
+  const output = {
+    ...mindMap,
+    root: canonical(mindMap.root, 'topic', 0.74),
+    children: (Array.isArray(mindMap.children) ? mindMap.children : []).map((child) => ({
+      ...child,
+      topic: canonical(child.topic, 'concept', 0.76),
+      items: (Array.isArray(child.items) ? child.items : []).map((item) => canonical(item, 'detail', 0.78)),
+    })),
+  };
+  const predictedReuseRate = total ? Number((predictedReuse / total).toFixed(3)) : 0;
+  return {
+    mindMap: output,
+    plan: {
+      supplement: true,
+      total,
+      predictedReuse,
+      predictedReuseRate,
+      warning: predictedReuseRate < 0.5
+        ? '将新增较多分支；建议先核对匹配节点，确认后再继续'
+        : '',
+    },
+  };
+}
+
 async function handleChat(body, context) {
   const input = body && typeof body.input === 'string' ? body.input.trim() : '';
   const mapId = body && body.mapId ? String(body.mapId) : context.defaultMapId;
@@ -1885,19 +2015,15 @@ async function handleChat(body, context) {
   let structureInput = input;
   let resolvedSourceUrl = '';
   if (submittedUrl) {
-    let fetched;
+    let articleSource;
     try {
-      fetched = await fetchArticleText(submittedUrl, 0);
+      articleSource = await readArticleSource(submittedUrl);
     } catch (error) {
       if (error && error.statusCode) throw error;
       throw requestError(422, 'ARTICLE_SOURCE_FETCH_FAILED', '无法读取该链接，请检查网页是否公开可访问后重试');
     }
-    structureInput = htmlToReadableText(fetched.html);
-    if (structureInput.length < 80) {
-      throw requestError(422, 'ARTICLE_CONTENT_TOO_SHORT', '链接可以打开，但没有提取到足够的正文内容，因此不会生成或猜测答案');
-    }
-    structureInput = structureInput.slice(0, 30000);
-    resolvedSourceUrl = fetched.finalUrl;
+    structureInput = articleSource.content.slice(0, 30000);
+    resolvedSourceUrl = articleSource.finalUrl;
   }
 
   const articleRequest = body && body.mode === 'article' ? classifyArticleRequest(input) : null;
@@ -1914,10 +2040,25 @@ async function handleChat(body, context) {
   }
   if (intent.type === 'question') return answerQuestion(input, mapId, intent, context.workspaceId, history, articleRequest);
 
+  const supplementMode = !submittedUrl && /(补充|追加|并入|合并到|关联到|更新现有|完善现有|supplement|append|merge into|update existing)/i.test(input);
+  let storedNodes = [];
+  try {
+    const id = encodeURIComponent(mapId);
+    const workspace = encodeURIComponent(context.workspaceId);
+    const rows = await supabaseRequest(
+      'GET',
+      `nodes?workspace_id=eq.${workspace}&map_id=eq.${id}&status=eq.active&select=id,content,type&limit=2000`,
+    );
+    storedNodes = Array.isArray(rows) ? rows : [];
+  } catch (error) {
+    console.warn('Existing node catalog unavailable', { code: error.publicCode || 'NODE_CATALOG_FAILED' });
+  }
+  const nodeBudget = requestedKnowledgeNodeBudget(structureInput, Boolean(resolvedSourceUrl));
+
   const generated = await dashscopeChat([
     {
       role: 'system',
-      content: '你是严格忠实于输入证据的知识结构提取器。只返回严格 JSON：{"root":"核心主题","rootDesc":"简短描述","children":[{"topic":"子主题","desc":"描述","items":["要点"]}],"relatedTopics":["可继续探索的相关主题"]}。children 必须按语义聚合为 3-6 个一级分支，具体事实、方法、案例与指标放入各分支的 items，不得把大量细节平铺为一级分支；不得因聚合而删减输入中的重要信息。root、rootDesc、children 只能包含输入明确支持的事实，不得补写产品能力、时间、人物、数字或结论。必须保留否定、未批准、风险、负责人、日期、版本号和精确指标。relatedTopics 只能作为探索建议，不得写成既成事实。不得输出 Markdown。',
+      content: `你是严格忠实于输入证据的知识结构提取器。只返回严格 JSON：{"root":"核心主题","rootDesc":"简短描述","children":[{"topic":"子主题","desc":"描述","items":["要点"]}],"relatedTopics":["可继续探索的相关主题"]}。children 必须按语义聚合为 3-6 个一级分支，具体事实、方法、案例与指标放入各分支的 items，不得把大量细节平铺为一级分支；不得因聚合而删减输入中的重要信息。此次结构总节点数（root + children + items）必须控制在 ${nodeBudget.minimum}-${nodeBudget.maximum} 个，超出部分压缩进描述或留在原始材料检索层，不得继续增加节点。root、rootDesc、children 只能包含输入明确支持的事实，不得补写产品能力、时间、人物、数字或结论。必须保留否定、未批准、风险、负责人、日期、版本号和精确指标。relatedTopics 只能作为探索建议，不得写成既成事实。不得输出 Markdown。`,
     },
     {
       role: 'user',
@@ -1936,13 +2077,18 @@ async function handleChat(body, context) {
   }
   const structureCoverage = ensureMindMapSourceCoverage(mindMap, structureInput, [], null);
   mindMap = structureCoverage.mindMap;
+  let supplementPlan = null;
+  if (supplementMode) {
+    const canonicalized = canonicalizeSupplementMindMap(mindMap, storedNodes);
+    mindMap = canonicalized.mindMap;
+    supplementPlan = canonicalized.plan;
+  }
+  const budgeted = applyKnowledgeNodeBudget(mindMap, nodeBudget);
+  mindMap = budgeted.mindMap;
 
   let placement = null;
   try {
-    const id = encodeURIComponent(mapId);
-    const workspace = encodeURIComponent(context.workspaceId);
-    const nodes = await supabaseRequest('GET', `nodes?workspace_id=eq.${workspace}&map_id=eq.${id}&status=eq.active&select=content,type&limit=200`);
-    const topics = Array.isArray(nodes) ? nodes.filter((node) => node.type === 'topic').map((node) => node.content).slice(0, 50) : [];
+    const topics = storedNodes.filter((node) => node.type === 'topic').map((node) => node.content).slice(0, 50);
     if (topics.length > 0) {
       const placementText = await dashscopeChat([
         { role: 'system', content: '判断新知识应该归入哪个已有主题。只返回 JSON：{"targetTopic":null,"confidence":0,"reason":"独立主题"}。targetTopic 必须是候选主题之一，否则为 null。' },
@@ -1955,9 +2101,24 @@ async function handleChat(body, context) {
     // Placement is an optional enhancement. Structure generation still succeeds.
     console.warn('Placement unavailable', { code: error.publicCode || 'PLACEMENT_FAILED' });
   }
+  if (supplementMode) {
+    placement = {
+      ...(placement || {
+        targetTopic: '',
+        confidence: supplementPlan ? supplementPlan.predictedReuseRate : 0,
+        reason: '补充模式优先复用现有节点',
+      }),
+      ...(supplementPlan || {
+        supplement: true,
+        predictedReuseRate: 0,
+        warning: '无法预估节点复用率，请保存前核对',
+      }),
+    };
+  }
 
   const reply = [
-    placement ? `建议整合到「${placement.targetTopic}」下。` : '已生成新的知识结构。',
+    supplementPlan && supplementPlan.warning ? `⚠️ ${supplementPlan.warning}` : '',
+    placement && placement.targetTopic ? `建议整合到「${placement.targetTopic}」下。` : '已生成新的知识结构。',
     '',
     `**${mindMap.root}**${mindMap.rootDesc ? `：${mindMap.rootDesc}` : ''}`,
     ...(mindMap.children || []).map((child) => `- ${child.topic}${child.desc ? `：${child.desc}` : ''}${Array.isArray(child.items) && child.items.length ? `\n  - ${child.items.join('\n  - ')}` : ''}`),
@@ -1980,6 +2141,8 @@ async function handleChat(body, context) {
       type: 'knowledge',
       placement,
       mindMap,
+      nodeBudget: budgeted.audit,
+      supplementPlan,
       sources,
       sourceUrl: resolvedSourceUrl || undefined,
       sourceCoverage: structureCoverage.audit,
@@ -2119,7 +2282,7 @@ async function fetchArticleText(targetUrl, redirects, options) {
     ...(parsed.protocol === 'https:' ? { servername: resolved.hostname } : {}),
     headers: {
       Host: hostHeader,
-      Accept: 'text/html,text/plain,application/xhtml+xml',
+      Accept: settings.accept || 'text/html,text/plain,application/xhtml+xml',
       'Accept-Encoding': 'identity',
       'User-Agent': 'Mozilla/5.0 (compatible; MindGrowArticleBot/1.0; +https://yunzhixu620-stack.github.io/mindgrow/)',
       Connection: 'close',
@@ -2187,7 +2350,8 @@ async function fetchArticleText(targetUrl, redirects, options) {
         }
 
         const mediaType = String(response.headers['content-type'] || '').toLowerCase().split(';')[0].trim();
-        if (!ARTICLE_CONTENT_TYPES.has(mediaType)) {
+        const acceptedContentTypes = settings.contentTypes || ARTICLE_CONTENT_TYPES;
+        if (!acceptedContentTypes.has(mediaType)) {
           discardArticleResponse(response);
           return rejectOnce(requestError(415, 'UNSUPPORTED_ARTICLE_TYPE', '该网址不是可解析的网页文章'));
         }
@@ -2208,7 +2372,18 @@ async function fetchArticleText(targetUrl, redirects, options) {
           if (size > maxBytes) return rejectOnce(requestError(413, 'ARTICLE_TOO_LARGE', '文章页面超过 1MB 限制'));
           chunks.push(buffer);
         });
-        response.on('end', () => resolveOnce({ html: Buffer.concat(chunks).toString('utf8'), finalUrl: canonicalUrl }));
+        response.on('end', () => {
+          const buffer = Buffer.concat(chunks);
+          const result = {
+            html: buffer.toString('utf8'),
+            finalUrl: canonicalUrl,
+          };
+          if (settings.includeBuffer) {
+            result.buffer = buffer;
+            result.contentType = mediaType;
+          }
+          resolveOnce(result);
+        });
         response.on('error', rejectOnce);
       });
     } catch (error) {
@@ -2265,6 +2440,162 @@ function htmlToReadableText(html) {
   }
   if (candidates.length) return candidates.sort((left, right) => right.length - left.length)[0].slice(0, 120000);
   return htmlFragmentToReadableText(cleaned);
+}
+
+function decodePdfLiteral(value) {
+  return String(value || '').replace(/\\([0-7]{1,3}|[nrtbf()\\])/g, (_, escaped) => {
+    if (/^[0-7]+$/.test(escaped)) return String.fromCharCode(Number.parseInt(escaped, 8));
+    return {
+      n: '\n', r: '\r', t: '\t', b: '\b', f: '\f',
+      '(': '(', ')': ')', '\\': '\\',
+    }[escaped] || escaped;
+  });
+}
+
+function decodePdfHex(value) {
+  const hex = String(value || '').replace(/[^0-9a-f]/gi, '');
+  if (!hex || hex.length < 2) return '';
+  const even = hex.length % 2 === 0 ? hex : `${hex}0`;
+  const bytes = Buffer.from(even, 'hex');
+  if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
+    let output = '';
+    for (let index = 2; index + 1 < bytes.length; index += 2) {
+      output += String.fromCharCode((bytes[index] << 8) + bytes[index + 1]);
+    }
+    return output;
+  }
+  return bytes.toString('latin1');
+}
+
+function extractPdfTextLightweight(value) {
+  const buffer = Buffer.isBuffer(value) ? value : Buffer.from(value || '');
+  if (buffer.length < 16 || buffer.slice(0, 5).toString('ascii') !== '%PDF-') return '';
+  const binary = buffer.toString('latin1');
+  const streams = [];
+  const streamPattern = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
+  let match;
+  while ((match = streamPattern.exec(binary)) && streams.length < 500) {
+    const dictionary = binary.slice(Math.max(0, match.index - 320), match.index);
+    let stream = Buffer.from(match[1], 'latin1');
+    if (/\/FlateDecode\b/.test(dictionary)) {
+      try { stream = zlib.inflateSync(stream); } catch (_) { continue; }
+    }
+    streams.push(stream.toString('latin1'));
+  }
+  const rows = [];
+  const appendToken = (token) => {
+    const raw = String(token || '');
+    const decoded = raw.startsWith('<')
+      ? decodePdfHex(raw.slice(1, -1))
+      : decodePdfLiteral(raw.slice(1, -1));
+    const cleaned = decoded.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (cleaned.length >= 2) rows.push(cleaned);
+  };
+  streams.forEach((stream) => {
+    const textObjectPattern = /BT([\s\S]*?)ET/g;
+    let textObject;
+    while ((textObject = textObjectPattern.exec(stream)) && rows.length < 6000) {
+      const body = textObject[1];
+      const singlePattern = /(\((?:\\.|[^\\)])*\)|<[0-9a-fA-F\s]+>)\s*(?:Tj|'|")/g;
+      let token;
+      while ((token = singlePattern.exec(body))) appendToken(token[1]);
+      const arrayPattern = /\[([\s\S]*?)\]\s*TJ/g;
+      let array;
+      while ((array = arrayPattern.exec(body))) {
+        const itemPattern = /(\((?:\\.|[^\\)])*\)|<[0-9a-fA-F\s]+>)/g;
+        let item;
+        while ((item = itemPattern.exec(array[1]))) appendToken(item[1]);
+      }
+    }
+  });
+  return rows.join('\n').replace(/\n{3,}/g, '\n\n').trim().slice(0, 120000);
+}
+
+function arxivArticleId(value) {
+  try {
+    const parsed = new URL(value);
+    const host = parsed.hostname.toLowerCase();
+    if (host !== 'arxiv.org' && host !== 'www.arxiv.org' && host !== 'export.arxiv.org') return '';
+    const match = parsed.pathname.match(/^\/(?:abs|pdf|html)\/([^/?#]+?)(?:\.pdf)?$/i);
+    return match ? match[1].replace(/[^a-z0-9./-]/gi, '').slice(0, 80) : '';
+  } catch (_) {
+    return '';
+  }
+}
+
+async function readArticleSource(targetUrl, options) {
+  const settings = options || {};
+  const arxivId = arxivArticleId(targetUrl);
+  let primaryError = null;
+
+  // An arXiv /abs page contains metadata and an abstract, not the full paper.
+  // Always try the official HTML full-text endpoint first, then the PDF.
+  if (arxivId) {
+    const htmlUrl = `https://arxiv.org/html/${arxivId}`;
+    try {
+      const fetchedHtml = await fetchArticleText(htmlUrl, 0, settings);
+      const content = htmlToReadableText(fetchedHtml.html);
+      if (content.length >= 800) {
+        return {
+          content,
+          finalUrl: targetUrl,
+          acquisition: 'arxiv_html_fulltext',
+          fallback: { from: targetUrl, via: fetchedHtml.finalUrl },
+        };
+      }
+      primaryError = requestError(422, 'ARTICLE_CONTENT_TOO_SHORT', 'arXiv HTML 没有提取到足够的论文正文');
+    } catch (error) {
+      primaryError = error;
+    }
+  } else {
+    try {
+      const fetched = await fetchArticleText(targetUrl, 0, settings);
+      const content = htmlToReadableText(fetched.html);
+      if (content.length >= 80) {
+        return {
+          content,
+          finalUrl: fetched.finalUrl,
+          acquisition: 'remote_fetch',
+          fallback: null,
+        };
+      }
+      primaryError = requestError(422, 'ARTICLE_CONTENT_TOO_SHORT', '链接可以打开，但没有提取到足够的正文内容');
+    } catch (error) {
+      primaryError = error;
+    }
+  }
+
+  if (!arxivId) throw primaryError;
+  const pdfUrl = `https://export.arxiv.org/pdf/${arxivId}`;
+  try {
+    const fetchedPdf = await fetchArticleText(pdfUrl, 0, {
+      ...settings,
+      accept: 'application/pdf',
+      contentTypes: new Set(['application/pdf']),
+      includeBuffer: true,
+      maxBytes: Math.max(Number(settings.maxBytes) || 0, 15 * 1024 * 1024),
+    });
+    const content = extractPdfTextLightweight(fetchedPdf.buffer);
+    if (content.length >= 800) {
+      return {
+        content,
+        finalUrl: targetUrl,
+        acquisition: 'arxiv_pdf_fallback',
+        fallback: { from: targetUrl, via: fetchedPdf.finalUrl },
+      };
+    }
+    throw requestError(422, 'ARTICLE_ARXIV_PDF_TEXT_UNAVAILABLE', 'arXiv PDF 可以下载，但没有提取到足够的可核验正文');
+  } catch (error) {
+    if (error && error.publicCode === 'ARTICLE_ARXIV_PDF_TEXT_UNAVAILABLE') throw error;
+    console.warn('ArXiv PDF fallback unavailable', {
+      code: error && (error.publicCode || error.code) ? (error.publicCode || error.code) : 'ARXIV_PDF_FALLBACK_FAILED',
+    });
+    throw requestError(
+      422,
+      'ARTICLE_ARXIV_FULLTEXT_UNAVAILABLE',
+      '无法读取该 arXiv 论文的 HTML 或 PDF 正文；不会使用摘要代替全文解析',
+    );
+  }
 }
 
 function normalizeArticleSourceInput(body) {
@@ -2478,6 +2809,12 @@ const ENTITY_TYPES = new Set([
   'event', 'decision', 'time', 'concept', 'claim', 'other',
 ]);
 const RELATION_STATUSES = new Set(['asserted', 'historical', 'negated', 'proposed']);
+const RELATION_TYPES = new Set([
+  'uses', 'proposes', 'supports', 'opposes', 'approves', 'improves',
+  'evaluated_on', 'achieves', 'depends_on', 'retrieves_from', 'has_metric',
+  'part_of', 'contains', 'contains_concept', 'contradicts',
+  'responsible_for', 'due_on', 'is', 'related_to',
+]);
 
 const ENTITY_DESCRIPTION_STOP_TERMS = new Set([
   ...GRAPH_STOP_TERMS,
@@ -2491,6 +2828,10 @@ const ENTITY_DESCRIPTION_COVERAGE_THRESHOLD = 0.34;
 const RELATION_SHORT_LABELS = {
   uses: '使用',
   proposes: '提出',
+  supports: '支持',
+  opposes: '反对',
+  approves: '批准',
+  improves: '改进',
   evaluated_on: '评测于',
   achieves: '达到',
   depends_on: '依赖于',
@@ -2509,6 +2850,10 @@ const RELATION_SHORT_LABELS = {
 const RELATION_PREDICATE_PATTERNS = {
   uses: /(?:使用|采用|利用|借助|uses?|using|utili[sz]es?|employs?|adopts?)/i,
   proposes: /(?:提出|提议|发明|proposes?|proposed|introduces?|introduced|presents?|presented)/i,
+  supports: /(?:支持|赞成|证实|佐证|supports?|supported|endorses?|endorsed|confirms?|confirmed)/i,
+  opposes: /(?:反对|不支持|否决|驳回|opposes?|opposed|rejects?|rejected|votes?\s+against)/i,
+  approves: /(?:批准|通过|核准|同意实施|approves?|approved|accepts?|accepted|ratifies?|ratified)/i,
+  improves: /(?:改进|改善|提升|优化|减少.{0,16}(?:错误|延迟|成本)|improves?|improved|enhances?|enhanced|optimizes?|optimized|reduces?)/i,
   evaluated_on: /(?:在.{0,24}(?:评测|评估|测试)|基于.{0,24}(?:评测|评估)|evaluat(?:e|ed|es|ing)\s+on|tested\s+on|benchmark(?:ed)?\s+on)/i,
   achieves: /(?:达到|取得|实现|获得|achieves?|achieved|obtains?|obtained|reaches?|reached)/i,
   depends_on: /(?:依赖|取决于|depends?\s+on|relies?\s+on|requires?|required)/i,
@@ -2527,6 +2872,10 @@ const RELATION_PREDICATE_PATTERNS = {
 const RELATION_PASSIVE_PATTERNS = {
   uses: /(?:\b(?:is|are|was|were)?\s*(?:used|adopted|employed)\s+by\b|被|由)/i,
   proposes: /(?:\b(?:is|are|was|were)?\s*(?:proposed|introduced|presented)\s+by\b|由)/i,
+  supports: /(?:\b(?:is|are|was|were)?\s*(?:supported|endorsed|confirmed)\s+by\b|被|由)/i,
+  opposes: /(?:\b(?:is|are|was|were)?\s*(?:opposed|rejected)\s+by\b|被|由)/i,
+  approves: /(?:\b(?:is|are|was|were)?\s*(?:approved|accepted|ratified)\s+by\b|被|由)/i,
+  improves: /(?:\b(?:is|are|was|were)?\s*(?:improved|enhanced|optimized)\s+by\b|被|由)/i,
   responsible_for: /(?:\b(?:is|are|was|were)?\s*(?:assigned|owned)\s+by\b|由)/i,
 };
 
@@ -2548,7 +2897,7 @@ function boundedEvidenceSpan(value, minimumLength, maximumLength) {
 function graphEvidenceSentences(value) {
   const text = normalizeSpaces(value);
   if (!text) return [];
-  return (text.match(/[^。！？.!?;\n]+[。！？.!?;]?/g) || [text])
+  return (text.match(/[^。！？.!?;；\n]+[。！？.!?;；]?/g) || [text])
     .map((sentence) => normalizeSpaces(sentence))
     .filter(Boolean);
 }
@@ -2711,9 +3060,128 @@ function relationEvidenceSupports(type, rows, sourceEntity, targetEntity) {
   });
 }
 
-function normalizedEntityGraph(value, allowedIndexes, citations, options) {
+const KNOWN_ENTITY_ALIAS_GROUPS = [
+  { canonical: 'GraphRAG', aliases: ['Graph RAG', 'Graph-RAG'] },
+  {
+    canonical: 'Retrieval-Augmented Generation',
+    aliases: ['Retrieval Augmented Generation', 'RAG', '检索增强生成'],
+  },
+  { canonical: 'Knowledge Graph', aliases: ['KG', '知识图谱'] },
+];
+
+function entityAliasKey(value) {
+  return normalizeForExactMatch(value).replace(/[\s\-_/()[\]（）【】]+/g, '');
+}
+
+function evidenceEntityAliasPairs(evidence) {
+  const pairs = [];
+  const text = (Array.isArray(evidence) ? evidence : [])
+    .map((item) => String((item && (item.quote || item.content)) || ''))
+    .join('\n');
+  const add = (canonical, alias) => {
+    const cleanCanonical = normalizeSpaces(canonical)
+      .replace(/^(?:speaker|发言人|代表|委员)[：:\s]+/i, '')
+      .replace(/^[，,。；;：:\s]+|[，,。；;：:\s]+$/g, '')
+      .slice(0, 120);
+    const cleanAlias = normalizeSpaces(alias).toUpperCase().slice(0, 20);
+    if (!cleanCanonical || !/^[A-Z][A-Z0-9-]{1,9}$/.test(cleanAlias)) return;
+    if (entityAliasKey(cleanCanonical) === entityAliasKey(cleanAlias)) return;
+    pairs.push({ canonical: cleanCanonical, aliases: [cleanAlias] });
+  };
+  const forward = /(?:^|[，,。；;：:\n])\s*([^，,。；;：:()\n]{2,60})\s*[（(]([A-Z][A-Z0-9-]{1,9})[）)]/g;
+  const reverse = /(?:^|[，,。；;：:\n])\s*([A-Z][A-Z0-9-]{1,9})\s*[（(]([^，,。；;：:()\n]{2,60})[）)]/g;
+  let match;
+  while ((match = forward.exec(text)) !== null) add(match[1], match[2]);
+  while ((match = reverse.exec(text)) !== null) add(match[2], match[1]);
+  return pairs;
+}
+
+function canonicalEntityAliasGroup(name, aliases, evidence) {
+  const candidates = [name, ...(Array.isArray(aliases) ? aliases : [])].filter(Boolean);
+  const groups = [...KNOWN_ENTITY_ALIAS_GROUPS, ...evidenceEntityAliasPairs(evidence)];
+  const group = groups.find((item) => {
+    const keys = new Set([item.canonical, ...(item.aliases || [])].map(entityAliasKey));
+    return candidates.some((candidate) => keys.has(entityAliasKey(candidate)));
+  });
+  if (!group) {
+    return {
+      canonical: String(name || '').trim(),
+      aliases: [...new Set((Array.isArray(aliases) ? aliases : []).map((item) => String(item || '').trim()).filter(Boolean))],
+      identityKey: entityAliasKey(name),
+      preferredCanonical: String(name || '').trim(),
+    };
+  }
+  const allAliases = [...new Set([
+    ...(group.aliases || []),
+    ...candidates,
+  ].map((item) => String(item || '').trim()).filter((item) => item && entityAliasKey(item) !== entityAliasKey(group.canonical)))];
+  const originalName = String(name || '').trim() || group.canonical;
+  if (entityAliasKey(originalName) !== entityAliasKey(group.canonical)) allAliases.push(group.canonical);
+  return {
+    canonical: originalName,
+    aliases: [...new Set(allAliases)].filter((item) => entityAliasKey(item) !== entityAliasKey(originalName)).slice(0, 12),
+    identityKey: entityAliasKey(group.canonical),
+    preferredCanonical: group.canonical,
+  };
+}
+
+function canonicalizeRawEntityGraph(value, evidence) {
   const input = value && typeof value === 'object' ? value : {};
+  const rawEntities = Array.isArray(input.entities) ? input.entities : [];
+  const merged = new Map();
+  const remap = new Map();
+  rawEntities.forEach((item, index) => {
+    const tempId = String((item && (item.tempId || item.id)) || `E${index + 1}`);
+    const identity = canonicalEntityAliasGroup(
+      String((item && (item.name || item.canonicalName)) || ''),
+      item && item.aliases,
+      evidence,
+    );
+    const type = String((item && (item.type || item.entityType)) || 'other').toLowerCase();
+    const key = `${type}:${identity.identityKey || entityAliasKey(identity.canonical)}`;
+    const previous = merged.get(key);
+    if (!previous) {
+      merged.set(key, {
+        ...item,
+        tempId,
+        name: identity.canonical,
+        aliases: identity.aliases,
+      });
+      remap.set(tempId, tempId);
+      return;
+    }
+    remap.set(tempId, previous.tempId);
+    const previousName = String(previous.name || '');
+    const nextName = String(identity.canonical || '');
+    const previousIsAcronym = /^[A-Z][A-Z0-9-]{1,9}$/.test(previousName);
+    const nextIsAcronym = /^[A-Z][A-Z0-9-]{1,9}$/.test(nextName);
+    if (previousIsAcronym && !nextIsAcronym) previous.name = identity.preferredCanonical || nextName;
+    previous.aliases = [...new Set([
+      ...(previous.aliases || []),
+      ...identity.aliases,
+      previousName,
+      nextName,
+    ])].filter((alias) => entityAliasKey(alias) !== entityAliasKey(previous.name)).slice(0, 12);
+    previous.citationIndexes = [...new Set([...(previous.citationIndexes || []), ...((item && item.citationIndexes) || [])])];
+    if (!previous.description && item && item.description) {
+      previous.description = item.description;
+      previous.descriptionEvidence = item.descriptionEvidence;
+    }
+    previous.confidence = Math.max(Number(previous.confidence || 0), Number((item && item.confidence) || 0));
+  });
+  const relations = (Array.isArray(input.relations) ? input.relations : []).map((item) => ({
+    ...item,
+    source: remap.get(String((item && (item.source || item.sourceId)) || ''))
+      || String((item && (item.source || item.sourceId)) || ''),
+    target: remap.get(String((item && (item.target || item.targetId)) || ''))
+      || String((item && (item.target || item.targetId)) || ''),
+  }));
+  return { ...input, entities: [...merged.values()], relations };
+}
+
+function normalizedEntityGraph(value, allowedIndexes, citations, options) {
   const evidence = Array.isArray(citations) ? citations : [];
+  const input = canonicalizeRawEntityGraph(value, evidence);
   const trustedDeterministic = Boolean(options && options.trustedDeterministic);
   const entities = (Array.isArray(input.entities) ? input.entities : []).slice(0, 40).map((item, index) => {
     const name = String((item && (item.name || item.canonicalName)) || '').trim().slice(0, 300);
@@ -2761,7 +3229,8 @@ function normalizedEntityGraph(value, allowedIndexes, citations, options) {
     const source = String((item && (item.source || item.sourceId)) || '').trim().slice(0, 80);
     const target = String((item && (item.target || item.targetId)) || '').trim().slice(0, 80);
     const rawType = String((item && (item.type || item.relationType)) || 'related_to').trim().toLowerCase();
-    const type = rawType.replace(/[^a-z0-9_:-]/g, '_').replace(/_+/g, '_').slice(0, 80) || 'related_to';
+    const normalizedType = rawType.replace(/[^a-z0-9_:-]/g, '_').replace(/_+/g, '_').slice(0, 80) || 'related_to';
+    const type = RELATION_TYPES.has(normalizedType) ? normalizedType : 'related_to';
     const sourceEntity = entityById.get(source);
     const targetEntity = entityById.get(target);
     const legacyLabel = String((item && item.label) || '').trim().slice(0, 120);
@@ -3032,6 +3501,9 @@ function recoveredChineseArticleResponse(body, context) {
   const sourceUrl = String((context && context.sourceUrl) || body.url || '');
   const citations = Array.isArray(context && context.citations) && context.citations.length
     ? context.citations
+    : buildSentenceCitations(content, sourceType, fileName, 160);
+  const documentChunks = Array.isArray(context && context.documentChunks) && context.documentChunks.length
+    ? context.documentChunks
     : buildDocumentChunks(content, sourceType, fileName);
   const allowedIndexes = new Set(citations.map((item) => item.index));
   const entityGraph = normalizedEntityGraph(
@@ -3084,7 +3556,7 @@ function recoveredChineseArticleResponse(body, context) {
       mindMap,
       entityGraph,
       citations,
-      documentChunks: citations,
+      documentChunks,
       citationAudit: audit,
       sourceCoverage: recoveredCoverage.audit,
       extraction: {
@@ -3098,7 +3570,7 @@ function recoveredChineseArticleResponse(body, context) {
       sourceType,
       fileName,
       mimeType,
-      sourceStatus: {
+      sourceStatus: context && context.sourceStatus ? context.sourceStatus : {
         readStatus: 'ready',
         acquisition: sourceType === 'url' ? 'remote_fetch' : (sourceType === 'pdf' ? 'local_pdf_extraction' : 'pasted_text'),
         characterCount: content.length,
@@ -3213,6 +3685,86 @@ function buildDocumentChunks(content, sourceType, fileName) {
   })).filter((item) => item.quote.length >= 8);
 }
 
+function sentenceSpans(value) {
+  const source = normalizeDocumentLayout(value);
+  const spans = [];
+  let start = 0;
+  const push = (rawEnd) => {
+    let left = start;
+    let right = rawEnd;
+    while (left < right && /\s/.test(source[left])) left += 1;
+    while (right > left && /\s/.test(source[right - 1])) right -= 1;
+    const quote = source.slice(left, right);
+    if (quote.length >= 4 && quote.length <= 4000 && !/^\[(?:第\s*\d+\s*页|PAGE\s*\d+)\]$/i.test(quote)) {
+      spans.push({ start: left, end: right, quote });
+    }
+    start = rawEnd;
+  };
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    const next = source[index + 1] || "";
+    const sentenceEnd = /[。！？!?]/.test(character)
+      || (character === "." && (!next || /\s/.test(next)));
+    const lineEnd = character === "\n" && source.slice(start, index).trim().length >= 4;
+    if (!sentenceEnd && !lineEnd) continue;
+    let end = index + 1;
+    while (end < source.length && /[”’"'）)\]]/.test(source[end])) end += 1;
+    push(end);
+    index = end - 1;
+  }
+  if (start < source.length) push(source.length);
+  return { source, spans };
+}
+
+function evenlySample(values, maximum) {
+  if (values.length <= maximum) return values;
+  const selected = [];
+  const seen = new Set();
+  for (let index = 0; index < maximum; index += 1) {
+    const candidateIndex = Math.round(index * (values.length - 1) / Math.max(1, maximum - 1));
+    if (!seen.has(candidateIndex)) {
+      seen.add(candidateIndex);
+      selected.push(values[candidateIndex]);
+    }
+  }
+  return selected;
+}
+
+function buildSentenceCitations(content, sourceType, fileName, maximum) {
+  const normalized = sentenceSpans(content);
+  const pageMarkers = [];
+  const marker = /^[ \t]*\[(?:第\s*(\d+)\s*页|PAGE\s*(\d+))\][ \t]*$/gim;
+  let match;
+  while ((match = marker.exec(normalized.source)) !== null) {
+    pageMarkers.push({ position: match.index, page: Number(match[1] || match[2]) });
+  }
+  const allSpans = normalized.spans.map((span, sentenceIndex) => {
+    const markerRow = pageMarkers.filter((item) => item.position <= span.start).slice(-1)[0];
+    return { ...span, sentenceIndex, pageNumber: markerRow ? markerRow.page : null };
+  });
+  return evenlySample(allSpans, Math.max(1, Number(maximum) || 160)).map((span, index) => {
+    const prefix = sourceType === 'meeting'
+      ? '会议原文'
+      : (sourceType === 'url' ? '网页正文' : (sourceType === 'pdf' ? 'PDF 原文' : '正文'));
+    const locator = span.pageNumber
+      ? `第 ${span.pageNumber} 页 · 第 ${span.sentenceIndex + 1} 句`
+      : `${prefix}第 ${span.sentenceIndex + 1} 句`;
+    return {
+      index: index + 1,
+      quote: span.quote,
+      content: span.quote,
+      locator,
+      pageNumber: span.pageNumber,
+      chunkIndex: index,
+      sentenceIndex: span.sentenceIndex,
+      charStart: span.start,
+      charEnd: span.end,
+      sourceType,
+      fileName: fileName || '',
+    };
+  });
+}
+
 function bestCitationIndexes(text, citations, limit) {
   const query = normalizeSpaces(text);
   const queryTerms = tokenize(query).filter((term) => term.length > 1);
@@ -3251,17 +3803,25 @@ function verifiedIndexes(value, allowedIndexes, _claim, citations, sourceChunks)
 function verifiedCitationPayload(sourceCitations, sourceChunks, expectedSourceType) {
   const sourceType = String(expectedSourceType || '').trim().toLowerCase();
   if (!CITATION_SOURCE_TYPES.has(sourceType)) return { citations: [], allowedIndexes: new Set() };
-  const chunksByIndex = new Map((Array.isArray(sourceChunks) ? sourceChunks : [])
-    .map((item) => [Number(item && item.index), item]));
-  const candidateIndexes = new Set(chunksByIndex.keys());
+  const chunks = (Array.isArray(sourceChunks) ? sourceChunks : [])
+    .filter((item) => String(item && item.sourceType || '').trim().toLowerCase() === sourceType);
   const verified = (Array.isArray(sourceCitations) ? sourceCitations : []).slice(0, 80).reduce((rows, citation) => {
     const index = Number(citation && citation.index);
-    const chunk = chunksByIndex.get(index);
-    if (!Number.isInteger(index) || index < 1 || !chunk) return rows;
+    if (!Number.isInteger(index) || index < 1) return rows;
     const citationType = String(citation && citation.sourceType || '').trim().toLowerCase();
-    const chunkType = String(chunk && chunk.sourceType || '').trim().toLowerCase();
-    if (citationType !== sourceType || chunkType !== sourceType) return rows;
-    if (!verifiedIndexes([index], candidateIndexes, '', [citation], [chunk]).length) return rows;
+    const chunk = chunks.find((item) => isVerbatimQuote(citation && citation.quote, item && item.content));
+    if (citationType !== sourceType || !chunk) return rows;
+    const hasOffset = citation && (
+      citation.charStart !== undefined || citation.charEnd !== undefined || citation.sentenceIndex !== undefined
+    );
+    if (hasOffset) {
+      const charStart = Number(citation && citation.charStart);
+      const charEnd = Number(citation && citation.charEnd);
+      const sentenceIndex = Number(citation && citation.sentenceIndex);
+      if (!Number.isInteger(charStart) || !Number.isInteger(charEnd) || !Number.isInteger(sentenceIndex)
+        || charStart < 0 || charEnd <= charStart || sentenceIndex < 0) return rows;
+      if (charEnd - charStart !== String(citation.quote || '').length) return rows;
+    }
     rows.push({
       ...citation,
       index,
@@ -3278,18 +3838,13 @@ function evidencePrompt(citations) {
 }
 
 function buildMeetingCitations(transcript) {
-  const turns = String(transcript || '').replace(/\r\n?/g, '\n').split(/\n+|(?<=[。！？!?])\s*/)
-    .map((item) => normalizeSpaces(item)).filter((item) => item.length >= 4);
-  return turns.slice(0, 160).map((quote, index) => ({
-    index: index + 1,
-    quote: quote.slice(0, 1000),
-    content: quote.slice(0, 1200),
-    locator: `会议原文第 ${index + 1} 句`,
-    pageNumber: null,
-    chunkIndex: index,
-    sourceType: 'meeting',
-    fileName: '',
-  }));
+  return buildSentenceCitations(transcript, 'meeting', '', 160);
+}
+
+function isExplicitMeetingAction(value) {
+  const text = normalizeSpaces(value);
+  if (!text || /(?:未形成|没有形成|无|无需|不需要|尚未确定|尚未分配).{0,12}(?:行动项|待办|任务|负责人)/i.test(text)) return false;
+  return /(?:[\u4e00-\u9fffA-Za-z0-9_-]{1,30})(?:负责|将在|需在|需要在|应在|必须在|请在)|(?:完成|提交|复测|修复|部署|跟进|发送|整理).{0,30}(?:截止|期限|之前|前完成)|(?:owner|responsible|action item|will\s+(?:deliver|send|fix|deploy|review))/i.test(text);
 }
 
 function fallbackMeetingAnalysis(title, transcript, citations, allowedIndexes) {
@@ -3317,7 +3872,7 @@ function fallbackMeetingAnalysis(title, transcript, citations, allowedIndexes) {
     items: group.rows.slice(0, 20).map((row) => row.text),
     itemCitationIndexes: group.rows.slice(0, 20).map((row) => normalizeCitationIndexes([row.index], allowed)),
   }));
-  const summaryRows = evidence.slice(0, Math.min(3, evidence.length));
+  const summaryRows = evidence.slice(0, Math.min(1, evidence.length));
   const exactItems = evidence.map((citation) => ({
     text: normalizeSpaces(citation.quote || citation.content).slice(0, 1200),
     citationIndexes: normalizeCitationIndexes([citation.index], allowed),
@@ -3331,9 +3886,7 @@ function fallbackMeetingAnalysis(title, transcript, citations, allowedIndexes) {
     /(因为|由于|导致|根因|风险|失败|错误|回滚|未刷新|旧文档|because|caused|risk|fail)/i.test(item.text)
   )).slice(0, 30);
   const openQuestions = exactItems.filter((item) => negativeDecision.test(item.text)).slice(0, 30);
-  const actionItems = exactItems.filter((item) => (
-    /(负责|负责人|截止|行动项|待办|复测|跟进|owner|responsible|deadline|due|action item)/i.test(item.text)
-  )).slice(0, 50).map((item) => {
+  const actionItems = exactItems.filter((item) => isExplicitMeetingAction(item.text)).slice(0, 50).map((item) => {
     const ownerMatch = item.text.match(/(?:^|[，,。；;\s])([\u4e00-\u9fff]{2,4})\s*(?:将负责|负责)/);
     const dueMatch = item.text.match(/(?:截止|期限(?:为|至)?|due(?:\s+on)?)[：:\s]*([0-9]{4}[-/.年][0-9]{1,2}(?:[-/.月][0-9]{1,2}日?)?)/i);
     return {
@@ -3422,7 +3975,7 @@ function normalizedCitedTexts(value, allowedIndexes) {
 
 const ENTITY_GRAPH_SCHEMA_PROMPT = [
   '同时返回 entityGraph：{"entities":[{"tempId":"E1","name":"规范名称","type":"person|organization|model|method|dataset|metric|task|event|decision|time|concept|claim|other","aliases":["原文别名或可靠缩写"],"description":"本文语境下 30-80 字的一句话解释","descriptionEvidence":[1],"citationIndexes":[1],"confidence":0.9}],',
-  '"relations":[{"source":"E1","target":"E2","type":"uses|proposes|evaluated_on|achieves|depends_on|retrieves_from|has_metric|part_of|contains|contradicts|responsible_for|due_on|is|related_to","shortLabel":"中文 2-10 字关系词","explanation":"20-60 字说明关系方向和具体含义","status":"asserted|historical|negated|proposed","citationIndexes":[1],"confidence":0.9}]}。',
+  '"relations":[{"source":"E1","target":"E2","type":"proposes|supports|opposes|approves|responsible_for|due_on|depends_on|improves|uses|evaluated_on|achieves|retrieves_from|has_metric|part_of|contains|contradicts|is|related_to","shortLabel":"中文 2-10 字关系谓词","explanation":"20-60 字说明从 source 指向 target 的具体含义","status":"asserted|historical|negated|proposed","citationIndexes":[1],"confidence":0.9}]}。',
   '实体最多 24 个、关系最多 36 条；每个实体和每条关系都必须有直接支持它的 C 编号。',
   'description 必须是原文在当前文档语境下直接支持的 30-80 字单句解释；非空 description 的 descriptionEvidence 至少包含 1 个直接支持该解释的 C 编号，且 descriptionEvidence 与证明实体出现或其他事实的 citationIndexes 职责不同。原文不能支持解释时，description 输出空字符串且 descriptionEvidence 输出空数组，不得编造。',
   '实体名称保留论文或会议中的规范原名；aliases 只输出原文出现的别名，或能够可靠推断的常识性缩写，不强制生成中英文双别名。',
@@ -3613,6 +4166,7 @@ async function handleMeetingTool(body) {
   const title = String(body.title || '会议纪要').trim().slice(0, 200);
   const participants = String(body.participants || '').trim().slice(0, 2000);
   const citations = buildMeetingCitations(transcript);
+  const documentChunks = buildDocumentChunks(transcript, 'meeting', '');
   const allowedIndexes = new Set(citations.map((item) => item.index));
   let parsed = fallbackMeetingAnalysis(title, transcript, citations, allowedIndexes);
   let usedDeterministicFallback = true;
@@ -3622,9 +4176,9 @@ async function handleMeetingTool(body) {
     const raw = await dashscopeChat([
       {
         role: 'system',
-        content: `你是严谨且可追溯的会议助手。只返回 JSON：{"title":"","summary":"","summaryCitationIndexes":[1],"topics":[{"title":"","citationIndexes":[1],"details":[{"text":"","citationIndexes":[1]}]}],"decisions":[{"text":"","citationIndexes":[1]}],"actionItems":[{"task":"","owner":"","due":"","status":"待办","citationIndexes":[1]}],"risks":[{"text":"","citationIndexes":[1]}],"openQuestions":[{"text":"","citationIndexes":[1]}],"mindMap":{"root":"","rootDesc":"","rootCitationIndexes":[1],"children":[{"topic":"","desc":"","citationIndexes":[1],"items":[""],"itemCitationIndexes":[[1]]}]},"entityGraph":{"entities":[],"relations":[]}}。mindMap.children 必须聚合为 3-6 个会议主干，行动项、证据与细节放到 items，不能把每句话都平铺为一级节点，也不得删减重要信息。只能引用提供的 C 编号；每项结论必须有直接证据；更正后的信息覆盖旧信息；未决定、未批准和开放问题不得写成决议；不得编造人名、日期或结论。${ENTITY_GRAPH_SCHEMA_PROMPT}`,
+        content: `你是严谨且可追溯的会议助手。只返回 JSON：{"title":"","summary":"","summaryCitationIndexes":[1],"topics":[{"title":"","citationIndexes":[1],"details":[{"text":"","citationIndexes":[1]}]}],"decisions":[{"text":"","citationIndexes":[1]}],"actionItems":[{"task":"","owner":"","due":"","status":"待办","citationIndexes":[1]}],"risks":[{"text":"","citationIndexes":[1]}],"openQuestions":[{"text":"","citationIndexes":[1]}],"mindMap":{"root":"","rootDesc":"","rootCitationIndexes":[1],"children":[{"topic":"","desc":"","citationIndexes":[1],"items":[""],"itemCitationIndexes":[[1]]}]},"entityGraph":{"entities":[],"relations":[]}}。固定输出语义为：summary 只写一句话结论；decisions 只写已确认决议；openQuestions 只写未决问题；actionItems 只写原文明示的行动项，owner 和 due 原文未说明时返回空字符串。没有行动项时必须返回 actionItems:[]，绝对禁止生成“待确认”“待补充”“后续跟进”等占位行动项。mindMap.children 必须聚合为 3-6 个会议主干，行动项、证据与细节放到 items，不能把每句话都平铺为一级节点，也不得删减重要信息。只能引用提供的 C 编号；每项结论必须有直接证据；更正后的信息覆盖旧信息；未决定、未批准和开放问题不得写成决议；不得编造人名、日期或结论。${ENTITY_GRAPH_SCHEMA_PROMPT}`,
       },
-      { role: 'user', content: `会议标题：${title}\n参会人：${participants || '未提供'}\n带编号的会议原文：\n${evidencePrompt(citations)}` },
+      { role: 'user', content: `以下内容只包含会议发言正文；会议标题、议题名和参会人属于元数据，未放入证据区，禁止把元数据当成结论：\n${evidencePrompt(citations)}` },
     ], 'qwen-plus', 2400, 0.1);
     try {
       parsed = JSON.parse(stripJsonFence(raw));
@@ -3664,6 +4218,7 @@ async function handleMeetingTool(body) {
     citationIndexes: verifiedIndexes(item && item.citationIndexes, allowedIndexes, item && item.title, citations, citations),
     details: (Array.isArray(item && item.details) ? item.details : []).slice(0, 20).map(citedText).filter((detail) => detail.text),
   })).filter((item) => item.title);
+  const placeholderAction = /^(待确认|待补充|后续跟进|暂无|无|none|n\/a)$/i;
   const actionItems = (Array.isArray(parsed.actionItems) ? parsed.actionItems : []).slice(0, 50).map((item) => {
     const task = String((item && item.task) || '').trim().slice(0, 1000);
     const owner = String((item && item.owner) || '').trim().slice(0, 200);
@@ -3677,9 +4232,13 @@ async function handleMeetingTool(body) {
       due: explicitDue || (dueMatch ? dueMatch[1] : ''),
       status: String((item && item.status) || '待办').trim().slice(0, 100),
       citationIndexes,
+      explicitAction: isExplicitMeetingAction(task) || isExplicitMeetingAction(citedEvidence),
     };
-  }).filter((item) => item.task);
-  const summary = String(parsed.summary || mindMap.rootDesc || '').slice(0, 3000);
+  }).filter((item) => item.task && item.explicitAction && !placeholderAction.test(item.task))
+    .map(({ explicitAction: _explicitAction, ...item }) => item);
+  const summaryCandidate = String(parsed.summary || mindMap.rootDesc || '').trim();
+  const summaryMatch = summaryCandidate.match(/^.*?[。！？!?]/s);
+  const summary = String((summaryMatch && summaryMatch[0]) || summaryCandidate).trim().slice(0, 500);
   const summaryCitationIndexes = verifiedIndexes(parsed.summaryCitationIndexes, allowedIndexes, summary, citations, citations);
   const audit = citationAudit([
     { id: 'summary', section: 'conclusion', text: summary, citationIndexes: summaryCitationIndexes },
@@ -3694,22 +4253,122 @@ async function handleMeetingTool(body) {
   return {
     status: 200,
     data: {
-      title: String(parsed.title || title),
+      title,
       summary,
       summaryCitationIndexes,
       topics,
       decisions,
       actionItems,
+      actionItemStatus: actionItems.length ? 'present' : 'none',
       risks,
       openQuestions,
       mindMap,
       entityGraph,
       citations,
-      documentChunks: citations,
+      documentChunks,
       citationAudit: audit,
       sourceCoverage: meetingCoverage.audit,
       sourceType: 'meeting',
       degraded: usedDeterministicFallback,
+    },
+  };
+}
+
+async function prepareArticleSource(body) {
+  const input = body && typeof body === 'object' ? body : {};
+  if (input.preparedSource === true) {
+    const content = String(input.content || '').trim();
+    const sourceType = ['url', 'pdf', 'text'].includes(input.sourceType) ? input.sourceType : '';
+    const sourceUrl = sourceType === 'url' ? String(input.sourceUrl || input.url || '').trim().slice(0, 2000) : '';
+    const fileName = String(input.fileName || '').trim().slice(0, 300);
+    const mimeType = String(input.mimeType || '').trim().slice(0, 100);
+    if (!sourceType || content.length < 50) {
+      throw requestError(400, 'ARTICLE_PREPARED_SOURCE_INVALID', '准备好的文章来源无效，请重新读取来源');
+    }
+    if (sourceType === 'url' && !standaloneHttpUrl(sourceUrl)) {
+      throw requestError(400, 'ARTICLE_PREPARED_SOURCE_INVALID', '准备好的网址来源无效，请重新读取来源');
+    }
+    const boundedContent = content.slice(0, 120000);
+    const citations = buildSentenceCitations(boundedContent, sourceType, fileName, 160);
+    const documentChunks = buildDocumentChunks(boundedContent, sourceType, fileName);
+    return {
+      content: boundedContent,
+      sourceUrl,
+      sourceType,
+      fileName,
+      mimeType,
+      citations,
+      documentChunks,
+      sourceStatus: {
+        readStatus: 'ready',
+        acquisition: String(input.acquisition || (sourceType === 'url' ? 'remote_fetch' : (sourceType === 'pdf' ? 'local_pdf_extraction' : 'pasted_text'))).slice(0, 80),
+        characterCount: boundedContent.length,
+        citationCount: citations.length,
+        finalUrl: sourceUrl || undefined,
+        fileName: fileName || undefined,
+      },
+    };
+  }
+
+  const sourceInput = normalizeArticleSourceInput(input);
+  let content = sourceInput.content;
+  let sourceUrl = '';
+  let sourceType = sourceInput.sourceType;
+  const fileName = sourceInput.fileName;
+  const mimeType = sourceInput.mimeType;
+  let acquisition = sourceType === 'pdf' ? 'local_pdf_extraction' : 'pasted_text';
+  if (sourceInput.url) {
+    const source = await readArticleSource(sourceInput.url);
+    content = source.content;
+    sourceUrl = source.finalUrl;
+    sourceType = 'url';
+    acquisition = source.acquisition;
+  }
+  if (content.length < 50) {
+    if (sourceType === 'url') {
+      throw requestError(422, 'ARTICLE_CONTENT_TOO_SHORT', '链接可以打开，但没有提取到足够的正文内容，因此不会生成或猜测答案');
+    }
+    throw requestError(
+      400,
+      'ARTICLE_CONTENT_TOO_SHORT',
+      sourceType === 'pdf' ? 'PDF 可提取正文不足 50 个字；扫描版请先完成 OCR' : '请粘贴至少 50 个字的文章正文',
+    );
+  }
+  content = content.slice(0, 120000);
+  const citations = buildSentenceCitations(content, sourceType, fileName, 160);
+  const documentChunks = buildDocumentChunks(content, sourceType, fileName);
+  return {
+    content,
+    sourceUrl,
+    sourceType,
+    fileName,
+    mimeType,
+    citations,
+    documentChunks,
+    sourceStatus: {
+      readStatus: 'ready',
+      acquisition,
+      characterCount: content.length,
+      citationCount: citations.length,
+      finalUrl: sourceUrl || undefined,
+      fileName: fileName || undefined,
+    },
+  };
+}
+
+async function handleArticleSourceTool(body) {
+  const prepared = await prepareArticleSource(body);
+  return {
+    status: 200,
+    data: {
+      preparedSource: true,
+      content: prepared.content,
+      sourceUrl: prepared.sourceUrl,
+      sourceType: prepared.sourceType,
+      fileName: prepared.fileName,
+      mimeType: prepared.mimeType,
+      acquisition: prepared.sourceStatus.acquisition,
+      sourceStatus: prepared.sourceStatus,
     },
   };
 }
@@ -3723,34 +4382,27 @@ async function handleArticleTool(body) {
     fileName: String(body.fileName || '').trim().slice(0, 300),
     mimeType: String(body.mimeType || '').trim().slice(0, 100),
     citations: [],
+    documentChunks: [],
+    sourceStatus: null,
   };
   try {
-  const sourceInput = normalizeArticleSourceInput(body);
-  let content = sourceInput.content;
-  let sourceUrl = '';
-  let sourceType = sourceInput.sourceType;
-  const fileName = sourceInput.fileName;
-  const mimeType = sourceInput.mimeType;
-  if (sourceInput.url) {
-    stage = 'SOURCE_FETCH';
-    const fetched = await fetchArticleText(sourceInput.url, 0);
-    content = htmlToReadableText(fetched.html);
-    sourceUrl = fetched.finalUrl;
-    sourceType = 'url';
-  }
-  if (content.length < 50) {
-    if (sourceType === 'url') {
-      throw requestError(422, 'ARTICLE_CONTENT_TOO_SHORT', '链接可以打开，但没有提取到足够的正文内容，因此不会生成或猜测答案');
-    }
-    return { status: 400, data: { error: sourceType === 'pdf' ? 'PDF 可提取正文不足 50 个字；扫描版请先完成 OCR' : '请粘贴至少 50 个字的文章正文', code: 'ARTICLE_CONTENT_TOO_SHORT' } };
-  }
-  if (content.length > 120000) content = content.slice(0, 120000);
+  stage = 'SOURCE_FETCH';
+  const prepared = await prepareArticleSource(body);
+  const content = prepared.content;
+  const sourceUrl = prepared.sourceUrl;
+  const sourceType = prepared.sourceType;
+  const fileName = prepared.fileName;
+  const mimeType = prepared.mimeType;
   recoveryContext.content = content;
   recoveryContext.sourceUrl = sourceUrl;
   recoveryContext.sourceType = sourceType;
+  recoveryContext.fileName = fileName;
+  recoveryContext.mimeType = mimeType;
+  recoveryContext.sourceStatus = prepared.sourceStatus;
   stage = 'EVIDENCE_BUILD';
-  const citations = buildDocumentChunks(content, sourceType, fileName);
+  const citations = prepared.citations;
   recoveryContext.citations = citations;
+  recoveryContext.documentChunks = prepared.documentChunks;
   const allowedIndexes = new Set(citations.map((item) => item.index));
   stage = 'ANALYSIS_MODEL';
   const raw = await dashscopeChat([
@@ -3758,7 +4410,7 @@ async function handleArticleTool(body) {
       role: 'system',
       content: `你是忠于原文的论文与文章解析助手。只返回严格 JSON：{"title":"","summary":"","summaryCitationIndexes":[1],"keyPoints":[{"text":"","citationIndexes":[1]}],"arguments":[{"claim":"","evidence":"","citationIndexes":[1]}],"questions":[""],"mindMap":{"root":"","rootDesc":"","rootCitationIndexes":[1],"children":[{"topic":"","desc":"","citationIndexes":[1],"items":[""],"itemCitationIndexes":[[1]]}]},"entityGraph":{"entities":[],"relations":[]}}。论文的 mindMap.children 优先使用“研究问题、方法/架构、数据与实验、结果、局限与启示”等 3-6 个语义主干；具体模型、指标、对比和证据放入 items，不得把大量细节平铺为一级节点，也不得因聚合而删减原文信息。所有标题、摘要、要点、论证、问题和导图节点必须使用简体中文；英文原文要准确翻译成中文，专业术语或缩写可在中文后用括号保留英文。输入由带页码/段落定位的 C 编号证据块组成。每个结论、数字、表格结论和导图分支必须引用直接支持它的 C 编号；只能引用给定编号；不得自行填写 quote 或页码；引用原文保持原始语言，不得伪造中文原文；证据不足就省略结论，不得补充原文没有的事实。${ENTITY_GRAPH_SCHEMA_PROMPT}`,
     },
-    { role: 'user', content: `文章来源：${sourceUrl || fileName || '用户粘贴'}\n可核验证据块：\n${evidencePrompt(citations)}` },
+    { role: 'user', content: `以下内容只包含文章正文证据；来源 URL、文档标题和文件名属于元数据，未放入证据区，禁止把元数据当成结论：\n${evidencePrompt(citations)}` },
   ], 'qwen-plus', 3600, 0.1);
   stage = 'MODEL_PARSE';
   let parsed;
@@ -3845,7 +4497,7 @@ async function handleArticleTool(body) {
       mindMap,
       entityGraph,
       citations,
-      documentChunks: citations,
+      documentChunks: prepared.documentChunks,
       citationAudit: audit,
       sourceCoverage: articleCoverage.audit,
       extraction: {
@@ -3859,14 +4511,7 @@ async function handleArticleTool(body) {
       sourceType,
       fileName,
       mimeType,
-      sourceStatus: {
-        readStatus: 'ready',
-        acquisition: sourceType === 'url' ? 'remote_fetch' : (sourceType === 'pdf' ? 'local_pdf_extraction' : 'pasted_text'),
-        characterCount: content.length,
-        citationCount: citations.length,
-        finalUrl: sourceUrl || undefined,
-        fileName: fileName || undefined,
-      },
+      sourceStatus: prepared.sourceStatus,
     },
   };
   } catch (error) {
@@ -4037,6 +4682,7 @@ async function handleAudioOverview(body) {
 
 async function handleTool(pathname, body) {
   if (pathname.endsWith('/meeting')) return handleMeetingTool(body);
+  if (pathname.endsWith('/article-source')) return handleArticleSourceTool(body);
   if (pathname.endsWith('/article')) return handleArticleTool(body);
   if (pathname.endsWith('/audio-overview')) return handleAudioOverview(body);
   return { status: 404, data: { error: 'Tool not found', code: 'NOT_FOUND' } };
@@ -4223,14 +4869,33 @@ async function loadNodeCitations(workspaceId, mapId, nodeIds) {
   if (Array.isArray(nodeIds) && nodeIds.length === 0) return new Map();
   const workspace = encodeURIComponent(workspaceId);
   const map = encodeURIComponent(mapId);
-  const nodeFilter = Array.isArray(nodeIds) ? `&node_id=in.${inFilter(nodeIds)}` : '';
-  const rows = await supabaseRequest('GET', `node_citations?workspace_id=eq.${workspace}&map_id=eq.${map}${nodeFilter}&select=node_id,document_id,citation_index,quote,locator&order=citation_index.asc&limit=8000`);
-  const citations = Array.isArray(rows) ? rows : [];
+  let citations = [];
+  if (Array.isArray(nodeIds)) {
+    // A few hundred UUID-like node IDs already exceed common proxy and
+    // PostgREST request-line limits when placed in one `in.(...)` filter.
+    // Load bounded batches so a large meeting library can still open.
+    const batches = splitIntoBatches(nodeIds, 80);
+    const results = await Promise.all(batches.map((batch) => supabaseRequest(
+      'GET',
+      `node_citations?workspace_id=eq.${workspace}&map_id=eq.${map}&node_id=in.${inFilter(batch)}&select=node_id,document_id,citation_index,quote,locator,char_start,char_end,sentence_index&order=citation_index.asc&limit=2000`,
+    )));
+    results.forEach((rows) => {
+      if (Array.isArray(rows)) citations = citations.concat(rows);
+    });
+  } else {
+    const rows = await supabaseRequest('GET', `node_citations?workspace_id=eq.${workspace}&map_id=eq.${map}&select=node_id,document_id,citation_index,quote,locator,char_start,char_end,sentence_index&order=citation_index.asc&limit=8000`);
+    citations = Array.isArray(rows) ? rows : [];
+  }
   const documentIds = [...new Set(citations.map((item) => item.document_id).filter(Boolean))];
   let documents = [];
   if (documentIds.length) {
-    const result = await supabaseRequest('GET', `source_documents?workspace_id=eq.${workspace}&map_id=eq.${map}&id=in.${inFilter(documentIds)}&select=id,title,source_type,source_url,file_name`);
-    documents = Array.isArray(result) ? result : [];
+    const documentResults = await Promise.all(splitIntoBatches(documentIds, 80).map((batch) => supabaseRequest(
+      'GET',
+      `source_documents?workspace_id=eq.${workspace}&map_id=eq.${map}&id=in.${inFilter(batch)}&select=id,title,source_type,source_url,file_name&limit=${batch.length}`,
+    )));
+    documentResults.forEach((rows) => {
+      if (Array.isArray(rows)) documents = documents.concat(rows);
+    });
   }
   const documentMap = new Map(documents.map((item) => [item.id, item]));
   const byNode = new Map();
@@ -4240,6 +4905,9 @@ async function loadNodeCitations(workspaceId, mapId, nodeIds) {
       index: item.citation_index,
       quote: item.quote,
       locator: item.locator || '',
+      charStart: item.char_start !== null && item.char_start !== undefined && Number.isInteger(Number(item.char_start)) ? Number(item.char_start) : undefined,
+      charEnd: item.char_end !== null && item.char_end !== undefined && Number.isInteger(Number(item.char_end)) ? Number(item.char_end) : undefined,
+      sentenceIndex: item.sentence_index !== null && item.sentence_index !== undefined && Number.isInteger(Number(item.sentence_index)) ? Number(item.sentence_index) : undefined,
       documentId: item.document_id,
       title: document.title || '来源文档',
       sourceUrl: document.source_url || '',
@@ -4385,8 +5053,17 @@ async function createDocumentChunkRows(workspaceId, mapId, documentId, chunks) {
     chunk_index: Number.isFinite(Number(item.chunkIndex)) ? Number(item.chunkIndex) : index,
     locator: String(item.locator || '').slice(0, 200),
     page_number: Number.isFinite(Number(item.pageNumber)) ? Number(item.pageNumber) : null,
+    char_start: Number.isInteger(Number(item.charStart)) ? Number(item.charStart) : null,
+    char_end: Number.isInteger(Number(item.charEnd)) ? Number(item.charEnd) : null,
+    sentence_index: Number.isInteger(Number(item.sentenceIndex)) ? Number(item.sentenceIndex) : null,
     content: String(item.content || item.quote || '').trim().slice(0, 8000),
-    metadata: { sourceType: item.sourceType || '', fileName: item.fileName || '' },
+    metadata: {
+      sourceType: item.sourceType || '',
+      fileName: item.fileName || '',
+      charStart: Number.isInteger(Number(item.charStart)) ? Number(item.charStart) : null,
+      charEnd: Number.isInteger(Number(item.charEnd)) ? Number(item.charEnd) : null,
+      sentenceIndex: Number.isInteger(Number(item.sentenceIndex)) ? Number(item.sentenceIndex) : null,
+    },
     embedding: null,
     created_at: new Date().toISOString(),
   })).filter((item) => item.content.length >= 8);
@@ -4470,9 +5147,9 @@ async function loadEntityGraph(workspaceId, mapId) {
   const map = encodeURIComponent(mapId);
   try {
     const [entities, relations, evidence, documents] = await Promise.all([
-      supabaseRequest('GET', `graph_entities?workspace_id=eq.${workspace}&map_id=eq.${map}&select=*&order=confidence.desc,canonical_name.asc&limit=2000`),
-      supabaseRequest('GET', `graph_relations?workspace_id=eq.${workspace}&map_id=eq.${map}&select=*&order=confidence.desc&limit=4000`),
-      supabaseRequest('GET', `graph_evidence?workspace_id=eq.${workspace}&map_id=eq.${map}&select=*&order=citation_index.asc&limit=8000`),
+      supabaseRequest('GET', `graph_entities?workspace_id=eq.${workspace}&map_id=eq.${map}&select=id,canonical_name,entity_type,aliases,description,description_citation_indexes,confidence,created_at,updated_at&order=confidence.desc,canonical_name.asc&limit=2000`),
+      supabaseRequest('GET', `graph_relations?workspace_id=eq.${workspace}&map_id=eq.${map}&select=id,source_entity_id,target_entity_id,relation_type,label,explanation,status,confidence,created_at,updated_at&order=confidence.desc&limit=4000`),
+      supabaseRequest('GET', `graph_evidence?workspace_id=eq.${workspace}&map_id=eq.${map}&select=subject_kind,subject_id,document_id,citation_index,quote,locator&order=citation_index.asc&limit=8000`),
       supabaseRequest('GET', `source_documents?workspace_id=eq.${workspace}&map_id=eq.${map}&select=id,title,source_url,file_name,source_type&limit=1000`),
     ]);
     if (![entities, relations, evidence, documents].every(Array.isArray)) throw dependencyError('entity_graph');
@@ -4669,6 +5346,8 @@ async function createGraph(workspaceId, mapId, mindMap, source, document, source
     const leftTerms = new Set(queryAnchors(left));
     return queryAnchors(right).filter((term) => leftTerms.has(term)).length;
   };
+  const supplementMode = Boolean(placement && placement.supplement);
+  const attemptedNodes = mindMapNodeCount(mindMap);
 
   const topics = allNodes.filter((node) => node.type === 'topic');
   const requestedTopic = placement && Number(placement.confidence) >= 0.45 ? String(placement.targetTopic || '') : '';
@@ -4694,10 +5373,12 @@ async function createGraph(workspaceId, mapId, mindMap, source, document, source
 
   (mindMap.children || []).forEach((child, childIndex) => {
     const rootChildren = directChildIds(root.id);
-    const similarChild = bestSimilar(child.topic, allNodes.filter((node) => rootChildren.has(node.id)), 0.82);
+    const childCandidates = allNodes.filter((node) => node.type === 'concept' && (supplementMode || rootChildren.has(node.id)));
+    const similarChild = bestSimilar(child.topic, childCandidates, supplementMode ? 0.76 : 0.82);
     let childNode = similarChild ? similarChild.node : null;
     if (childNode) {
       reusedNodes.add(childNode.id);
+      if (!rootChildren.has(childNode.id)) addContains(`edge_${seed}_c${childIndex}`, root.id, childNode.id, 1);
     } else {
       childNode = makeNode(`node_${seed}_c${childIndex}`, child.topic, child.desc, 'concept', 0.9);
       nodes.push(childNode);
@@ -4717,11 +5398,15 @@ async function createGraph(workspaceId, mapId, mindMap, source, document, source
 
     (child.items || []).forEach((item, itemIndex) => {
       const childChildren = directChildIds(childNode.id);
-      const similarDetail = bestSimilar(item, allNodes.filter((node) => childChildren.has(node.id)), 0.86);
+      const detailCandidates = allNodes.filter((node) => node.type === 'detail' && (supplementMode || childChildren.has(node.id)));
+      const similarDetail = bestSimilar(item, detailCandidates, supplementMode ? 0.78 : 0.86);
       const existingDetail = similarDetail ? similarDetail.node : null;
       const itemIndexes = child.itemCitationIndexes && child.itemCitationIndexes[itemIndex];
       if (existingDetail) {
         reusedNodes.add(existingDetail.id);
+        if (!childChildren.has(existingDetail.id)) {
+          addContains(`edge_${seed}_c${childIndex}i${itemIndex}`, childNode.id, existingDetail.id, 0.8);
+        }
         citationPlan.set(existingDetail.id, normalizeCitationIndexes(itemIndexes && itemIndexes.length ? itemIndexes : child.citationIndexes));
         return;
       }
@@ -4799,8 +5484,11 @@ async function createGraph(workspaceId, mapId, mindMap, source, document, source
           node_id: nodeId,
           document_id: documentId,
           citation_index: index,
-          quote,
+          quote: String(citation.quote).trim().slice(0, 4000),
           locator: String(citation.locator || '').slice(0, 200),
+          char_start: Number.isInteger(Number(citation.charStart)) ? Number(citation.charStart) : null,
+          char_end: Number.isInteger(Number(citation.charEnd)) ? Number(citation.charEnd) : null,
+          sentence_index: Number.isInteger(Number(citation.sentenceIndex)) ? Number(citation.sentenceIndex) : null,
           created_at: now,
         });
       });
@@ -4846,7 +5534,21 @@ async function createGraph(workspaceId, mapId, mindMap, source, document, source
       console.warn('Entity graph indexing unavailable; concept graph and citations remain saved', { code: error.publicCode || error.code || 'ENTITY_GRAPH_INDEX_UNAVAILABLE' });
     }
   }
-  return { root, nodes, edges, reusedNodes: [...reusedNodes], citations: citationRows, document: sourceDocument, chunkIndex, entityIndex };
+  const reuseRate = attemptedNodes ? Number((reusedNodes.size / attemptedNodes).toFixed(3)) : 0;
+  return {
+    root,
+    nodes,
+    edges,
+    reusedNodes: [...reusedNodes],
+    reuseRate,
+    reuseWarning: supplementMode && reuseRate < 0.5
+      ? '实际复用率低于 50%，本次新增了较多分支'
+      : '',
+    citations: citationRows,
+    document: sourceDocument,
+    chunkIndex,
+    entityIndex,
+  };
 }
 
 async function updateMapNodeCount(workspaceId, mapId) {
@@ -4862,20 +5564,37 @@ async function loadMapGraphSnapshot(workspaceId, mapId) {
   const workspace = encodeURIComponent(workspaceId);
   const encodedMapId = encodeURIComponent(mapId);
   const [nodeRows, edgeRows, layoutRows, whiteboardGroupRows, entityGraph] = await Promise.all([
-    supabaseRequest('GET', `nodes?workspace_id=eq.${workspace}&map_id=eq.${encodedMapId}&status=eq.active&select=*&limit=2000`),
-    supabaseRequest('GET', `edges?workspace_id=eq.${workspace}&map_id=eq.${encodedMapId}&select=*&limit=4000`),
-    supabaseRequest('GET', `node_layouts?workspace_id=eq.${workspace}&map_id=eq.${encodedMapId}&select=*&limit=2000`),
-    supabaseRequest('GET', `whiteboard_groups?workspace_id=eq.${workspace}&map_id=eq.${encodedMapId}&select=*&order=sort_order.asc,created_at.asc&limit=500`),
+    supabaseRequest('GET', `nodes?workspace_id=eq.${workspace}&map_id=eq.${encodedMapId}&status=eq.active&select=id,content,desc,type,status,source,confidence,created_at,updated_at&limit=2000`),
+    supabaseRequest('GET', `edges?workspace_id=eq.${workspace}&map_id=eq.${encodedMapId}&select=id,source_id,target_id,relation,weight,created_at&limit=4000`),
+    supabaseRequest('GET', `node_layouts?workspace_id=eq.${workspace}&map_id=eq.${encodedMapId}&select=node_id,map_id,position_x,position_y,zoom_level,group_id,card_width,card_height,updated_at&limit=2000`),
+    supabaseRequest('GET', `whiteboard_groups?workspace_id=eq.${workspace}&map_id=eq.${encodedMapId}&select=id,map_id,name,color,position_x,position_y,width,height,collapsed,sort_order,created_at,updated_at&order=sort_order.asc,created_at.asc&limit=500`),
     loadEntityGraph(workspaceId, mapId),
   ]);
   if (![nodeRows, edgeRows, layoutRows, whiteboardGroupRows].every(Array.isArray)) throw dependencyError('knowledge_store');
-  const citationsByNode = await loadNodeCitations(workspaceId, mapId, nodeRows.map((node) => node.id));
+  let citationsByNode = new Map();
+  let citationStatus = 'ready';
+  try {
+    citationsByNode = await loadNodeCitations(workspaceId, mapId, nodeRows.map((node) => node.id));
+  } catch (error) {
+    // Citation enrichment must not make the concept graph itself unusable.
+    // The node detail panel can retry sources after the user has opened it.
+    citationStatus = 'temporarily_unavailable';
+    console.warn('Node citations unavailable; returning the concept graph', {
+      code: error.publicCode || error.code || 'NODE_CITATIONS_UNAVAILABLE',
+      nodeCount: nodeRows.length,
+    });
+  }
   return {
     nodes: nodeRows.map((node) => convertNode(node, citationsByNode.get(node.id))),
     edges: edgeRows.map(convertEdge),
     entityGraph,
     layouts: layoutRows.map(convertNodeLayout),
     whiteboardGroups: whiteboardGroupRows.map(convertWhiteboardGroup),
+    loadStatus: {
+      citations: citationStatus,
+      nodeCount: nodeRows.length,
+      edgeCount: edgeRows.length,
+    },
   };
 }
 
@@ -5500,6 +6219,8 @@ async function handleKnowledge(req, context) {
         totalNodes: graph.nodes.length,
         totalEdges: graph.edges.length,
         reusedNodes: graph.reusedNodes.length,
+        reuseRate: graph.reuseRate,
+        reuseWarning: graph.reuseWarning,
         totalCitations: graph.citations ? graph.citations.length : 0,
         indexedChunks: graph.chunkIndex ? graph.chunkIndex.count : 0,
         embeddedChunks: graph.chunkIndex ? graph.chunkIndex.embedded : 0,
@@ -5679,6 +6400,7 @@ const server = http.createServer(async (req, res) => {
     } else if (pathname === '/api/workspaces' || pathname === '/mindgrow/api/workspaces') {
       result = await handleWorkspaces(req, user);
     } else if (pathname === '/api/tools/meeting' || pathname === '/mindgrow/api/tools/meeting'
+      || pathname === '/api/tools/article-source' || pathname === '/mindgrow/api/tools/article-source'
       || pathname === '/api/tools/article' || pathname === '/mindgrow/api/tools/article'
       || pathname === '/api/tools/audio-overview' || pathname === '/mindgrow/api/tools/audio-overview') {
       if (req.method !== 'POST') result = { status: 405, data: { error: 'Method not allowed', code: 'METHOD_NOT_ALLOWED' } };
@@ -5733,13 +6455,26 @@ module.exports = {
   __knowledgeLifecycleInternal: {
     workspaceGraphEntityIdentity,
   },
+  __largeGraphInternal: {
+    splitIntoBatches,
+  },
   buildDocumentChunks,
+  buildSentenceCitations,
   buildMeetingCitations,
+  isExplicitMeetingAction,
   fallbackMeetingAnalysis,
+  handleMeetingTool,
+  requestedKnowledgeNodeBudget,
+  mindMapNodeCount,
+  applyKnowledgeNodeBudget,
+  canonicalizeSupplementMindMap,
   bestCitationIndexes,
   citationAudit,
   normalizedMindMap,
   normalizedEntityGraph,
+  canonicalizeRawEntityGraph,
+  canonicalEntityAliasGroup,
+  entityAliasKey,
   ENTITY_DESCRIPTION_COVERAGE_THRESHOLD,
   entityDescriptionGroundingStats,
   relationEvidenceSupports,
@@ -5749,7 +6484,11 @@ module.exports = {
   sourcePages,
   standaloneHttpUrl,
   htmlToReadableText,
+  extractPdfTextLightweight,
+  arxivArticleId,
+  readArticleSource,
   normalizeArticleSourceInput,
+  prepareArticleSource,
   safeBase64Url,
   handleChat,
   assertPublicUrl,
@@ -5782,6 +6521,9 @@ module.exports = {
   ensureMindMapSourceCoverage,
   sanitizeGroundedAnswer,
   compactGroundedEvidence,
+  hasDirectAnswerEvidence,
+  preModelAnswerDecision,
+  noEvidenceAnswer,
   supabaseHeaders,
   entityGraphQueryPlan,
   rankEntityGraphSeeds,

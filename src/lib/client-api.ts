@@ -4,6 +4,7 @@ import { aiEntityGraphToEntityGraph } from "@/lib/entity-graph";
 import { migrateLegacyMapMode, normalizeMapMode } from "@/lib/mode-libraries";
 import { sendWithManagedSession } from "@/lib/managed-session";
 import { buildLocalArticleCitations } from "@/lib/pdf-citation";
+import { broadcastMapVersion } from "@/lib/map-version-sync";
 import type { TenantScope } from "@/lib/tenant-cache";
 import { useMindGrowStore, type WriteRequestToken } from "@/store/mindgrow-store";
 import type { AIEntityGraph, AIMindMap, Category, Citation, EntityGraph, KnowledgeEdge, KnowledgeNode, MindMap, NodeLayout, WhiteboardGroup } from "@/types";
@@ -845,6 +846,32 @@ function localCitationAudit(
 function handleLocalTool(path: string, init?: RequestInit): Response {
   const body = bodyOf(init);
   const toolPath = new URL(path, "http://mindgrow.local").pathname;
+  if (toolPath.endsWith("/article-source")) {
+    const sourceType = body.sourceType === "pdf" ? "pdf" : body.sourceType === "url" ? "url" : "text";
+    const content = String(body.content || "").trim();
+    if (sourceType === "url") {
+      return json({ error: "本地演示模式不读取远程网页，请粘贴正文或连接云端 API", code: "ARTICLE_URL_CLOUD_REQUIRED" }, 400);
+    }
+    if (content.length < 50) return json({ error: "请提供至少 50 个字的正文", code: "ARTICLE_CONTENT_TOO_SHORT" }, 400);
+    const fileName = sourceType === "pdf" ? String(body.fileName || "") : "";
+    const acquisition = sourceType === "pdf" ? "local_pdf_extraction" : "pasted_text";
+    return json({
+      preparedSource: true,
+      content,
+      sourceUrl: "",
+      sourceType,
+      fileName,
+      mimeType: sourceType === "pdf" ? "application/pdf" : "",
+      acquisition,
+      sourceStatus: {
+        readStatus: "ready",
+        acquisition,
+        characterCount: content.length,
+        citationCount: buildLocalArticleCitations(content, sourceType, fileName, 8).length,
+        fileName: fileName || undefined,
+      },
+    });
+  }
   if (toolPath.endsWith("/meeting")) {
     const transcript = String(body.transcript || "").trim();
     if (transcript.length < 10) return json({ error: "请至少输入 10 个字的会议内容" }, 400);
@@ -911,9 +938,10 @@ function handleLocalTool(path: string, init?: RequestInit): Response {
       mimeType: body.mimeType || "",
       sourceStatus: {
         readStatus: "ready",
-        acquisition: body.sourceType === "pdf" ? "local_pdf_extraction" : "pasted_text",
+        acquisition: body.acquisition || (body.sourceType === "pdf" ? "local_pdf_extraction" : "pasted_text"),
         characterCount: content.length,
         citationCount: citations.length,
+        finalUrl: body.sourceUrl || undefined,
         fileName: body.fileName || undefined,
       },
     });
@@ -1034,6 +1062,9 @@ export async function apiFetch(path: string, options?: ApiFetchOptions): Promise
         send: (headers) => fetch(`${API_BASE_URL}${path}`, { ...init, cache: "no-store", headers }),
       });
       finishTrackedWrite(writeToken, response);
+      if (response.ok && trackedMapId && storedWorkspaceId) {
+        broadcastMapVersion(trackedMapId, storedWorkspaceId);
+      }
       return response;
     } catch (error) {
       finishTrackedWrite(writeToken, undefined, error);
@@ -1055,6 +1086,7 @@ export async function apiFetch(path: string, options?: ApiFetchOptions): Promise
     else if (path.startsWith("/api/tools/")) response = handleLocalTool(path, init);
     else response = await fetch(path, init);
     finishTrackedWrite(writeToken, response);
+    if (response.ok && trackedMapId) broadcastMapVersion(trackedMapId, "local-workspace");
     return response;
   } catch (error) {
     finishTrackedWrite(writeToken, undefined, error);

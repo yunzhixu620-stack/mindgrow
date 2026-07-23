@@ -37,6 +37,10 @@ const ENTITY_TYPE_LABELS: Record<string, string> = {
 const RELATION_TYPE_LABELS: Record<string, string> = {
   uses: "使用",
   proposes: "提出",
+  supports: "支持",
+  opposes: "反对",
+  approves: "批准",
+  improves: "改进",
   evaluated_on: "评测于",
   achieves: "达到",
   depends_on: "依赖于",
