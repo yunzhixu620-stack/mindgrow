@@ -29,7 +29,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.21.17';
+const API_VERSION = '10.21.18';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -2089,6 +2089,70 @@ function ensureKnowledgeNodeMinimum(mindMap, sourceText, budget) {
   return output;
 }
 
+function deterministicKnowledgeMindMap(sourceText) {
+  const source = String(sourceText || '').replace(/\r\n?/g, '\n').trim();
+  const rawLines = source.split('\n').map((line) => line.trim()).filter(Boolean);
+  const firstReadable = rawLines.map(readableSourceFact).find(Boolean) || '知识整理结果';
+  let root = compactKnowledgeDisplayText(firstReadable.replace(/^#{1,6}\s*/, ''), 48);
+  const sections = [];
+  let current = null;
+  rawLines.forEach((line) => {
+    const headingMatch = line.match(/^#{1,6}\s+(.+)$/)
+      || line.match(/^(?:\d+(?:\.\d+){0,3}[.)、]\s+)(.{2,80})$/);
+    if (headingMatch) {
+      const topic = compactKnowledgeDisplayText(headingMatch[1], 24);
+      if (!root || /^知识整理结果$/.test(root)) root = topic;
+      current = { topic, lines: [] };
+      sections.push(current);
+      return;
+    }
+    if (!current) {
+      current = { topic: '核心内容', lines: [] };
+      sections.push(current);
+    }
+    current.lines.push(line);
+  });
+  const seenTopics = new Set();
+  const children = sections.map((section, sectionIndex) => {
+    const topic = compactKnowledgeDisplayText(
+      section.topic || `内容方向 ${sectionIndex + 1}`,
+      24,
+    );
+    const topicKey = topic.toLocaleLowerCase();
+    if (!topic || seenTopics.has(topicKey)) return null;
+    seenTopics.add(topicKey);
+    let facts = sourceCriticalFacts(section.lines.join('\n'), 6);
+    if (facts.length === 0) {
+      facts = section.lines
+        .map(readableSourceFact)
+        .filter((fact) => fact && fact.length >= 6)
+        .slice(0, 6);
+    }
+    if (facts.length === 0) return null;
+    return {
+      topic,
+      desc: facts[0],
+      items: facts.slice(1),
+      itemCitationIndexes: facts.slice(1).map(() => []),
+    };
+  }).filter(Boolean).slice(0, 6);
+  const globalFacts = sourceCriticalFacts(source, 12);
+  if (children.length === 0) {
+    children.push({
+      topic: '核心内容',
+      desc: globalFacts[0] || firstReadable,
+      items: globalFacts.slice(1, 6),
+      itemCitationIndexes: globalFacts.slice(1, 6).map(() => []),
+    });
+  }
+  return {
+    root: root || '知识整理结果',
+    rootDesc: globalFacts[0] || children[0].desc || '',
+    children,
+    relatedTopics: [],
+  };
+}
+
 function applyKnowledgeNodeBudget(mindMap, budget) {
   const input = mindMap && typeof mindMap === 'object' ? mindMap : {};
   const children = (Array.isArray(input.children) ? input.children : []).slice(0, Math.min(6, budget.maximum - 1))
@@ -2238,14 +2302,19 @@ async function handleChat(body, context) {
         ? `来源网址：${resolvedSourceUrl}\n\n以下是实际抓取的网页正文。只依据正文整理，不要根据网址或常识猜测：\n${structureInput}`
         : structureInput,
     },
-  ], 'qwen-plus', 900, 0.4);
+  ], 'qwen-plus', 1800, 0.3);
 
   let mindMap;
+  let generationFallback = null;
   try {
     mindMap = JSON.parse(stripJsonFence(generated));
     if (!mindMap || typeof mindMap.root !== 'string' || !Array.isArray(mindMap.children)) throw new Error('Invalid schema');
-  } catch (_) {
-    return { status: 502, data: { error: 'The model returned an invalid structure', code: 'MODEL_OUTPUT_INVALID' } };
+  } catch (error) {
+    console.warn('Knowledge structure model output invalid; using evidence-only fallback', {
+      message: error && error.message ? error.message : 'Invalid structure',
+    });
+    mindMap = deterministicKnowledgeMindMap(structureInput);
+    generationFallback = 'MODEL_OUTPUT_INVALID';
   }
   const structureCoverage = ensureMindMapSourceCoverage(mindMap, structureInput, [], null, {
     maxAppendedFacts: nodeBudget.kind === 'long_text' ? 4 : 2,
@@ -2324,6 +2393,7 @@ async function handleChat(body, context) {
       sources,
       sourceUrl: resolvedSourceUrl || undefined,
       sourceCoverage: structureCoverage.audit,
+      generationFallback,
     },
   };
 }
@@ -7365,6 +7435,7 @@ module.exports = {
   isSingleKnowledgeTerm,
   ensureShortTermFiveDirections,
   normalizeKnowledgeMindMapDisplay,
+  deterministicKnowledgeMindMap,
   ensureKnowledgeNodeMinimum,
   applyKnowledgeNodeBudget,
   canonicalizeSupplementMindMap,

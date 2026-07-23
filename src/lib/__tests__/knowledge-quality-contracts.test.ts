@@ -49,6 +49,11 @@ const proxy = require("../../../fc-proxy/index.js") as {
     rootDesc: string;
     children: Array<{ topic: string; desc: string; items: string[]; itemCitationIndexes: number[][] }>;
   };
+  deterministicKnowledgeMindMap: (sourceText: string) => {
+    root: string;
+    rootDesc: string;
+    children: Array<{ topic: string; desc: string; items: string[] }>;
+  };
   readableSourceFact: (value: string) => string;
   ensureKnowledgeNodeMinimum: (
     mindMap: unknown,
@@ -189,6 +194,26 @@ describe("knowledge quality contracts", () => {
     expect(result.children[0].items.join(" ")).not.toMatch(/\*\*|SEV2：PDF\/$/);
     expect(result.children[0].items.every((item) => item.length <= 96)).toBe(true);
     expect(result.children[0].itemCitationIndexes).toEqual([[1], [3]]);
+  });
+
+  it("builds an evidence-only sectioned fallback when the model returns invalid JSON", () => {
+    const source = [
+      "# 论文评测方案",
+      "## 数据与实验",
+      "使用 MovieLens-1M 数据集，并按 8:1:1 划分训练集、验证集与测试集。",
+      "实验对比 BM25、传统 RAG 与 GraphRAG，使用 Recall@20 和 NDCG@20 评价。",
+      "## 局限与启示",
+      "当前实验只覆盖推荐场景，尚未验证跨语言问答。",
+    ].join("\n");
+    const fallback = proxy.deterministicKnowledgeMindMap(source);
+
+    expect(fallback.root).toContain("论文评测方案");
+    expect(fallback.children.map((child) => child.topic)).toEqual([
+      "数据与实验",
+      "局限与启示",
+    ]);
+    expect(fallback.children[0].desc).toMatch(/MovieLens|BM25|Recall@20/);
+    expect(JSON.stringify(fallback)).not.toContain("发布日期");
   });
 
   it("turns markdown table rows into short semantic facts instead of raw table nodes", () => {
