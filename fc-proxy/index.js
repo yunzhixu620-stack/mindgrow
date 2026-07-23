@@ -29,7 +29,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.21.13';
+const API_VERSION = '10.21.14';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -2042,6 +2042,44 @@ function normalizeKnowledgeMindMapDisplay(mindMap) {
   };
 }
 
+function ensureKnowledgeNodeMinimum(mindMap, sourceText, budget) {
+  if (!budget || mindMapNodeCount(mindMap) >= budget.minimum) return mindMap;
+  const output = {
+    ...mindMap,
+    children: (Array.isArray(mindMap && mindMap.children) ? mindMap.children : []).map((child) => ({
+      ...child,
+      items: Array.isArray(child && child.items) ? [...child.items] : [],
+      itemCitationIndexes: Array.isArray(child && child.itemCitationIndexes) ? [...child.itemCitationIndexes] : [],
+    })),
+  };
+  let target = output.children.find((child) => /(?:关键事实|数据|指标|结果|行动|风险)/i.test(child.topic));
+  if (!target && output.children.length < 6) {
+    target = {
+      topic: '原文关键事实',
+      desc: '保留输入中的关键数字、责任、否定条件与因果链',
+      items: [],
+      itemCitationIndexes: [],
+    };
+    output.children.push(target);
+  }
+  if (!target) target = output.children.slice().sort((left, right) => left.items.length - right.items.length)[0];
+  const rendered = () => [
+    output.root,
+    output.rootDesc,
+    ...output.children.reduce((all, child) => all.concat([child.topic, child.desc], child.items), []),
+  ].join(' ');
+  const facts = sourceCriticalFacts(sourceText, 30)
+    .map((fact) => compactKnowledgeDisplayText(fact, 96))
+    .filter((fact) => fact && !incompleteKnowledgeDisplayText(fact));
+  for (const fact of facts) {
+    if (mindMapNodeCount(output) >= budget.minimum || mindMapNodeCount(output) >= budget.maximum) break;
+    if (structureFactCovered(fact, rendered())) continue;
+    target.items.push(fact);
+    target.itemCitationIndexes.push([]);
+  }
+  return output;
+}
+
 function applyKnowledgeNodeBudget(mindMap, budget) {
   const input = mindMap && typeof mindMap === 'object' ? mindMap : {};
   const children = (Array.isArray(input.children) ? input.children : []).slice(0, Math.min(6, budget.maximum - 1))
@@ -2205,6 +2243,7 @@ async function handleChat(body, context) {
     rejectMarkdownFacts: true,
   });
   mindMap = normalizeKnowledgeMindMapDisplay(structureCoverage.mindMap);
+  mindMap = ensureKnowledgeNodeMinimum(mindMap, structureInput, nodeBudget);
   mindMap = ensureShortTermFiveDirections(mindMap, structureInput);
   let supplementPlan = null;
   if (supplementMode) {
@@ -3063,7 +3102,11 @@ function readableSourceFact(value) {
 }
 
 function sourceCriticalFacts(value, limit) {
-  const rows = String(value || '').replace(/\r\n?/g, '\n')
+  const expandedTables = String(value || '').replace(
+    /\|\s*([^|\n]+)\|\s*([^|\n]+)\|\s*([^|\n]+)\|/g,
+    (_, first, second, third) => `\n| ${first.trim()} | ${second.trim()} | ${third.trim()} |\n`,
+  );
+  const rows = expandedTables.replace(/\r\n?/g, '\n')
     .split(/\n+|(?<=[。！？!?；;])\s*/)
     .map((item, index) => ({ index, text: readableSourceFact(item) }))
     .filter((item) => item.text.length >= 6 && !isDocumentMetadataFact(item.text));
@@ -7308,6 +7351,7 @@ module.exports = {
   isSingleKnowledgeTerm,
   ensureShortTermFiveDirections,
   normalizeKnowledgeMindMapDisplay,
+  ensureKnowledgeNodeMinimum,
   applyKnowledgeNodeBudget,
   canonicalizeSupplementMindMap,
   bestCitationIndexes,

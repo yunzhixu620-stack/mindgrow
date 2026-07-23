@@ -48,6 +48,11 @@ const proxy = require("../../../fc-proxy/index.js") as {
     children: Array<{ topic: string; desc: string; items: string[]; itemCitationIndexes: number[][] }>;
   };
   readableSourceFact: (value: string) => string;
+  ensureKnowledgeNodeMinimum: (
+    mindMap: unknown,
+    sourceText: string,
+    budget: { kind: string; minimum: number; maximum: number },
+  ) => unknown;
   ensureMindMapSourceCoverage: (
     mindMap: unknown,
     sourceText: string,
@@ -189,6 +194,36 @@ describe("knowledge quality contracts", () => {
     expect(fact).toBe("GitHub Pages 前端：99.9%；LCP p75 <2.5 秒，静态资源 404 = 0");
     expect(fact).not.toContain("|");
     expect(fact.length).toBeLessThanOrEqual(180);
+  });
+
+  it("uses flattened table evidence to reach the long-text minimum without raw rows", () => {
+    const source = [
+      "MindGrow On-call 服务目标",
+      "| 服务 | SLO | 延迟/质量目标 | |---|---:|---|",
+      "| GitHub Pages 前端 | 99.9% | LCP p75 <2.5 秒，静态资源 404 = 0 |",
+      "| 阿里云 API | 99.5% | 非生成接口 p95 <1.5 秒，5xx <1% |",
+      "| AI 生成/文章解析 | 99.0% | p95 <20 秒，结构解析成功率 ≥99% |",
+      "| 知识问答 | 99.0% | 引用覆盖率 ≥95%，越权泄漏 0 |",
+      "| Audio Overview | 98.5% | MP3 失败时浏览器朗读降级成功率 ≥99% |",
+      "SEV0：跨租户越权时 15 分钟内响应。",
+      "SEV1：核心知识读写不可用时 30 分钟内响应。",
+    ].join(" ");
+    const output = proxy.ensureKnowledgeNodeMinimum({
+      root: "MindGrow On-call",
+      children: [{
+        topic: "事故分级",
+        desc: "按影响范围分级",
+        items: [
+          "SEV0：跨租户越权时 15 分钟内响应",
+          "SEV1：核心知识读写不可用时 30 分钟内响应",
+        ],
+      }],
+    }, source, { kind: "long_text", minimum: 10, maximum: 20 }) as {
+      children: Array<{ items: string[] }>;
+    };
+    expect(proxy.mindMapNodeCount(output)).toBeGreaterThanOrEqual(10);
+    expect(proxy.mindMapNodeCount(output)).toBeLessThanOrEqual(20);
+    expect(output.children.flatMap((child) => child.items).join(" ")).not.toContain("|");
   });
 
   it("enforces the 4–8, 10–20 and 12–20 node budgets", () => {
