@@ -406,7 +406,9 @@ describe("knowledge quality contracts", () => {
 
     expect(result.status).toBe(200);
     expect(result.data.summary).toBe("Error stack accessor 已进入 Stage 3。");
+    expect(result.data.actionItems).toHaveLength(1);
     expect(result.data.actionItems.some((item) => item.owner === "JHD" && item.due === "下次会议前")).toBe(true);
+    expect(result.data.actionItems[0].citationIndexes?.length).toBeGreaterThanOrEqual(2);
     const nodeCount = 1 + result.data.mindMap.children.length
       + result.data.mindMap.children.reduce((sum, child) => sum + child.items.length, 0);
     expect(nodeCount).toBeLessThanOrEqual(20);

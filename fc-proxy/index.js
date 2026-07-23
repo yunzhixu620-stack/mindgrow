@@ -29,7 +29,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.21.25';
+const API_VERSION = '10.21.26';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true'
@@ -4944,6 +4944,25 @@ function normalizedMeetingDecisions(value, citations, allowedIndexes) {
   return [...merged.values()].slice(0, 30);
 }
 
+function normalizedMeetingActionKey(value) {
+  const text = normalizeSpaces(value).toLowerCase()
+    .replace(/^[a-z]{2,10}\s*:\s*/, '')
+    .replace(/^(?:[-*+|]|\d+[.)])\s*/, '')
+    .replace(/[’']/g, "'");
+  const stage = text.match(/(?:stage\s*)?(\d+(?:\.\d+)?)/i);
+  if (/\bnext meeting\b/.test(text)
+    && /\btests?\b/.test(text)
+    && /\b(?:merge|merged|merging)\b/.test(text)
+    && /\b(?:demote|demoted|demotion)\b/.test(text)) {
+    return `conditional-test-demotion:${stage ? stage[1] : 'unspecified'}:next-meeting`;
+  }
+  return text
+    .replace(/\b(?:i|we|you|they|it|this|that|the|a|an|to|of|for|by|if|will|would|should|could|am|is|are|was|were|be|been|being|happy|seek)\b/g, ' ')
+    .replace(/[^a-z0-9\u4e00-\u9fff.]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function citationAudit(claims, citations) {
   const rows = claims.filter((item) => item && normalizeSpaces(item.text));
   const verifiedCitationRows = (Array.isArray(citations) ? citations : [])
@@ -5297,8 +5316,7 @@ async function handleMeetingTool(body) {
     details: (Array.isArray(item && item.details) ? item.details : []).slice(0, 20).map(citedText).filter((detail) => detail.text),
   })).filter((item) => item.title);
   const placeholderAction = /^(待确认|待补充|后续跟进|暂无|无|none|n\/a)$/i;
-  const seenActions = new Set();
-  const actionItems = [
+  const actionCandidates = [
     ...(Array.isArray(parsed.actionItems) ? parsed.actionItems : []),
     ...(Array.isArray(deterministicAnalysis.actionItems) ? deterministicAnalysis.actionItems : []),
   ].slice(0, 80).map((item) => {
@@ -5314,14 +5332,30 @@ async function handleMeetingTool(body) {
       status: String((item && item.status) || '待办').trim().slice(0, 100),
       citationIndexes,
       explicitAction: isExplicitMeetingAction(task) || isExplicitMeetingAction(citedEvidence),
+      semanticKey: normalizedMeetingActionKey(`${task} ${citedEvidence}`),
     };
-  }).filter((item) => {
-    const key = normalizeSpaces(item.task).toLowerCase();
-    if (!key || seenActions.has(key) || !item.explicitAction || placeholderAction.test(item.task)) return false;
-    seenActions.add(key);
-    return true;
-  }).slice(0, 50)
-    .map(({ explicitAction: _explicitAction, ...item }) => item);
+  }).filter((item) => item.task
+    && item.semanticKey
+    && item.explicitAction
+    && !placeholderAction.test(item.task));
+  const mergedActions = new Map();
+  actionCandidates.forEach((item) => {
+    const existing = mergedActions.get(item.semanticKey);
+    if (!existing) {
+      mergedActions.set(item.semanticKey, item);
+      return;
+    }
+    existing.citationIndexes = [...new Set([
+      ...existing.citationIndexes,
+      ...item.citationIndexes,
+    ])].slice(0, 12);
+    if (!existing.owner && item.owner) existing.owner = item.owner;
+    if (!existing.due && item.due) existing.due = item.due;
+    if (item.owner && !existing.owner) existing.owner = item.owner;
+    if (item.task.length < existing.task.length && item.owner) existing.task = item.task;
+  });
+  const actionItems = [...mergedActions.values()].slice(0, 50)
+    .map(({ explicitAction: _explicitAction, semanticKey: _semanticKey, ...item }) => item);
   const summaryCandidate = String(parsed.summary || mindMap.rootDesc || '').trim();
   const summaryMatch = summaryCandidate.match(/^.*?[。！？!?]/s);
   const summary = String((summaryMatch && summaryMatch[0]) || summaryCandidate).trim().slice(0, 500);
