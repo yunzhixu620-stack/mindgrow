@@ -7,6 +7,7 @@ const BASE_URL = process.env.MINDGROW_BASE_URL || "http://localhost:3000";
 const BASE_PATH = new URL(BASE_URL).pathname.replace(/\/$/, "");
 const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 const E2E_FILTER = String(process.env.MINDGROW_E2E_FILTER || "").trim().toLocaleLowerCase();
+const E2E_FAIL_FAST = process.env.MINDGROW_E2E_FAIL_FAST === "true";
 const artifactDir = path.join(__dirname, "..", "artifacts");
 fs.mkdirSync(artifactDir, { recursive: true });
 const pdfPath = path.join(artifactDir, "mindgrow-citation-sample.pdf");
@@ -32,6 +33,7 @@ const check = async (name, task) => {
     results.push({ name, ok: false, error: error.message });
     console.error(`FAIL ${name}: ${error.message}`);
     if (E2E_FILTER && error.stack) console.error(error.stack);
+    if (E2E_FAIL_FAST) throw error;
   }
 };
 
@@ -206,7 +208,10 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     let groupedCardBox = null;
     for (const candidate of candidateCards) {
       const box = await candidate.boundingBox();
-      if (box && box.x + box.width > 0 && box.y + box.height > 90 && box.x < 1440 && box.y < 900) {
+      const candidateId = await candidate.evaluate((element) => element.getAttribute("data-id"));
+      // The first card already proved persisted-position reload above. Use a
+      // different card here so grouping is an independent pointer scenario.
+      if (candidateId !== nodeId && box && box.x + box.width > 0 && box.y + box.height > 90 && box.x < 1440 && box.y < 900) {
         groupedCard = candidate;
         groupedCardBox = box;
         break;
@@ -215,9 +220,10 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     if (!groupNode || !groupBox || !groupedCard || !groupedCardBox) throw new Error("Whiteboard group or visible card cannot be dragged");
     const groupedCardId = await groupedCard.evaluate((element) => element.getAttribute("data-id"));
     if (!groupedCardId) throw new Error("Grouped card id is missing");
-    await page.mouse.move(groupedCardBox.x + groupedCardBox.width / 2, groupedCardBox.y + groupedCardBox.height / 2);
+    await page.mouse.move(groupedCardBox.x + 20, groupedCardBox.y + 20);
     await page.mouse.down();
-    await page.mouse.move(groupBox.x + Math.min(220, groupBox.width / 2), groupBox.y + Math.min(190, groupBox.height / 2), { steps: 10 });
+    await page.mouse.move(groupedCardBox.x + 32, groupedCardBox.y + 32, { steps: 3 });
+    await page.mouse.move(groupBox.x + Math.min(220, groupBox.width / 2), groupBox.y + Math.min(190, groupBox.height / 2), { steps: 12 });
     await page.mouse.up();
     try {
       await page.waitForFunction((id, mapId, expectedGroupId) => {
@@ -279,9 +285,9 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     const dragHandle = await page.$('[data-testid="whiteboard-group-drag-handle"]');
     const dragHandleBox = await dragHandle?.boundingBox();
     if (!dragHandleBox) throw new Error("Whiteboard group drag handle is missing");
-    await page.mouse.move(dragHandleBox.x + 90, dragHandleBox.y + dragHandleBox.height / 2);
+    await page.mouse.move(dragHandleBox.x + 24, dragHandleBox.y + dragHandleBox.height / 2);
     await page.mouse.down();
-    await page.mouse.move(dragHandleBox.x + 180, dragHandleBox.y + dragHandleBox.height / 2 + 64, { steps: 10 });
+    await page.mouse.move(dragHandleBox.x + 144, dragHandleBox.y + dragHandleBox.height / 2 + 72, { steps: 12 });
     await page.mouse.up();
     await page.waitForFunction((mapId, expectedGroupId, x, y) => {
       const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
