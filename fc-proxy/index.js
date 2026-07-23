@@ -22,7 +22,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.21.3';
+const API_VERSION = '10.21.4';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -2756,6 +2756,60 @@ function mindMapDescriptionIsConcrete(topic, value) {
   return text.length >= 10;
 }
 
+function semanticMindMapTopic(topic, description, items) {
+  const rawTopic = normalizeSpaces(topic);
+  if (rawTopic && !/^(?:要点|分支|主题)(?:\s*\d+)?$/i.test(rawTopic)) return rawTopic;
+  const evidenceText = [
+    normalizeSpaces(description),
+    ...(Array.isArray(items) ? items.map((item) => normalizeSpaces(item)) : []),
+  ].filter(Boolean).join(' ');
+  const inferredKind = mindMapBranchKind(evidenceText);
+  return {
+    question: '研究问题',
+    method: '方法/架构',
+    experiment: '数据与实验',
+    result: '结果',
+    limitation: '局限与启示',
+  }[inferredKind] || '';
+}
+
+function mergeSemanticMindMapBranches(children) {
+  const merged = [];
+  const byTopic = new Map();
+  (Array.isArray(children) ? children : []).forEach((child) => {
+    if (!child || !child.topic) return;
+    const key = normalizeSpaces(child.topic).toLowerCase();
+    const existing = byTopic.get(key);
+    if (!existing) {
+      const cloned = {
+        ...child,
+        items: [...(child.items || [])],
+        itemCitationIndexes: [...(child.itemCitationIndexes || [])],
+      };
+      byTopic.set(key, cloned);
+      merged.push(cloned);
+      return;
+    }
+    if (!existing.desc && child.desc) {
+      existing.desc = child.desc;
+      existing.citationIndexes = child.citationIndexes || [];
+    } else if (child.desc && child.desc !== existing.desc && existing.items.length < 20) {
+      existing.items.push(formatMindMapItem(existing.topic, child.desc));
+      existing.itemCitationIndexes.push(child.citationIndexes || []);
+    }
+    (child.items || []).forEach((item, index) => {
+      if (existing.items.length >= 20 || existing.items.includes(item)) return;
+      existing.items.push(item);
+      existing.itemCitationIndexes.push((child.itemCitationIndexes || [])[index] || []);
+    });
+    existing.citationIndexes = [...new Set([
+      ...(existing.citationIndexes || []),
+      ...(child.citationIndexes || []),
+    ])].slice(0, 12);
+  });
+  return merged;
+}
+
 function sourceCriticalFacts(value, limit) {
   const rows = String(value || '').replace(/\r\n?/g, '\n')
     .split(/\n+|(?<=[。！？!?；;])\s*/)
@@ -2822,33 +2876,37 @@ function structureItemGrounded(item, sourceText) {
 function ensureMindMapSourceCoverage(mindMap, sourceText, citations, allowedIndexes, options) {
   const input = mindMap && typeof mindMap === 'object' ? mindMap : {};
   const evidence = Array.isArray(citations) ? citations : [];
-  const children = (Array.isArray(input.children) ? input.children : []).slice(0, 6).map((child) => {
+  const children = mergeSemanticMindMapBranches(
+    (Array.isArray(input.children) ? input.children : []).slice(0, 8).map((child) => {
+    const sourceItems = Array.isArray(child && child.items) ? child.items : [];
+    const topic = semanticMindMapTopic(child && child.topic, child && child.desc, sourceItems);
+    if (!topic) return null;
     const items = [];
     const itemCitationIndexes = [];
-    (Array.isArray(child && child.items) ? child.items : []).slice(0, 20).forEach((item, index) => {
+    sourceItems.slice(0, 20).forEach((item, index) => {
       const text = normalizeSpaces(item).slice(0, 1000);
-      if (!mindMapItemMatchesBranch(child && child.topic, text) || !structureItemGrounded(text, sourceText)) return;
-      items.push(formatMindMapItem(child && child.topic, text));
+      if (!mindMapItemMatchesBranch(topic, text) || !structureItemGrounded(text, sourceText)) return;
+      items.push(formatMindMapItem(topic, text));
       itemCitationIndexes.push(normalizeCitationIndexes(
         child && child.itemCitationIndexes && child.itemCitationIndexes[index], allowedIndexes,
       ));
     });
     const rawDescription = normalizeSpaces((child && child.desc) || '').slice(0, 1000);
-    const verifiedDescription = mindMapDescriptionIsConcrete(child && child.topic, rawDescription)
+    const verifiedDescription = mindMapDescriptionIsConcrete(topic, rawDescription)
       && structureItemGrounded(rawDescription, sourceText)
       ? rawDescription
       : '';
     const semanticDescription = verifiedDescription || items.slice(0, 2).join('；');
     return {
       ...child,
-      topic: normalizeSpaces((child && child.topic) || '要点').slice(0, 200),
+      topic: topic.slice(0, 200),
       desc: semanticDescription.slice(0, 1000),
       items,
       itemCitationIndexes,
     };
-  }).filter((child) => child.topic && (
+  }).filter((child) => child && child.topic && (
     mindMapBranchKind(child.topic) === 'general' || child.desc || child.items.length > 0
-  ));
+  )));
   const rendered = [
     input.root,
     input.rootDesc,

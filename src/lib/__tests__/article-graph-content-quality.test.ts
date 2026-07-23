@@ -172,6 +172,63 @@ describe("article core graph and semantic outline quality", () => {
     expect(proxy.sourceCriticalFacts(source, 20).join(" ")).not.toMatch(/标题|arxiv|发布日期|摘要/);
   });
 
+  it("replaces generic branches with semantic topics, merges duplicates, and drops unclassifiable placeholders", () => {
+    const source = [
+      "本文提出 RECAP 框架，通过可解码性监督训练验证器。",
+      "实验在 Sandbox 数据集上进行，并与 Probe 基线比较。",
+      "实验采用 F1 和 Recall@5 评估模型的验证能力。",
+      "结果显示 RECAP 的 F1 提升了 8.2%。",
+    ].join("\n");
+    const result = proxy.ensureMindMapSourceCoverage({
+      root: "RECAP",
+      rootDesc: "以可解码性监督训练验证器。",
+      children: [
+        {
+          topic: "方法/架构",
+          desc: "本文提出 RECAP 框架，通过可解码性监督训练验证器。",
+          items: [],
+          itemCitationIndexes: [],
+        },
+        {
+          topic: "要点 1",
+          desc: "实验在 Sandbox 数据集上进行，并与 Probe 基线比较。",
+          items: [],
+          itemCitationIndexes: [],
+        },
+        {
+          topic: "要点 2",
+          desc: "实验采用 F1 和 Recall@5 评估模型的验证能力。",
+          items: [],
+          itemCitationIndexes: [],
+        },
+        {
+          topic: "要点 3",
+          desc: "论文介绍了相关内容。",
+          items: [],
+          itemCitationIndexes: [],
+        },
+        {
+          topic: "要点 4",
+          desc: "结果显示 RECAP 的 F1 提升了 8.2%。",
+          items: [],
+          itemCitationIndexes: [],
+        },
+      ],
+    }, source, [], new Set(), { appendFacts: false });
+
+    expect(result.mindMap.children.map((child) => child.topic)).toEqual([
+      "方法/架构",
+      "数据与实验",
+      "结果",
+    ]);
+    const experiment = result.mindMap.children.find((child) => child.topic === "数据与实验");
+    expect(experiment?.desc).toContain("Sandbox");
+    expect(experiment?.items).toEqual([
+      "评估指标：实验采用 F1 和 Recall@5 评估模型的验证能力。",
+    ]);
+    expect(JSON.stringify(result.mindMap)).not.toMatch(/要点|论文介绍了相关内容/);
+  });
+
   it("keeps Chinese entity explanations grounded by dedicated English evidence", () => {
     const quote = "SoftReason uses the KVQA benchmark to evaluate multi-hop reasoning under the entity-linking protocol.";
     const evidence = [{
