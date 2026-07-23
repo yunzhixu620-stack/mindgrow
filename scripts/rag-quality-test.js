@@ -61,8 +61,9 @@ const fixtures = [
 
 const results = [];
 function check(name, fn) {
-  try { fn(); results.push({ name, ok: true }); console.log(`PASS ${name}`); }
-  catch (error) { results.push({ name, ok: false, error: error.message }); console.error(`FAIL ${name}: ${error.message}`); }
+  const startedAt = performance.now();
+  try { fn(); results.push({ name, ok: true, latencyMs: Number((performance.now() - startedAt).toFixed(3)) }); console.log(`PASS ${name}`); }
+  catch (error) { results.push({ name, ok: false, latencyMs: Number((performance.now() - startedAt).toFixed(3)), error: error.message }); console.error(`FAIL ${name}: ${error.message}`); }
 }
 
 check("Aliyun custom runtime syntax stays ECMAScript 2018 compatible", () => {
@@ -766,6 +767,12 @@ check("meeting evidence keeps corrected dates and negative decisions traceable",
 check("Chinese questions remain retrieval questions when punctuation follows the question mark", () => {
   assert.strictEqual(classifyInput("哪种双编码器方法报告了提升？请给出论文名和数值。"), "question");
   assert.strictEqual(classifyInput("请给出 DPR 相对 BM25 的 top-20 accuracy"), "question");
+});
+
+check("Chinese command prefixes are not broken by Latin word-boundary rules", () => {
+  assert.strictEqual(classifyInput("删除过期知识"), "command");
+  assert.strictEqual(classifyInput("清空当前知识库"), "command");
+  assert.strictEqual(classifyInput("重命名项目知识"), "command");
 });
 
 check("article intent routing distinguishes translation from factual QA", () => {

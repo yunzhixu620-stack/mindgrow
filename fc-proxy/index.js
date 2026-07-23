@@ -21,7 +21,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.18.0';
+const API_VERSION = '10.19.0';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -552,7 +552,7 @@ async function suggestKnowledgeOrganization(workspaceId, requestedMapIds) {
 
 function classifyInput(input) {
   const value = input.trim();
-  if (/^(\/|删除|清空|重命名|delete|clear|rename)\b/i.test(value)) return 'command';
+  if (/^(?:\/|删除|清空|重命名|(?:delete|clear|rename)\b)/i.test(value)) return 'command';
   if (/^(你好|您好|嗨|hello|hi|hey)[!！,.，。\s]*$/i.test(value)) return 'chitchat';
   if (/[?？]/.test(value)
     || /^(什么|为什么|如何|怎么|哪些|哪个|哪种|是否|能否|请问|请给出|解释|比较)/i.test(value)
