@@ -170,3 +170,13 @@
 5. [x] `gh-pages@e0c3340febdcc8b135be3e1d3064651f0e99595e` 发布成功，Pages workflow `29973061109` 通过；公网前端 E2E 7/7 通过。
 6. [x] production fact workflow `29973110087` 精确核对前端与后端均为 `2a5fa505d3ade0d67c3ba20e562ecc89e6351492`、API `10.16.0` 与 `authRequired=true` 并通过。
 7. [x] 本地 unit 189/189、RAG 65/65、backend 9/9、产品 E2E 37/37 均通过，覆盖 220ms 防抖、跨知识库定位、命中原因、过期请求取消与云端失败降级。
+
+## S2.17 发布检查点
+
+1. [x] PR #59 合并为 `main@e895ca819ea47e5e827092d03166350c51eef463`；合并前 GitHub build-fact、Vercel Preview 与评论检查均通过。
+2. [x] Supabase Production 已执行 V17 migration；`product_feedback` 启用 RLS，仅授予 `service_role`，不改写现有用户数据；控制台提示项目资源压力，已记录为运维风险。
+3. [x] 阿里云环境变量 `MINDGROW_GIT_SHA` 与实际后端源码均更新为该合并提交，API `10.17.0` 发布成功。
+4. [x] 公网 `/health` 返回 `status=ok`、`version=10.17.0`、精确 `gitSha`、`authRequired=true`、`nodeEnv=production`、`deploymentIdentity=ready`、`feedbackLoop=ready`；公网 backend smoke 7/7 通过。
+5. [x] `gh-pages@055addbd117a251e116a70b26088dc4e224f38d9` 发布成功，Pages workflow `29976478295` 通过；公网前端 E2E 7/7 通过。
+6. [x] production fact workflow `29975287462` 精确核对前端与后端均为 `e895ca819ea47e5e827092d03166350c51eef463`、API `10.17.0` 与 `authRequired=true` 并通过。
+7. [x] 本地 lint、unit 193/193、RAG 66/66、backend 9/9、产品 E2E 38/38 均通过；覆盖英文偏好持久化、反馈标签、状态初始化、数据最小化和三板块缓存回归。
