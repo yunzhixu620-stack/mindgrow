@@ -911,7 +911,7 @@ export function Sidebar({ onSwitchMap, onMapCreated }: SidebarProps) {
               });
               if (res.ok) {
                 const { map } = await res.json();
-                await onMapCreated(map.id);
+                await onMapCreated(map.id, "knowledge");
               }
             } catch (e) { console.error("Failed to create from template:", e); }
           }}
