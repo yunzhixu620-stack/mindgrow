@@ -29,7 +29,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.21.6';
+const API_VERSION = '10.21.7';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -2682,6 +2682,32 @@ function normalizedMindMap(value, fallbackTitle, allowedIndexes) {
   };
 }
 
+function repairArticleMindMapRoot(mindMap, articleTitle, articleSummary, allowedIndexes) {
+  const input = mindMap && typeof mindMap === 'object' ? mindMap : {};
+  const root = normalizeSpaces(input.root);
+  if (!/^(?:研究问题|研究背景|相关工作|方法(?:\/架构)?|数据与实验|实验|结果|讨论|局限与启示|结论|主要贡献)$/i.test(root)) {
+    return input;
+  }
+  const title = normalizeSpaces(articleTitle) || '论文解析结果';
+  const children = Array.isArray(input.children) ? [...input.children] : [];
+  if (!children.some((child) => normalizeSpaces(child && child.topic) === root)) {
+    children.unshift({
+      topic: root,
+      desc: normalizeSpaces(input.rootDesc),
+      citationIndexes: normalizeCitationIndexes(input.rootCitationIndexes, allowedIndexes),
+      items: [],
+      itemCitationIndexes: [],
+    });
+  }
+  return {
+    ...input,
+    root: title.slice(0, 200),
+    rootDesc: (normalizeSpaces(articleSummary) || normalizeSpaces(input.rootDesc)).slice(0, 1000),
+    rootCitationIndexes: normalizeCitationIndexes(input.rootCitationIndexes, allowedIndexes),
+    children,
+  };
+}
+
 function isDocumentMetadataFact(value) {
   const text = normalizeSpaces(value);
   if (!text) return false;
@@ -4971,6 +4997,7 @@ async function handleArticleTool(body) {
   stage = 'RESPONSE_NORMALIZATION';
   const inferredTitle = String(parsed.title || content.split('\n')[0] || '文章解析').slice(0, 200);
   let mindMap = normalizedMindMap(parsed.mindMap, inferredTitle, allowedIndexes) || fallbackMindMap(inferredTitle, content);
+  mindMap = repairArticleMindMapRoot(mindMap, inferredTitle, parsed.summary, allowedIndexes);
   mindMap.rootCitationIndexes = verifiedIndexes(mindMap.rootCitationIndexes, allowedIndexes, `${mindMap.root} ${mindMap.rootDesc}`, citations, citations);
   mindMap.children = (mindMap.children || []).map((child) => {
     const childIndexes = verifiedIndexes(child.citationIndexes, allowedIndexes, `${child.topic} ${child.desc || ''}`, citations, citations);
@@ -7089,6 +7116,7 @@ module.exports = {
   retrieveEvidence,
   sourceCriticalFacts,
   selectArticleAnalysisCitations,
+  repairArticleMindMapRoot,
   ensureMindMapSourceCoverage,
   sanitizeGroundedAnswer,
   compactGroundedEvidence,

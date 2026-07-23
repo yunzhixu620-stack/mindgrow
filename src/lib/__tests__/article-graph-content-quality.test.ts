@@ -41,6 +41,17 @@ const proxy = require("../../../fc-proxy/index.js") as {
       };
     };
   };
+  repairArticleMindMapRoot: (
+    mindMap: Record<string, unknown>,
+    articleTitle: string,
+    articleSummary: string,
+    allowedIndexes: Set<number>,
+  ) => {
+    root: string;
+    rootDesc: string;
+    rootCitationIndexes: number[];
+    children: Array<{ topic: string; desc: string; citationIndexes: number[] }>;
+  };
   ensureMindMapSourceCoverage: (
     mindMap: Record<string, unknown>,
     sourceText: string,
@@ -323,6 +334,31 @@ describe("article core graph and semantic outline quality", () => {
     expect(usedIndexes).not.toContain(1);
     expect(usedIndexes).not.toContain(2);
     expect(usedIndexes).toContain(3);
+  });
+
+  it("turns a structural root label into a branch and restores the paper title", () => {
+    const repaired = proxy.repairArticleMindMapRoot({
+      root: "研究问题",
+      rootDesc: "论文研究程序化记忆如何支持长时推理。",
+      rootCitationIndexes: [4],
+      children: [
+        {
+          topic: "方法/架构",
+          desc: "PRO-LONG 保留结构化交互日志并按需检索历史。",
+          citationIndexes: [5],
+          items: [],
+          itemCitationIndexes: [],
+        },
+      ],
+    }, "PRO-LONG：程序化记忆支持长时推理", "本文提出 PRO-LONG 以支持长时推理。", new Set([4, 5]));
+
+    expect(repaired.root).toBe("PRO-LONG：程序化记忆支持长时推理");
+    expect(repaired.rootDesc).toBe("本文提出 PRO-LONG 以支持长时推理。");
+    expect(repaired.children.map((child) => child.topic)).toEqual(["研究问题", "方法/架构"]);
+    expect(repaired.children[0]).toMatchObject({
+      desc: "论文研究程序化记忆如何支持长时推理。",
+      citationIndexes: [4],
+    });
   });
 
   it("keeps Chinese entity explanations grounded by dedicated English evidence", () => {
