@@ -52,6 +52,19 @@ const proxy = require("../../../fc-proxy/index.js") as {
     rootCitationIndexes: number[];
     children: Array<{ topic: string; desc: string; citationIndexes: number[] }>;
   };
+  repairArticleExperimentEvidence: (
+    mindMap: Record<string, unknown>,
+    citations: Array<{ index: number; quote: string; content?: string }>,
+    allowedIndexes: Set<number>,
+  ) => {
+    children: Array<{
+      topic: string;
+      desc: string;
+      citationIndexes: number[];
+      items: string[];
+      itemCitationIndexes: number[][];
+    }>;
+  };
   ensureMindMapSourceCoverage: (
     mindMap: Record<string, unknown>,
     sourceText: string,
@@ -403,6 +416,28 @@ describe("article core graph and semantic outline quality", () => {
     expect(repaired.root).toBe("CLARK：知识图谱自适应推理框架");
     expect(repaired.children.map((child) => child.topic)).toEqual(["数据与实验"]);
     expect(JSON.stringify(repaired)).not.toMatch(/institutetext|University/);
+  });
+
+  it("repairs an experiment branch that contradicts its numeric ablation citation", () => {
+    const quote = "(3) Mechanism specialization: expansion carries multi-hop (-22.6 pp on MemHop when removed); extraction-time residuals carry precision (-8.6 pp on LoCoMo when removed).";
+    const repaired = proxy.repairArticleExperimentEvidence({
+      root: "ProGraph",
+      rootDesc: "",
+      rootCitationIndexes: [],
+      children: [{
+        topic: "数据与实验",
+        desc: "实验设计：LoCoMo 是一个之前发布的基准，具有自己的伦理审查。",
+        citationIndexes: [12],
+        items: [],
+        itemCitationIndexes: [],
+      }],
+    }, [{ index: 12, quote, content: quote }], new Set([12]));
+
+    expect(repaired.children[0].desc).toContain("消融结果");
+    expect(repaired.children[0].desc).toContain("MemHop 下降 22.6 个百分点");
+    expect(repaired.children[0].desc).toContain("LoCoMo 下降 8.6 个百分点");
+    expect(repaired.children[0].desc).not.toContain("伦理审查");
+    expect(repaired.children[0].citationIndexes).toEqual([12]);
   });
 
   it("keeps Chinese entity explanations grounded by dedicated English evidence", () => {

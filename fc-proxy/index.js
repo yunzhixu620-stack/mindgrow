@@ -29,7 +29,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.21.18';
+const API_VERSION = '10.21.19';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -2990,6 +2990,73 @@ function repairArticleMindMapRoot(mindMap, articleTitle, articleSummary, allowed
   };
 }
 
+function deterministicExperimentEvidenceFact(citation) {
+  const quote = normalizeSpaces((citation && (citation.quote || citation.content)) || '');
+  if (!quote) return '';
+  const effectPattern = /([A-Za-z][A-Za-z -]{1,60}?)\s*\(\s*[−–-]\s*(\d+(?:\.\d+)?)\s*pp\s+on\s+([A-Za-z][A-Za-z0-9-]{1,30})\s+when\s+removed/gi;
+  const effects = [];
+  let match;
+  while ((match = effectPattern.exec(quote)) && effects.length < 4) {
+    const mechanismSource = normalizeSpaces(match[1]).replace(/^.*?(?::|;)\s*/, '');
+    let mechanism = mechanismSource;
+    if (/expansion/i.test(mechanismSource)) mechanism = '档案扩展（profile expansion）';
+    else if (/extraction-time residual/i.test(mechanismSource)) mechanism = '提取时残差';
+    effects.push(`移除${mechanism}后，${match[3]} 下降 ${match[2]} 个百分点`);
+  }
+  if (effects.length > 0) return `消融结果：${effects.join('；')}。`;
+
+  const numericEffects = [...quote.matchAll(/[−–-]\s*(\d+(?:\.\d+)?)\s*pp\s+on\s+([A-Za-z][A-Za-z0-9-]{1,30})/gi)]
+    .slice(0, 4)
+    .map((item) => `${item[2]} 下降 ${item[1]} 个百分点`);
+  if (numericEffects.length > 0 && /ablation|removed|mechanism specialization/i.test(quote)) {
+    return `消融结果：${numericEffects.join('；')}；具体移除机制见原文引用。`;
+  }
+  return '';
+}
+
+function repairArticleExperimentEvidence(mindMap, citations, allowedIndexes) {
+  const input = mindMap && typeof mindMap === 'object' ? mindMap : {};
+  const evidence = Array.isArray(citations) ? citations : [];
+  const citationByIndex = new Map(evidence.map((citation) => [Number(citation && citation.index), citation]));
+  const children = (Array.isArray(input.children) ? input.children : []).map((child) => {
+    if (mindMapBranchKind(child && child.topic) !== 'experiment') return child;
+    const referencedIndexes = normalizeCitationIndexes([
+      ...((child && child.citationIndexes) || []),
+      ...(((child && child.itemCitationIndexes) || []).flat()),
+    ], allowedIndexes);
+    const preferredEvidence = referencedIndexes.map((index) => citationByIndex.get(index)).filter(Boolean);
+    const fallbackEvidence = evidence.filter((citation) => (
+      /ablation|when removed|mechanism specialization/i.test(String((citation && (citation.quote || citation.content)) || ''))
+    ));
+    const candidates = [...preferredEvidence, ...fallbackEvidence];
+    const facts = [];
+    const factIndexes = [];
+    const seen = new Set();
+    candidates.forEach((citation) => {
+      const fact = deterministicExperimentEvidenceFact(citation);
+      const index = Number(citation && citation.index);
+      const key = fact.toLocaleLowerCase();
+      if (!fact || seen.has(key) || !Number.isFinite(index) || (allowedIndexes && !allowedIndexes.has(index))) return;
+      seen.add(key);
+      facts.push(fact);
+      factIndexes.push([index]);
+    });
+    if (facts.length === 0) return child;
+    const existingText = [child && child.desc, ...((child && child.items) || [])].map(normalizeSpaces).join(' ');
+    const evidenceNumbers = facts.flatMap((fact) => fact.match(/\d+(?:\.\d+)?/g) || []);
+    const preservesEvidence = evidenceNumbers.length > 0 && evidenceNumbers.every((number) => existingText.includes(number));
+    if (preservesEvidence) return child;
+    return {
+      ...child,
+      desc: facts[0],
+      citationIndexes: factIndexes[0],
+      items: facts.slice(1),
+      itemCitationIndexes: factIndexes.slice(1),
+    };
+  });
+  return { ...input, children };
+}
+
 function isDocumentMetadataFact(value) {
   const text = normalizeSpaces(value);
   if (!text) return false;
@@ -5379,6 +5446,7 @@ async function handleArticleTool(body) {
       }),
     };
   });
+  mindMap = repairArticleExperimentEvidence(mindMap, citations, allowedIndexes);
   const articleCoverage = ensureMindMapSourceCoverage(
     mindMap, content, citations, allowedIndexes, { appendFacts: !englishHeavyArticleText(content) },
   );
@@ -7494,6 +7562,7 @@ module.exports = {
   readableSourceFact,
   selectArticleAnalysisCitations,
   repairArticleMindMapRoot,
+  repairArticleExperimentEvidence,
   ensureMindMapSourceCoverage,
   sanitizeGroundedAnswer,
   compactGroundedEvidence,
