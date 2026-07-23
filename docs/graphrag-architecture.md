@@ -145,6 +145,6 @@ MindGrow 采用二者的互补逻辑，同时保留自己的 GraphRAG 证据优�
 
 ### 会议可靠模式与运行时兼容
 
-10.5.2 默认先使用确定性的证据优先解析生成会议主题、行动项、风险、开放问题、Citation 与实体图，避免上游模型超时直接让会议模块不可用。只有显式设置 `MEETING_AI_ENHANCEMENT=true` 时才启用模型增强；增强失败会自动回退，保存结构保持一致。
+10.21.24 默认启用模型增强生成会议主题、决议、行动项、风险、开放问题、Citation 与实体图；显式设置 `MEETING_AI_ENHANCEMENT=false` 可关闭。增强失败时自动回退到证据优先解析。回退解析会忽略来源 URL、Presenter、Conclusion 等元数据，并优先识别明确的 consensus、Stage 变更、PR 合并和提案撤回，避免把技术语句里的 `reject` 误判为未决问题。
 
 阿里云函数当前使用旧版 Node 自定义运行时，因此后端保持 ECMAScript 2018 兼容，并禁止依赖 `Array.prototype.flatMap` 等该运行时缺失的 API。每次发布前的 RAG 质量测试会解析后端源码并检查兼容性，防止出现“本地通过、云端 503”。

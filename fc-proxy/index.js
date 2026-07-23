@@ -29,10 +29,11 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.21.23';
+const API_VERSION = '10.21.24';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
-const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
+const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true'
+  || (process.env.NODE_ENV !== 'test' && process.env.MEETING_AI_ENHANCEMENT !== 'false');
 const DASHSCOPE_AUDIO_ENDPOINT = process.env.DASHSCOPE_AUDIO_ENDPOINT || 'https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer';
 const ALLOWED_ORIGINS = new Set(
   (process.env.ALLOWED_ORIGINS || 'https://yunzhixu620-stack.github.io')
@@ -4801,6 +4802,44 @@ function meetingDueFromEvidence(value) {
   return isoDate ? String(isoDate[1] || '').trim() : '';
 }
 
+function isMeetingMetadataFact(value) {
+  const text = normalizeSpaces(value);
+  if (!text) return true;
+  if (/^(?:来源|来源网址|source|url)\s*[：:]\s*https?:\/\//i.test(text)) return true;
+  if (/^https?:\/\/\S+$/i.test(text)) return true;
+  if (/^(?:#{1,6}\s*)?(?:speaker's summary of key points|conclusion|opening(?:\s*&\s*welcome)?|attendees?)$/i.test(text)) return true;
+  if (/^(?:presenter|chair|facilitator|scribe)\s*[：:]/i.test(text)) return true;
+  if (/^\*?\s*\[(?:proposal|slides?|PR)\]\s*\(https?:\/\//i.test(text)) return true;
+  return false;
+}
+
+function explicitMeetingDecision(value) {
+  const text = normalizeSpaces(value);
+  if (!text || isMeetingMetadataFact(text) || /[?？]\s*$/.test(text)) return false;
+  if (/(?:no|without|lack of)\s+consensus|(?:未|没有|尚未).{0,8}(?:达成|形成).{0,8}共识|(?:未|没有|尚未).{0,8}(?:批准|通过|确认|同意|决定)|not approved|did not (?:advance|reach)|seeking consensus|ask(?:ing)? for consensus/i.test(text)) {
+    return false;
+  }
+  return /(?:consensus\s+(?:to|for|on)|consensus (?:was|has been) reached|reaches?\s+stage\s*\d|advanced?\s+(?:through\s+stage\s*[\d.]+\s+)?to\s+stage\s*\d|proposal\s+(?:was\s+)?withdrawn|PR\s*#?\d+\s+(?:was\s+)?merged|(?:decided|approved|confirmed|agreed)\s+to|(?:决定|决议|批准|通过|确认|同意|达成共识|提案已撤回|已进入\s*Stage))/i.test(text);
+}
+
+function deterministicMeetingDecisionText(value) {
+  const text = normalizeSpaces(value).replace(/^(?:[-*•]+|\d+[.)])\s*/, '');
+  let match = text.match(/consensus\s+to\s+merge\s+(?:the\s+)?PR\b/i);
+  if (match) return '已达成合并该 PR 的共识。';
+  match = text.match(/consensus\s+for\s+stage\s*([\d.]+)/i);
+  if (match) return `已达成进入 Stage ${match[1]} 的共识。`;
+  match = text.match(/^(.{2,100}?)\s+reaches?\s+stage\s*([\d.]+)/i);
+  if (match) return `${normalizeSpaces(match[1])} 已进入 Stage ${match[2]}。`;
+  match = text.match(/(?:the\s+)?proposal\s+advanced?\s+(?:through\s+stage\s*([\d.]+)\s+)?to\s+stage\s*([\d.]+)/i);
+  if (match) return match[1]
+    ? `该提案已从 Stage ${match[1]} 推进至 Stage ${match[2]}。`
+    : `该提案已推进至 Stage ${match[2]}。`;
+  if (/proposal\s+(?:was\s+)?withdrawn/i.test(text)) return '该提案已撤回。';
+  match = text.match(/PR\s*#?(\d+)\s+(?:was\s+)?merged/i);
+  if (match) return `PR #${match[1]} 已合并。`;
+  return text;
+}
+
 function fallbackMeetingAnalysis(title, transcript, citations, allowedIndexes) {
   const evidence = Array.isArray(citations) && citations.length
     ? citations
@@ -4815,7 +4854,7 @@ function fallbackMeetingAnalysis(title, transcript, citations, allowedIndexes) {
   ];
   evidence.forEach((citation) => {
     const text = normalizeSpaces(citation.quote || citation.content).slice(0, 1000);
-    if (!text) return;
+    if (!text || isMeetingMetadataFact(text)) return;
     const group = groups.find((candidate) => candidate.test.test(text)) || groups[groups.length - 1];
     group.rows.push({ text, index: citation.index });
   });
@@ -4826,21 +4865,18 @@ function fallbackMeetingAnalysis(title, transcript, citations, allowedIndexes) {
     items: group.rows.slice(0, 20).map((row) => row.text),
     itemCitationIndexes: group.rows.slice(0, 20).map((row) => normalizeCitationIndexes([row.index], allowed)),
   }));
-  const summaryRows = evidence.slice(0, Math.min(1, evidence.length));
   const exactItems = evidence.map((citation) => ({
     text: normalizeSpaces(citation.quote || citation.content).slice(0, 1200),
     citationIndexes: normalizeCitationIndexes([citation.index], allowed),
-  })).filter((item) => item.text);
-  const negativeDecision = /(尚未|未批准|没有批准|未决定|不得|禁止|取消|否决|not approved|undecided|reject|cancel)/i;
-  const decisions = exactItems.filter((item) => (
-    /(决定|批准|通过|确认|确定|同意|结论|decided|approved|confirmed)/i.test(item.text)
-    && !negativeDecision.test(item.text)
-  )).slice(0, 30);
+  })).filter((item) => item.text && !isMeetingMetadataFact(item.text));
+  const decisions = exactItems.filter((item) => explicitMeetingDecision(item.text))
+    .map((item) => ({ ...item, text: deterministicMeetingDecisionText(item.text) }))
+    .slice(0, 30);
   const risks = exactItems.filter((item) => (
     /(因为|由于|导致|根因|风险|失败|错误|回滚|未刷新|旧文档|because|caused|risk|fail)/i.test(item.text)
   )).slice(0, 30);
   const openQuestions = exactItems.filter((item) => (
-    negativeDecision.test(item.text) || isExplicitMeetingOpenQuestion(item.text)
+    isExplicitMeetingOpenQuestion(item.text)
   )).slice(0, 30);
   const actionItems = exactItems.filter((item) => isExplicitMeetingAction(item.text)).slice(0, 50).map((item) => {
     return {
@@ -4851,10 +4887,16 @@ function fallbackMeetingAnalysis(title, transcript, citations, allowedIndexes) {
       citationIndexes: item.citationIndexes,
     };
   });
+  const summaryRows = decisions.length
+    ? decisions.slice(-1)
+    : exactItems.slice(-1);
   return {
     title: String(title || '会议纪要').slice(0, 200),
-    summary: summaryRows.map((item) => normalizeSpaces(item.quote || item.content)).filter(Boolean).join('；').slice(0, 3000),
-    summaryCitationIndexes: normalizeCitationIndexes(summaryRows.map((item) => item.index), allowed),
+    summary: summaryRows.map((item) => normalizeSpaces(item.text)).filter(Boolean).join('；').slice(0, 3000),
+    summaryCitationIndexes: normalizeCitationIndexes(
+      summaryRows.reduce((all, item) => all.concat(item.citationIndexes || []), []),
+      allowed,
+    ),
     topics: children.map((child) => ({
       title: child.topic,
       citationIndexes: child.citationIndexes,

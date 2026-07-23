@@ -90,7 +90,7 @@ const proxy = require("../../../fc-proxy/index.js") as {
     data: {
       title: string;
       summary: string;
-      decisions: unknown[];
+      decisions: Array<{ text: string; citationIndexes?: number[] }>;
       actionItems: Array<{ task: string; owner?: string; due?: string; citationIndexes?: number[] }>;
       openQuestions: Array<{ text: string; citationIndexes?: number[] }>;
       actionItemStatus: string;
@@ -357,5 +357,27 @@ describe("knowledge quality contracts", () => {
       due: "7月24日18点前",
     });
     expect(result.data.actionItems[0].citationIndexes?.length).toBeGreaterThan(0);
+  });
+
+  it("ignores meeting metadata and treats explicit consensus as the conclusion", async () => {
+    const result = await proxy.handleMeetingTool({
+      title: "Iterator counters consensus review",
+      participants: "Michael Ficarra, TC39 delegates",
+      transcript: [
+        "来源：https://raw.githubusercontent.com/tc39/notes/main/meetings/2026-05/may-19.md",
+        "Presenter: Michael Ficarra (MF)",
+        "MF: After this change, drop would reject this input immediately and throw a range error.",
+        "### Speaker's Summary of Key Points",
+        "### Conclusion",
+        "* Consensus to merge the PR.",
+      ].join("\n"),
+    });
+
+    expect(result.status).toBe(200);
+    expect(result.data.summary).toBe("已达成合并该 PR 的共识。");
+    expect(result.data.decisions.map((item) => item.text)).toContain("已达成合并该 PR 的共识。");
+    expect(result.data.openQuestions).toEqual([]);
+    expect(result.data.summary).not.toMatch(/raw\.githubusercontent|Presenter/);
+    expect(result.data.decisions[0].citationIndexes?.length).toBeGreaterThan(0);
   });
 });
