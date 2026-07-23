@@ -65,6 +65,11 @@ const proxy = require("../../../fc-proxy/index.js") as {
       itemCitationIndexes: number[][];
     }>;
   };
+  articleSummaryFallback: (
+    parsed: Record<string, unknown>,
+    mindMap: Record<string, unknown>,
+    keyPoints: Array<{ text: string; citationIndexes: number[] }>,
+  ) => { text: string; citationIndexes: number[] };
   ensureMindMapSourceCoverage: (
     mindMap: Record<string, unknown>,
     sourceText: string,
@@ -438,6 +443,26 @@ describe("article core graph and semantic outline quality", () => {
     expect(repaired.children[0].desc).toContain("LoCoMo 下降 8.6 个百分点");
     expect(repaired.children[0].desc).not.toContain("伦理审查");
     expect(repaired.children[0].citationIndexes).toEqual([12]);
+  });
+
+  it("uses the first evidence-backed semantic branch when the model summary is empty", () => {
+    const summary = proxy.articleSummaryFallback({
+      summary: "",
+      summaryCitationIndexes: [],
+    }, {
+      rootDesc: "",
+      rootCitationIndexes: [],
+      children: [{
+        topic: "数据与实验",
+        desc: "消融结果：移除档案扩展后，MemHop 下降 22.6 个百分点。",
+        citationIndexes: [12],
+      }],
+    }, []);
+
+    expect(summary).toEqual({
+      text: "消融结果：移除档案扩展后，MemHop 下降 22.6 个百分点。",
+      citationIndexes: [12],
+    });
   });
 
   it("keeps Chinese entity explanations grounded by dedicated English evidence", () => {

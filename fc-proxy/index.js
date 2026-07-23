@@ -29,7 +29,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.21.20';
+const API_VERSION = '10.21.21';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -3060,6 +3060,39 @@ function repairArticleExperimentEvidence(mindMap, citations, allowedIndexes) {
   return { ...input, children };
 }
 
+function articleSummaryFallback(parsed, mindMap, keyPoints) {
+  const source = parsed && typeof parsed === 'object' ? parsed : {};
+  const graph = mindMap && typeof mindMap === 'object' ? mindMap : {};
+  const points = Array.isArray(keyPoints) ? keyPoints : [];
+  const firstBranch = Array.isArray(graph.children) ? graph.children.find((child) => (
+    normalizeSpaces(child && child.desc)
+  )) : null;
+  const candidates = [
+    {
+      text: source.summary,
+      citationIndexes: source.summaryCitationIndexes,
+    },
+    {
+      text: graph.rootDesc,
+      citationIndexes: graph.rootCitationIndexes,
+    },
+    {
+      text: points[0] && points[0].text,
+      citationIndexes: points[0] && points[0].citationIndexes,
+    },
+    {
+      text: firstBranch && firstBranch.desc,
+      citationIndexes: firstBranch && firstBranch.citationIndexes,
+    },
+  ];
+  const selected = candidates.find((candidate) => normalizeSpaces(candidate && candidate.text));
+  return {
+    text: normalizeSpaces(selected && selected.text).slice(0, 4000),
+    citationIndexes: Array.isArray(selected && selected.citationIndexes)
+      ? selected.citationIndexes : [],
+  };
+}
+
 function isDocumentMetadataFact(value) {
   const text = normalizeSpaces(value);
   if (!text) return false;
@@ -5466,8 +5499,15 @@ async function handleArticleTool(body) {
     ...item,
     citationIndexes: verifiedIndexes(item.citationIndexes, allowedIndexes, `${item.claim} ${item.evidence}`, citations, citations),
   }));
-  const summary = String(parsed.summary || mindMap.rootDesc || '').slice(0, 4000);
-  const summaryCitationIndexes = verifiedIndexes(parsed.summaryCitationIndexes, allowedIndexes, summary, citations, citations);
+  const summaryFallback = articleSummaryFallback(parsed, mindMap, keyPoints);
+  const summary = summaryFallback.text;
+  const summaryCitationIndexes = verifiedIndexes(
+    summaryFallback.citationIndexes,
+    allowedIndexes,
+    summary,
+    citations,
+    citations,
+  );
   const audit = citationAudit([
     { id: 'summary', section: 'conclusion', text: summary, citationIndexes: summaryCitationIndexes },
     ...keyPoints.map((item, index) => ({ ...item, id: `key-point-${index + 1}`, section: 'conclusion' })),
@@ -7566,6 +7606,7 @@ module.exports = {
   selectArticleAnalysisCitations,
   repairArticleMindMapRoot,
   repairArticleExperimentEvidence,
+  articleSummaryFallback,
   ensureMindMapSourceCoverage,
   sanitizeGroundedAnswer,
   compactGroundedEvidence,
