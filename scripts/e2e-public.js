@@ -89,6 +89,14 @@ async function check(name, task) {
     if (!heading.includes("可追溯的知识网络")) throw new Error(`Unexpected guide heading: ${heading}`);
   });
 
+  await check("public product handbook renders", async () => {
+    await page.goto(`${baseUrl}/product/`, { waitUntil: "networkidle2", timeout: 60000 });
+    const text = await page.$eval("main", (element) => element.textContent || "");
+    for (const required of ["产品定位", "技术选型", "隐私与安全", "价格说明"]) {
+      if (!text.includes(required)) throw new Error(`Product handbook is missing ${required}`);
+    }
+  });
+
   await check("robots and sitemap are public", async () => {
     const [robots, sitemap] = await Promise.all([
       fetch(`${baseUrl}/robots.txt`).then((response) => response.text()),
@@ -96,6 +104,7 @@ async function check(name, task) {
     ]);
     if (!robots.includes("sitemap.xml")) throw new Error("robots.txt has no sitemap reference");
     if (!sitemap.includes("/guide/")) throw new Error("sitemap has no guide URL");
+    if (!sitemap.includes("/product/")) throw new Error("sitemap has no product URL");
   });
 
   await browser.close();

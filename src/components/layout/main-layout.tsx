@@ -26,7 +26,7 @@ export function MainLayout({ children }: { children: React.ReactNode }) {
 function AuthenticatedLayout({ children }: { children: React.ReactNode }) {
   const [isMobile, setIsMobile] = useState(false);
   const pathname = usePathname();
-  const isDocumentPage = pathname.startsWith("/guide");
+  const isDocumentPage = pathname.startsWith("/guide") || pathname.startsWith("/product");
   const { loading, session } = useAuth();
 
   useEffect(() => {
