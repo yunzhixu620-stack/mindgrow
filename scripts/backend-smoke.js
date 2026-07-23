@@ -62,6 +62,7 @@ function expectStatus(result, status) {
     && typeof health.body?.nodeEnv === "string" && health.body?.checks?.authConfiguration === "ok"
     && health.body?.checks?.modelConfigured === true && health.body?.checks?.knowledgeStore === "ok"
     && health.body?.checks?.hybridRetrieval === "ready" && health.body?.checks?.entityGraph === "ready"
+    && health.body?.checks?.workspaceSearch === "ready"
     && health.body?.checks?.nodeTimeline === "ready" && health.body?.checks?.whiteboardLayout === "ready"
     && deploymentIdentityReady;
   if (!health.ok) {

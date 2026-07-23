@@ -21,7 +21,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.15.0';
+const API_VERSION = '10.16.0';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -4879,6 +4879,75 @@ async function loadMapGraphSnapshot(workspaceId, mapId) {
   };
 }
 
+const WORKSPACE_SEARCH_KINDS = new Set(['map', 'node', 'entity', 'document']);
+const WORKSPACE_SEARCH_FIELDS = new Set([
+  'map_title', 'map_description', 'node_title', 'node_description',
+  'entity_name', 'entity_alias', 'entity_description', 'document_title', 'citation_text',
+]);
+
+function normalizeWorkspaceSearchRows(rows) {
+  if (!Array.isArray(rows)) throw dependencyError('knowledge_store');
+  return rows.reduce((results, row) => {
+    const kind = String(row.result_type || '');
+    const resultId = String(row.result_id || '').slice(0, 180);
+    const mapId = String(row.map_id || '').slice(0, 180);
+    const title = String(row.title || '').replace(/\s+/g, ' ').trim().slice(0, 240);
+    if (!WORKSPACE_SEARCH_KINDS.has(kind) || !resultId || !mapId || !title) return results;
+    const numericScore = Number(row.score || 0);
+    results.push({
+      kind,
+      resultId,
+      mapId,
+      mapName: String(row.map_name || '').replace(/\s+/g, ' ').trim().slice(0, 120),
+      title,
+      snippet: String(row.snippet || '').replace(/\s+/g, ' ').trim().slice(0, 360),
+      matchField: WORKSPACE_SEARCH_FIELDS.has(String(row.match_field || '')) ? String(row.match_field) : 'workspace_content',
+      locator: String(row.locator || '').replace(/\s+/g, ' ').trim().slice(0, 160),
+      score: Number.isFinite(numericScore) ? numericScore : 0,
+    });
+    return results;
+  }, []);
+}
+
+async function legacyWorkspaceSearch(workspaceId, searchQuery, limit) {
+  const workspace = encodeURIComponent(workspaceId);
+  const safeTerm = searchQuery.replace(/[,*()%_]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!safeTerm) return [];
+  const encodedTerm = encodeURIComponent(safeTerm);
+  const [mapRows, nodeRows, entityRows] = await Promise.all([
+    supabaseRequest('GET', `maps?workspace_id=eq.${workspace}&or=(name.ilike.*${encodedTerm}*,description.ilike.*${encodedTerm}*)&select=id,name,description,updated_at&limit=${limit}`),
+    supabaseRequest('GET', `nodes?workspace_id=eq.${workspace}&status=eq.active&or=(content.ilike.*${encodedTerm}*,desc.ilike.*${encodedTerm}*)&select=id,map_id,content,desc&limit=${limit}`),
+    supabaseRequest('GET', `graph_entities?workspace_id=eq.${workspace}&or=(canonical_name.ilike.*${encodedTerm}*,description.ilike.*${encodedTerm}*)&select=id,map_id,canonical_name,description&limit=${limit}`),
+  ]);
+  if (![mapRows, nodeRows, entityRows].every(Array.isArray)) throw dependencyError('knowledge_store');
+  const mapNames = new Map();
+  mapRows.forEach((row) => mapNames.set(row.id, row.name));
+  const missingMapIds = Array.from(new Set(nodeRows.concat(entityRows).map((row) => row.map_id).filter((id) => id && !mapNames.has(id))));
+  if (missingMapIds.length) {
+    const rows = await supabaseRequest('GET', `maps?workspace_id=eq.${workspace}&id=in.${inFilter(missingMapIds)}&select=id,name&limit=${missingMapIds.length}`);
+    if (!Array.isArray(rows)) throw dependencyError('knowledge_store');
+    rows.forEach((row) => mapNames.set(row.id, row.name));
+  }
+  const normalized = searchQuery.toLocaleLowerCase();
+  const results = [];
+  mapRows.forEach((row) => results.push({
+    kind: 'map', resultId: row.id, mapId: row.id, mapName: row.name, title: row.name,
+    snippet: row.description || row.name,
+    matchField: String(row.name || '').toLocaleLowerCase().includes(normalized) ? 'map_title' : 'map_description', locator: '', score: 0.75,
+  }));
+  nodeRows.forEach((row) => results.push({
+    kind: 'node', resultId: row.id, mapId: row.map_id, mapName: mapNames.get(row.map_id) || '', title: row.content,
+    snippet: row.desc || row.content,
+    matchField: String(row.content || '').toLocaleLowerCase().includes(normalized) ? 'node_title' : 'node_description', locator: '', score: 0.72,
+  }));
+  entityRows.forEach((row) => results.push({
+    kind: 'entity', resultId: row.id, mapId: row.map_id, mapName: mapNames.get(row.map_id) || '', title: row.canonical_name,
+    snippet: row.description || row.canonical_name,
+    matchField: String(row.canonical_name || '').toLocaleLowerCase().includes(normalized) ? 'entity_name' : 'entity_description', locator: '', score: 0.7,
+  }));
+  return results.slice(0, limit);
+}
+
 async function handleKnowledge(req, context) {
   const parsed = new URL(req.url, 'http://localhost');
   // Function Compute may still run an older Node.js runtime where
@@ -4975,33 +5044,23 @@ async function handleKnowledge(req, context) {
       return { status: 200, data: { libraries: Array.from(graphByMap.values()), generatedAt: new Date().toISOString() } };
     }
     if (query.action === 'search') {
-      const searchQuery = String(query.q || '').trim().slice(0, 100);
-      if (!searchQuery) return { status: 200, data: { query: searchQuery, results: [], total: 0 } };
-      const safeTerm = searchQuery.replace(/[,*()%_]/g, ' ').replace(/\s+/g, ' ').trim();
-      const mapRowsPromise = supabaseRequest('GET', `maps?workspace_id=eq.${workspace}&select=*&order=updated_at.desc&limit=500`);
-      const nodeRowsPromise = safeTerm
-        ? supabaseRequest('GET', `nodes?workspace_id=eq.${workspace}&status=eq.active&or=(content.ilike.*${encodeURIComponent(safeTerm)}*,desc.ilike.*${encodeURIComponent(safeTerm)}*)&select=id,map_id,content,desc,type&limit=80`)
-        : Promise.resolve([]);
-      const [mapRows, nodeRows] = await Promise.all([mapRowsPromise, nodeRowsPromise]);
-      if (!Array.isArray(mapRows) || !Array.isArray(nodeRows)) throw dependencyError('knowledge_store');
-      const normalized = searchQuery.toLocaleLowerCase();
-      const matchesByMap = new Map();
-      nodeRows.forEach((node) => {
-        const matches = matchesByMap.get(node.map_id) || [];
-        if (matches.length < 5) matches.push({ id: node.id, content: node.content, desc: node.desc || '', type: node.type });
-        matchesByMap.set(node.map_id, matches);
-      });
-      const results = mapRows
-        .map((row) => {
-          const map = convertMap(row);
-          const mapMatches = `${map.name} ${map.description || ''}`.toLocaleLowerCase().includes(normalized);
-          const matches = matchesByMap.get(map.id) || [];
-          return mapMatches || matches.length ? { map, mapMatches, matches } : null;
-        })
-        .filter(Boolean)
-        .sort((a, b) => b.matches.length - a.matches.length || Number(b.mapMatches) - Number(a.mapMatches))
-        .slice(0, 20);
-      return { status: 200, data: { query: searchQuery, results, total: results.length } };
+      const searchQuery = String(query.q || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+      const requestedLimit = Number(query.limit || 24);
+      const limit = Math.min(40, Math.max(1, Number.isFinite(requestedLimit) ? Math.trunc(requestedLimit) : 24));
+      if (searchQuery.length < 2) return { status: 200, data: { query: searchQuery, results: [], total: 0, scope: 'workspace' } };
+      let results;
+      try {
+        const rows = await supabaseRequest('POST', 'rpc/search_workspace_knowledge', {
+          p_workspace_id: workspaceId,
+          p_query_text: searchQuery,
+          p_match_count: limit,
+        });
+        results = normalizeWorkspaceSearchRows(rows);
+      } catch (error) {
+        console.warn('Workspace search RPC unavailable; using tenant-scoped compatibility search', { code: error.publicCode || 'WORKSPACE_SEARCH_RPC_UNAVAILABLE' });
+        results = await legacyWorkspaceSearch(workspaceId, searchQuery, limit);
+      }
+      return { status: 200, data: { query: searchQuery, results, total: results.length, scope: 'workspace' } };
     }
     if (query.action === 'nodeContext') {
       const nodeId = String(query.nodeId || '').trim();
@@ -5403,6 +5462,7 @@ const server = http.createServer(async (req, res) => {
         knowledgeStore: 'unknown',
         hybridRetrieval: 'unknown',
         graphRagRanking: 'unknown',
+        workspaceSearch: 'unknown',
         entityGraph: 'unknown',
         nodeTimeline: 'unknown',
         whiteboardLayout: 'unknown',
@@ -5427,6 +5487,7 @@ const server = http.createServer(async (req, res) => {
           if (checks.knowledgeStore !== 'ok') checks.knowledgeStore = 'unreachable';
           if (checks.hybridRetrieval !== 'ready') checks.hybridRetrieval = 'unavailable';
           if (checks.graphRagRanking !== 'ready') checks.graphRagRanking = 'unavailable';
+          if (checks.workspaceSearch !== 'ready') checks.workspaceSearch = 'unavailable';
           checks.entityGraph = 'unavailable';
           checks.nodeTimeline = 'unavailable';
         }
@@ -5444,6 +5505,16 @@ const server = http.createServer(async (req, res) => {
             checks.graphRagRanking = 'unavailable';
           }
           try {
+            await supabaseRequest('POST', 'rpc/search_workspace_knowledge', {
+              p_workspace_id: '00000000-0000-0000-0000-000000000000',
+              p_query_text: '',
+              p_match_count: 1,
+            });
+            checks.workspaceSearch = 'ready';
+          } catch (_) {
+            checks.workspaceSearch = 'unavailable';
+          }
+          try {
             await supabaseRequest('GET', 'maps?select=id,canvas_view&limit=1');
             await supabaseRequest('GET', 'node_layouts?select=node_id,group_id,card_width,card_height&limit=1');
             await supabaseRequest('GET', 'whiteboard_groups?select=id,map_id&limit=1');
@@ -5458,12 +5529,14 @@ const server = http.createServer(async (req, res) => {
         checks.knowledgeStore = 'not_configured';
         checks.hybridRetrieval = 'not_configured';
         checks.graphRagRanking = 'not_configured';
+        checks.workspaceSearch = 'not_configured';
         checks.entityGraph = 'not_configured';
         checks.nodeTimeline = 'not_configured';
         checks.whiteboardLayout = 'not_configured';
       }
       const healthy = checks.authConfiguration === 'ok' && checks.modelConfigured && checks.knowledgeStore === 'ok'
         && checks.hybridRetrieval === 'ready' && checks.graphRagRanking === 'ready'
+        && checks.workspaceSearch === 'ready'
         && checks.entityGraph === 'ready' && checks.nodeTimeline === 'ready'
         && checks.whiteboardLayout === 'ready' && checks.deploymentIdentity !== 'missing';
       res.writeHead(healthy ? 200 : 503, { 'Content-Type': 'application/json; charset=utf-8' });

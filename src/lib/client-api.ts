@@ -279,19 +279,45 @@ function handleKnowledge(path: string, init?: RequestInit): Response {
       });
     }
     if (action === "search") {
-      const query = (url.searchParams.get("q") || "").trim().slice(0, 100);
-      if (!query) return json({ query, results: [], total: 0 });
+      const query = (url.searchParams.get("q") || "").replace(/\s+/g, " ").trim().slice(0, 120);
+      const limit = Math.min(40, Math.max(1, Number(url.searchParams.get("limit")) || 24));
+      if (query.length < 2) return json({ query, results: [], total: 0, scope: "workspace" });
       const normalized = query.toLocaleLowerCase();
-      const results = state.maps.flatMap((map) => {
-        const mapMatches = `${map.name} ${map.description || ""}`.toLocaleLowerCase().includes(normalized);
-        const matches = (state.nodes[map.id] || [])
-          .filter((node) => `${node.content} ${node.desc || ""}`.toLocaleLowerCase().includes(normalized))
-          .slice(0, 5)
-          .map((node) => ({ id: node.id, content: node.content, desc: node.desc || "", type: node.type }));
-        if (!mapMatches && matches.length === 0) return [];
-        return [{ map, mapMatches, matches }];
-      });
-      return json({ query, results, total: results.length });
+      const results = state.maps.reduce<Array<Record<string, unknown>>>((all, map) => {
+        const mapTitleMatch = map.name.toLocaleLowerCase().includes(normalized);
+        const mapDescriptionMatch = (map.description || "").toLocaleLowerCase().includes(normalized);
+        if (mapTitleMatch || mapDescriptionMatch) {
+          all.push({
+            kind: "map", resultId: map.id, mapId: map.id, mapName: map.name, title: map.name,
+            snippet: map.description || `${map.nodeCount || 0} 个节点`,
+            matchField: mapTitleMatch ? "map_title" : "map_description", locator: "", score: mapTitleMatch ? 0.9 : 0.72,
+          });
+        }
+        (state.nodes[map.id] || []).forEach((node) => {
+          const titleMatch = node.content.toLocaleLowerCase().includes(normalized);
+          const descriptionMatch = (node.desc || "").toLocaleLowerCase().includes(normalized);
+          if (!titleMatch && !descriptionMatch) return;
+          all.push({
+            kind: "node", resultId: node.id, mapId: map.id, mapName: map.name, title: node.content,
+            snippet: node.desc || node.content, matchField: titleMatch ? "node_title" : "node_description",
+            locator: "", score: titleMatch ? 0.88 : 0.7,
+          });
+        });
+        (state.entityGraphs[map.id]?.entities || []).forEach((entity) => {
+          const nameMatch = entity.canonicalName.toLocaleLowerCase().includes(normalized);
+          const aliasMatch = (entity.aliases || []).some((alias) => alias.toLocaleLowerCase().includes(normalized));
+          const descriptionMatch = (entity.description || "").toLocaleLowerCase().includes(normalized);
+          if (!nameMatch && !aliasMatch && !descriptionMatch) return;
+          all.push({
+            kind: "entity", resultId: entity.id, mapId: map.id, mapName: map.name, title: entity.canonicalName,
+            snippet: entity.description || entity.canonicalName,
+            matchField: nameMatch ? "entity_name" : aliasMatch ? "entity_alias" : "entity_description",
+            locator: "", score: nameMatch ? 0.87 : aliasMatch ? 0.84 : 0.69,
+          });
+        });
+        return all;
+      }, []).sort((left, right) => Number(right.score) - Number(left.score)).slice(0, limit);
+      return json({ query, results, total: results.length, scope: "workspace" });
     }
     const mapId = url.searchParams.get("mapId") || "map_default";
     return json({

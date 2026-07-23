@@ -2,15 +2,18 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMindGrowStore } from "@/store/mindgrow-store";
+import { apiFetch } from "@/lib/client-api";
 import {
   COMMAND_NAVIGATE_EVENT,
   COMMAND_PALETTE_OPEN_EVENT,
   flattenCommandGroups,
+  mergeCommandResults,
+  normalizeWorkspaceSearchResults,
   searchLoadedKnowledge,
   type CommandSearchResult,
 } from "@/lib/command-search";
 
-const GROUPS = [
+const LOCAL_GROUPS = [
   ["maps", "已加载知识库", "▣"],
   ["nodes", "当前图谱节点", "●"],
   ["entities", "当前实体", "◇"],
@@ -23,6 +26,8 @@ export function CommandPalette() {
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const [shortcut, setShortcut] = useState("Ctrl K");
+  const [workspaceResults, setWorkspaceResults] = useState<CommandSearchResult[]>([]);
+  const [workspaceStatus, setWorkspaceStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const inputRef = useRef<HTMLInputElement>(null);
 
   const groups = useMemo(() => searchLoadedKnowledge({
@@ -32,7 +37,44 @@ export function CommandPalette() {
     entities: entityGraph.entities,
     messages,
   }, query), [currentMapId, entityGraph.entities, maps, messages, nodes, query]);
-  const results = useMemo(() => flattenCommandGroups(groups), [groups]);
+  const localResults = useMemo(() => flattenCommandGroups(groups), [groups]);
+  const results = useMemo(() => mergeCommandResults(localResults, workspaceResults), [localResults, workspaceResults]);
+  const visibleWorkspaceResults = useMemo(() => results.filter((result) => result.scope === "workspace"), [results]);
+
+  useEffect(() => {
+    const normalizedQuery = query.replace(/\s+/g, " ").trim();
+    if (!open || normalizedQuery.length < 2) {
+      setWorkspaceResults([]);
+      setWorkspaceStatus("idle");
+      return;
+    }
+
+    const controller = new AbortController();
+    let cancelled = false;
+    setWorkspaceStatus("loading");
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await apiFetch(`/api/knowledge?action=search&q=${encodeURIComponent(normalizedQuery)}&limit=24`, {
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error(`Workspace search failed (${response.status})`);
+        const payload = await response.json();
+        if (cancelled || controller.signal.aborted) return;
+        setWorkspaceResults(normalizeWorkspaceSearchResults(payload));
+        setWorkspaceStatus("ready");
+      } catch (error) {
+        if (cancelled || controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError")) return;
+        setWorkspaceResults([]);
+        setWorkspaceStatus("error");
+      }
+    }, 220);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [open, query]);
 
   useEffect(() => {
     setShortcut(/Mac|iPhone|iPad/.test(window.navigator.platform) ? "⌘ K" : "Ctrl K");
@@ -101,10 +143,10 @@ export function CommandPalette() {
               if (event.key === "ArrowUp") { event.preventDefault(); setActiveIndex((index) => Math.max(index - 1, 0)); }
               if (event.key === "Enter" && results[activeIndex]) { event.preventDefault(); selectResult(results[activeIndex]); }
             }}
-            aria-label="搜索已加载内容"
+            aria-label="搜索整个工作区"
             aria-controls="command-search-results"
             aria-activedescendant={results[activeIndex] ? `command-result-${results[activeIndex].id}` : undefined}
-            placeholder="搜索知识库、当前图谱和最近对话…"
+            placeholder="搜索知识库、节点、实体、原文引用和最近对话…"
             className="h-14 min-w-0 flex-1 bg-transparent text-sm text-[var(--foreground)] outline-none placeholder:text-[var(--text-muted)]"
           />
           <kbd className="rounded border border-[var(--border)] px-1.5 py-1 text-[9px] text-[var(--text-muted)]">Esc</kbd>
@@ -112,8 +154,10 @@ export function CommandPalette() {
 
         <div id="command-search-results" role="listbox" className="max-h-[55vh] overflow-y-auto p-2" data-testid="command-search-results">
           {results.length === 0 ? (
-            <div className="px-4 py-10 text-center text-xs text-[var(--text-muted)]">当前已加载内容中没有匹配结果</div>
-          ) : GROUPS.map(([key, label, icon]) => {
+            <div className="px-4 py-10 text-center text-xs text-[var(--text-muted)]">
+              {workspaceStatus === "loading" ? "正在搜索整个工作区…" : workspaceStatus === "error" ? "工作区搜索暂时不可用，请稍后重试" : "没有匹配结果"}
+            </div>
+          ) : LOCAL_GROUPS.map(([key, label, icon]) => {
             const section = groups[key];
             if (section.length === 0) return null;
             return (
@@ -146,10 +190,50 @@ export function CommandPalette() {
               </div>
             );
           })}
+          {visibleWorkspaceResults.length > 0 && (
+            <div className="mb-2 last:mb-0" data-result-group="workspace">
+              <div className="flex items-center justify-between px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                <span>整个工作区</span>
+                <span className="font-normal normal-case tracking-normal">已按当前账号隔离</span>
+              </div>
+              {visibleWorkspaceResults.map((result) => {
+                const index = results.findIndex((candidate) => candidate.id === result.id);
+                const active = index === activeIndex;
+                const icon = result.kind === "map" ? "▣" : result.kind === "entity" ? "◇" : result.kind === "document" ? "▤" : "●";
+                return (
+                  <button
+                    key={result.id}
+                    id={`command-result-${result.id}`}
+                    type="button"
+                    role="option"
+                    aria-selected={active}
+                    data-result-kind={result.kind}
+                    onMouseEnter={() => setActiveIndex(index)}
+                    onClick={() => selectResult(result)}
+                    className={`flex w-full items-start gap-3 rounded-xl px-3 py-2.5 text-left ${active ? "bg-[var(--primary-subtle)]" : "hover:bg-[var(--bg-hover)]"}`}
+                  >
+                    <span className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg text-xs ${active ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "bg-[var(--bg-elevated)] text-[var(--text-muted)]"}`}>{icon}</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-xs font-medium text-[var(--foreground)]">{result.title}</span>
+                      <span className="mt-0.5 block truncate text-[10px] text-[var(--text-muted)]">{result.subtitle}</span>
+                      {result.matchReason && <span className="mt-1 block truncate text-[9px] text-[var(--primary)]" data-testid="workspace-search-reason">{result.matchReason}</span>}
+                    </span>
+                    {active && <span className="mt-1 text-[9px] text-[var(--primary)]">Enter</span>}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {workspaceStatus === "loading" && results.length > 0 && (
+            <div className="px-3 py-2 text-[10px] text-[var(--text-muted)]" data-testid="workspace-search-loading">正在补齐整个工作区…</div>
+          )}
+          {workspaceStatus === "error" && results.length > 0 && (
+            <div className="px-3 py-2 text-[10px] text-amber-400">本地结果仍可用，工作区搜索暂时失败</div>
+          )}
         </div>
 
         <footer className="flex items-center justify-between border-t border-[var(--border)] px-4 py-2 text-[9px] text-[var(--text-muted)]">
-          <span>仅搜索已加载知识库、当前图谱与最近 10 条对话</span>
+          <span>本地结果即时显示，随后补齐当前登录工作区</span>
           <span>{shortcut} 打开 · ↑↓ 选择</span>
         </footer>
       </section>

@@ -622,14 +622,14 @@ export function Sidebar({ onSwitchMap, onMapCreated }: SidebarProps) {
         <button
           type="button"
           onClick={() => window.dispatchEvent(new Event(COMMAND_PALETTE_OPEN_EVENT))}
-          aria-label="搜索已加载内容"
+          aria-label="搜索整个工作区"
           data-testid="command-palette-open"
           className="flex w-full items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-base)] px-2.5 py-2 text-left text-xs text-[var(--muted-foreground)] transition-colors hover:border-[var(--primary)]"
         >
           <svg className="shrink-0 text-[var(--muted-foreground)]" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
           </svg>
-          <span className="min-w-0 flex-1 truncate">搜索已加载内容…</span>
+          <span className="min-w-0 flex-1 truncate">搜索整个工作区…</span>
           <kbd className="shrink-0 rounded border border-[var(--border)] px-1 py-0.5 text-[8px] text-[var(--muted-foreground)]">Ctrl/⌘ K</kbd>
         </button>
         <Link
