@@ -59,7 +59,7 @@
 | S2.12 查询时 GraphRAG 定位 | 已合并 | PR #54 / `025cce2`；Supabase V15、阿里云 API `10.12.0` 与 GitHub Pages 均已发布；entity linking、混合召回、1–2 跳路径重排、拒答和可见路由已上线，冻结集全部指标 100%，公网 backend smoke 7/7、公网 E2E 7/7 与 production fact 均通过 |
 | S2.13 一键整理知识库 | 已合并 | PR #55 / `7366d96`；四策略、AI 失败显式降级、预览/逐项调整、默认不写入、工作区隔离撤销与部分失败自动回滚已发布；API `10.13.0` 与 GitHub Pages 已上线，公网 backend 7/7、前端 E2E 7/7 与 production fact 均通过 |
 | S2.14 统一知识宇宙 | 已合并并发布 | PR #56 / `f21be69`；文章、会议、碎片实体已在工作区只读投影中统一，原库证据与权限边界不改写；会议草稿默认不落库；API `10.14.0` 与 GitHub Pages 已发布，公网 backend 7/7、前端 E2E 7/7 与 production fact 均通过 |
-| S2.15 多源文章 + Audio Overview | 局部已有 | 已支持部分 URL/PDF/正文与 citation；缺完整拒答、可靠多源覆盖及 Audio Overview |
+| S2.15 多源文章 + Audio Overview | 开发完成，待发布 | URL/PDF/正文单来源协议、不可读链接拒答、来源读取状态、逐字 citation 与 claim-id 音频证据映射已完成；API `10.15.0`，unit 187/187、RAG 64/64、backend 9/9、产品 E2E 37/37 通过 |
 | S2.16 跨库全局搜索 | 局部已有 | U5 仅本地命令搜索；缺后端索引、权限过滤和命中解释 |
 | S2.17 国际化与反馈闭环 | 待开发 | 英文 UI、反馈群机制、标签与版本回访均待完整实施 |
 | S2.18 邮件投递长期方案 | 待开发 | 需 SMTP 选型、退信监控、频控和成本验证 |

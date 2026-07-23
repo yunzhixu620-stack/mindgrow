@@ -526,7 +526,10 @@ const expandOneVisibleLevel = async (page, previousCount) => {
       const guide = await page.$('[data-testid="guide-link"]');
       if (!guide) throw new Error("Usage guide link is missing");
       await guide.click();
-      await page.waitForFunction(() => window.location.pathname.endsWith("/guide") || window.location.pathname.endsWith("/guide/"));
+      await page.waitForFunction(
+        () => window.location.pathname.endsWith("/guide") || window.location.pathname.endsWith("/guide/"),
+        { timeout: 60000 },
+      );
       await page.waitForSelector("h1");
       const heading = await page.$eval("h1", (element) => element.textContent.trim());
       if (!heading.includes("可追溯的知识网络")) throw new Error("Usage guide did not render after clicking");
@@ -884,6 +887,9 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     await page.waitForFunction(() => document.body.innerText.includes("已读取 2 页"));
     await clickByText(page, "button", "解析文章");
     await page.waitForSelector('[data-testid="answer-card"]');
+    await page.waitForSelector('[data-testid="article-source-status"][data-source-type="pdf"]');
+    const sourceStatus = await page.$eval('[data-testid="article-source-status"]', (element) => element.textContent);
+    if (!sourceStatus.includes("PDF 文字已提取") || !sourceStatus.includes("可定位证据块")) throw new Error(`Article source verification is unclear: ${sourceStatus}`);
     await page.waitForSelector('[data-testid="answer-card"] [data-testid="citation-chip"]');
     const answerSections = await page.$$eval('[data-testid="answer-card"] > section', (sections) => sections.map((section) => section.getAttribute("data-testid")));
     if (!["answer-conclusion", "answer-evidence", "answer-extension"].every((section) => answerSections.includes(section))) throw new Error(`Article answer sections are incomplete: ${answerSections.join(", ")}`);
@@ -941,6 +947,8 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     if (articleTaskCategories.length !== 6 || !["翻译", "总结", "比较", "提取", "解释", "问答"].every((label) => articleTaskCategories.some((item) => item.includes(label)))) throw new Error(`Article task categories are unclear: ${articleTaskCategories.join(", ")}`);
     await clickByText(page, "button", "生成音频概览");
     await page.waitForFunction(() => document.body.innerText.includes("音频概览 ·"));
+    const audioGrounding = await page.$eval('[data-testid="audio-grounding-status"]', (element) => element.textContent);
+    if (!audioGrounding.includes("引用核验通过") || !audioGrounding.includes("全部绑定原文证据")) throw new Error(`Audio evidence status is missing: ${audioGrounding}`);
     await clickByText(page, "button", "保存到文章知识库");
     await page.waitForFunction(() => document.body.innerText.includes("文章知识节点"));
     await page.type('textarea[aria-label="与文章知识库对话"]', "翻译这篇论文");
@@ -1076,7 +1084,7 @@ const expandOneVisibleLevel = async (page, previousCount) => {
         await page.waitForFunction(() => !document.querySelector('[data-testid="command-palette"]'), { timeout: 6000 });
         await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
         try {
-          await page.$eval('[data-testid="entity-detail-panel"] button[aria-label="关闭实体详情"]', (button) => button.click());
+          await page.click('[data-testid="entity-detail-panel"] button[aria-label="关闭实体详情"]');
           await page.waitForFunction(() => !document.querySelector('[data-testid="entity-detail-panel"]'), { timeout: 6000 });
         } catch (error) {
           const diagnostic = await page.evaluate(() => ({

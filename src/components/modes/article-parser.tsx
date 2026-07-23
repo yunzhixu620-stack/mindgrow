@@ -29,6 +29,14 @@ interface ArticleResult {
   sourceType: "url" | "pdf" | "text";
   fileName?: string;
   mimeType?: string;
+  sourceStatus?: {
+    readStatus: "ready";
+    acquisition: "remote_fetch" | "local_pdf_extraction" | "pasted_text";
+    characterCount: number;
+    citationCount: number;
+    finalUrl?: string;
+    fileName?: string;
+  };
 }
 interface PdfExtraction {
   pageCount: number;
@@ -45,6 +53,12 @@ interface AudioOverview {
   audioUrl?: string;
   audioExpiresAt?: number;
   synthesis: "cosyvoice" | "browser";
+  grounding?: {
+    status: "verified";
+    evidenceClaimCount: number;
+    groundedSegmentCount: number;
+    scriptCharacters: number;
+  };
 }
 
 interface ArticleQaSource {
@@ -387,6 +401,7 @@ export function ArticleParser() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           title: result.title, summary: result.summary,
+          summaryCitationIndexes: result.summaryCitationIndexes,
           keyPoints: result.keyPoints, arguments: result.arguments, citations: result.citations,
         }),
       });
@@ -513,6 +528,7 @@ export function ArticleParser() {
       </div>
 
       {result && <div className="mt-5 space-y-3 animate-fade-in">
+        {result.sourceStatus && <ArticleSourceStatus status={result.sourceStatus} sourceType={result.sourceType} />}
         <ArticleWikiNavigator mindMap={result.mindMap} showCitations={showCitations} />
         {result.extraction && (result.extraction.tablePages.length > 0 || result.extraction.imagePages.length > 0 || result.extraction.scannedPages.length > 0) && <ArticleBlock title="文档解析覆盖"><div>表格/多列页：{result.extraction.tablePages.join("、") || "无"}</div><div>图片页：{result.extraction.imagePages.join("、") || "无"}</div><div>疑似扫描页：{result.extraction.scannedPages.join("、") || "无"}</div>{result.extraction.imagePages.length > 0 && <div className="mt-1 text-amber-300">图片页已保留图注与位置提示；涉及图中曲线、坐标或像素内容的结论需视觉模型复核。</div>}</ArticleBlock>}
         <AnswerCard
@@ -611,9 +627,19 @@ function ArticleWikiNavigator({ mindMap, showCitations }: { mindMap: AIMindMap; 
 function AudioOverviewCard({ audio, speech, showCitations }: { audio: AudioOverview; speech: ReturnType<typeof useScriptSpeech>; showCitations: (indexes?: number[]) => React.ReactNode }) {
   return <ArticleBlock title={`音频概览 · ${audio.title}`}>
     <p className="mb-2 text-[var(--text-tertiary)]">{audio.intro}</p>
+    {audio.grounding && <div data-testid="audio-grounding-status" className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-emerald-400/20 bg-emerald-400/[0.07] px-2.5 py-2 text-[10px] text-emerald-200"><strong>引用核验通过</strong><span>{audio.grounding.groundedSegmentCount} 段全部绑定原文证据</span><span>·</span><span>约 {Math.max(1, Math.ceil(audio.grounding.scriptCharacters / 320))} 分钟</span></div>}
     {audio.audioUrl ? <audio className="mb-3 w-full" controls preload="none" src={audio.audioUrl}>你的浏览器不支持音频播放。</audio> : <div className="mb-3 flex gap-2"><button type="button" onClick={speech.toggle} disabled={!speech.supported} className="rounded-lg bg-[var(--primary)] px-3 py-1.5 text-xs font-semibold text-[var(--primary-foreground)] disabled:opacity-40">{speech.state === "playing" ? "暂停" : speech.state === "paused" ? "继续" : "播放"}</button><button type="button" onClick={speech.stop} className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs">停止</button></div>}
     <div className="max-h-48 space-y-2 overflow-y-auto pr-1">{audio.segments.map((segment, index) => <button type="button" key={index} onClick={() => speech.playFrom(index)} className={`block w-full rounded-lg p-2 text-left ${speech.currentIndex === index ? "bg-[var(--primary-subtle)] ring-1 ring-[var(--primary)]" : "bg-[var(--bg-elevated)]"}`}><strong>{segment.speaker}：</strong>{segment.text}{showCitations(segment.citationIndexes)}</button>)}</div>
   </ArticleBlock>;
+}
+
+function ArticleSourceStatus({ status, sourceType }: { status: NonNullable<ArticleResult["sourceStatus"]>; sourceType: ArticleResult["sourceType"] }) {
+  const label = sourceType === "url" ? "公开网页已抓取" : sourceType === "pdf" ? "PDF 文字已提取" : "粘贴正文已读取";
+  const detail = status.finalUrl || status.fileName || `${status.characterCount.toLocaleString()} 字符`;
+  return <div data-testid="article-source-status" data-source-type={sourceType} className="rounded-xl border border-emerald-400/20 bg-emerald-400/[0.07] px-3 py-2 text-xs text-emerald-100">
+    <div className="flex flex-wrap items-center gap-2"><strong>来源校验通过 · {label}</strong><span className="text-emerald-200/70">{status.characterCount.toLocaleString()} 字符 · {status.citationCount} 个可定位证据块</span></div>
+    <div className="mt-1 truncate text-[10px] text-emerald-200/60" title={detail}>{detail}</div>
+  </div>;
 }
 
 function ArticleBlock({ title, children }: { title: string; children: React.ReactNode }) {
