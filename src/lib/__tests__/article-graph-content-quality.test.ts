@@ -28,6 +28,19 @@ const proxy = require("../../../fc-proxy/index.js") as {
     maxItems?: number,
     maxCharacters?: number,
   ) => Array<{ index: number; locator: string; content: string }>;
+  recoveredChineseArticleResponse: (
+    body: Record<string, unknown>,
+    context: Record<string, unknown>,
+    warningCode: string,
+  ) => {
+    data: {
+      summaryCitationIndexes: number[];
+      mindMap: {
+        rootCitationIndexes: number[];
+        children: Array<{ citationIndexes: number[] }>;
+      };
+    };
+  };
   ensureMindMapSourceCoverage: (
     mindMap: Record<string, unknown>,
     sourceText: string,
@@ -260,6 +273,56 @@ describe("article core graph and semantic outline quality", () => {
     expect(indexes.some((index) => index >= 35 && index <= 45)).toBe(true);
     expect(indexes.some((index) => index >= 75 && index <= 85)).toBe(true);
     expect(indexes.some((index) => index >= 115 && index <= 125)).toBe(true);
+  });
+
+  it("never uses title or ORCID metadata as evidence in the model recovery path", () => {
+    const citations = [
+      {
+        index: 1,
+        locator: "网页正文第 1 句",
+        quote: "CUSUM-Shaped Inference for Reliable Sequential Decisions in Large Language Models",
+        content: "CUSUM-Shaped Inference for Reliable Sequential Decisions in Large Language Models",
+      },
+      {
+        index: 2,
+        locator: "网页正文第 2 句",
+        quote: "ORCID: https://orcid.org/0000-0000-0000-0000",
+        content: "ORCID: https://orcid.org/0000-0000-0000-0000",
+      },
+      {
+        index: 3,
+        locator: "网页正文第 18 句",
+        quote: "The proposed method applies a CUSUM-shaped controller to sequential model decisions.",
+        content: "The proposed method applies a CUSUM-shaped controller to sequential model decisions.",
+      },
+      {
+        index: 4,
+        locator: "网页正文第 91 句",
+        quote: "Experiments show improved detection accuracy over the fixed-threshold baseline.",
+        content: "Experiments show improved detection accuracy over the fixed-threshold baseline.",
+      },
+    ];
+    const content = citations.map((item) => item.content).join("\n").repeat(8);
+    const recovered = proxy.recoveredChineseArticleResponse(
+      { sourceType: "url" },
+      {
+        content,
+        sourceType: "url",
+        sourceUrl: "https://arxiv.org/abs/2607.20129",
+        citations,
+        documentChunks: [],
+      },
+      "ARTICLE_ANALYSIS_MODEL_RECOVERED",
+    );
+
+    const usedIndexes = [
+      ...recovered.data.summaryCitationIndexes,
+      ...recovered.data.mindMap.rootCitationIndexes,
+      ...recovered.data.mindMap.children.flatMap((child) => child.citationIndexes),
+    ];
+    expect(usedIndexes).not.toContain(1);
+    expect(usedIndexes).not.toContain(2);
+    expect(usedIndexes).toContain(3);
   });
 
   it("keeps Chinese entity explanations grounded by dedicated English evidence", () => {

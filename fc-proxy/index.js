@@ -29,7 +29,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.21.5';
+const API_VERSION = '10.21.6';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -2693,8 +2693,17 @@ function isDocumentMetadataFact(value) {
   if (/(?:arxiv\.org|doi\.org|openreview\.net|aclanthology\.org)\//i.test(text)) return true;
   const latinWords = text.match(/[A-Za-z][A-Za-z0-9'’-]*/g) || [];
   const chineseChars = text.match(/[\u3400-\u9fff]/g) || [];
-  if (latinWords.length >= 12 && chineseChars.length < 4) return true;
+  // Long English headings often arrive without an explicit "Title:" prefix.
+  // Do not apply this rule to complete English evidence sentences.
+  if (latinWords.length >= 8 && chineseChars.length < 4 && !/[.!?]["')\]]?$/.test(text)) return true;
   return false;
+}
+
+function isLongEnglishOnlyText(value) {
+  const text = normalizeSpaces(value);
+  const latinWords = text.match(/[A-Za-z][A-Za-z0-9'’-]*/g) || [];
+  const chineseChars = text.match(/[\u3400-\u9fff]/g) || [];
+  return latinWords.length >= 12 && chineseChars.length < 4;
 }
 
 function mindMapBranchKind(topic) {
@@ -2709,7 +2718,7 @@ function mindMapBranchKind(topic) {
 
 function mindMapItemMatchesBranch(topic, value) {
   const text = normalizeSpaces(value);
-  if (!text || isDocumentMetadataFact(text)) return false;
+  if (!text || isDocumentMetadataFact(text) || isLongEnglishOnlyText(text)) return false;
   const kind = mindMapBranchKind(topic);
   if (kind === 'experiment') {
     return /(数据集|语料|样本|训练集|测试集|基准|基线|对比|实验|消融|评测|评估|指标|准确率|召回|精度|dataset|corpus|sample|train|test|benchmark|baseline|experiment|ablation|evaluat|metric|accuracy|recall|precision)/i.test(text);
@@ -3900,13 +3909,19 @@ function recoveredChineseArticleResponse(body, context, warningCode) {
     deterministicEvidenceEntityGraph(citations, allowedIndexes), allowedIndexes, citations,
     { trustedDeterministic: true, profile: ARTICLE_CORE_ENTITY_GRAPH_PROFILE },
   );
-  const indexes = citations.slice(0, 3).map((item) => item.index);
+  const semanticCitations = citations.filter((item) => !isDocumentMetadataFact(item && (item.quote || item.content)));
+  const indexes = (semanticCitations.length ? semanticCitations : citations).slice(0, 3).map((item) => item.index);
   const citationAt = (position) => indexes.length ? [indexes[Math.min(position, indexes.length - 1)]] : [];
   let title = '论文解析结果';
   if (/retrieval[- ]augmented generation|\bRAG\b/i.test(content)) title = '检索增强生成（RAG）论文';
   else if (/dense passage retriev|\bDPR\b/i.test(content)) title = '稠密段落检索（DPR）论文';
   else if (/LayoutLMv3/i.test(content)) title = '文档智能预训练（LayoutLMv3）论文';
-  const deterministicMindMap = deterministicArticleMindMap(title, content, citations, allowedIndexes);
+  const deterministicMindMap = deterministicArticleMindMap(
+    title,
+    content,
+    semanticCitations.length ? semanticCitations : citations,
+    allowedIndexes,
+  );
   let mindMap = deterministicMindMap.children.length >= 2 && !englishHeavyArticleText(content) ? deterministicMindMap : {
     root: title,
     rootDesc: '中文字段修复出现波动，系统已保留原文证据并生成可继续使用的中文结构。',
@@ -4912,7 +4927,8 @@ async function handleArticleTool(body) {
   recoveryContext.citations = citations;
   recoveryContext.documentChunks = prepared.documentChunks;
   const allowedIndexes = new Set(citations.map((item) => item.index));
-  const analysisCitations = selectArticleAnalysisCitations(citations, 84, 52000);
+  const analysisCitations = selectArticleAnalysisCitations(citations, 56, 30000);
+  const longArticleAnalysis = content.length >= 50000 || citations.length >= 140;
   stage = 'ANALYSIS_MODEL';
   const raw = await dashscopeChat([
     {
@@ -4920,7 +4936,7 @@ async function handleArticleTool(body) {
       content: `你是忠于原文的论文与文章解析助手。只返回严格 JSON：{"title":"","summary":"","summaryCitationIndexes":[1],"keyPoints":[{"text":"","citationIndexes":[1]}],"arguments":[{"claim":"","evidence":"","citationIndexes":[1]}],"questions":[""],"mindMap":{"root":"","rootDesc":"","rootCitationIndexes":[1],"children":[{"topic":"","desc":"","citationIndexes":[1],"items":[""],"itemCitationIndexes":[[1]]}]},"entityGraph":{"entities":[],"relations":[]}}。论文的 mindMap.children 优先使用“研究问题、方法/架构、数据与实验、结果、局限与启示”等 3-6 个语义主干；每个主干 desc 必须用一句话直接解释该主干在本文中的具体内容，不能只重复栏目名。每个主干的 items 必须回答父节点下不同的内容方向，不得只是重复父节点或罗列文档信息：“数据与实验”应在证据存在时分别说明“数据是什么”“与哪些基线比较”“实验如何进行”“使用什么指标”“消融验证了什么”，每项写成可独立理解的中文结论；“局限与启示”应分别说明“具体局限是什么”“在什么条件下发生”“影响什么”“如何改进”。如果原文没有某一方向的直接证据就省略该项，不得用“进行了大量实验”“证明有效”“存在一定局限”等空泛句占位。标题、URL、来源、作者、发布日期、关键词和英文摘要属于文档元数据，绝对不能成为导图节点或 items；超过 12 个英文单词的原文标题或摘要也不得原样进入导图。具体模型、指标、对比和证据放入 items，不得把大量细节平铺为一级节点，也不得因聚合而删减原文信息。所有标题、摘要、要点、论证、问题和导图节点必须使用简体中文；英文原文要准确翻译成中文，专业术语或缩写可在中文后用括号保留英文。输入由带页码/段落定位的 C 编号证据块组成。每个结论、数字、表格结论和导图分支必须引用直接支持它的 C 编号；只能引用给定编号；不得自行填写 quote 或页码；引用原文保持原始语言，不得伪造中文原文；证据不足就省略结论，不得补充原文没有的事实。${ENTITY_GRAPH_SCHEMA_PROMPT}${ARTICLE_CORE_ENTITY_GRAPH_PROMPT}`,
     },
     { role: 'user', content: `以下内容只包含文章正文证据；来源 URL、文档标题和文件名属于元数据，未放入证据区，禁止把元数据当成结论：\n${evidencePrompt(analysisCitations)}` },
-  ], 'qwen-plus', 3600, 0.1);
+  ], longArticleAnalysis ? 'qwen-turbo' : 'qwen-plus', longArticleAnalysis ? 2800 : 3400, 0.1);
   stage = 'MODEL_PARSE';
   let parsed;
   try { parsed = JSON.parse(stripJsonFence(raw)); } catch (_) { parsed = {}; }
@@ -5025,6 +5041,7 @@ async function handleArticleTool(body) {
         citationCount: analysisCitations.length,
         promptCharacters: evidencePrompt(analysisCitations).length,
         availableCitationCount: citations.length,
+        modelProfile: longArticleAnalysis ? 'long_document_fast' : 'standard_quality',
       },
     },
   };
