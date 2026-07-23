@@ -29,7 +29,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.21.19';
+const API_VERSION = '10.21.20';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -3022,7 +3022,10 @@ function repairArticleExperimentEvidence(mindMap, citations, allowedIndexes) {
     if (mindMapBranchKind(child && child.topic) !== 'experiment') return child;
     const referencedIndexes = normalizeCitationIndexes([
       ...((child && child.citationIndexes) || []),
-      ...(((child && child.itemCitationIndexes) || []).flat()),
+      ...((child && child.itemCitationIndexes) || []).reduce(
+        (all, indexes) => all.concat(Array.isArray(indexes) ? indexes : []),
+        [],
+      ),
     ], allowedIndexes);
     const preferredEvidence = referencedIndexes.map((index) => citationByIndex.get(index)).filter(Boolean);
     const fallbackEvidence = evidence.filter((citation) => (
