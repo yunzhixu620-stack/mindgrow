@@ -29,7 +29,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.21.16';
+const API_VERSION = '10.21.17';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -576,6 +576,7 @@ function classifyInput(input) {
   const value = input.trim();
   if (/^(?:\/|删除|清空|重命名|(?:delete|clear|rename)\b)/i.test(value)) return 'command';
   if (/^(你好|您好|嗨|hello|hi|hey)[!！,.，。\s]*$/i.test(value)) return 'chitchat';
+  if (value.length >= 400) return 'knowledge';
   if (/[?？]/.test(value)
     || /^(什么|为什么|如何|怎么|哪些|哪个|哪种|是否|能否|请问|请给出|解释|比较)/i.test(value)
     || /^(who|what|when|where|why|how|which|is|are|can|does)\b/i.test(value)) return 'question';
@@ -1932,6 +1933,14 @@ function requestedKnowledgeNodeBudget(input, hasUrl) {
   return { kind: 'short_text', minimum: 4, maximum: 8 };
 }
 
+function shouldTreatAsQuestionIntent(input, requestedIntent) {
+  if (requestedIntent !== 'question') return false;
+  // A pasted document can contain many question marks and task statements.
+  // Long fragments are a core knowledge-ingestion path and must not be routed
+  // to empty-library Q&A solely because the client guessed "question".
+  return String(input || '').trim().length < 400;
+}
+
 function mindMapNodeCount(mindMap) {
   return 1 + (Array.isArray(mindMap && mindMap.children) ? mindMap.children : []).reduce(
     (total, child) => total + 1 + (Array.isArray(child && child.items) ? child.items.length : 0),
@@ -2189,8 +2198,9 @@ async function handleChat(body, context) {
   }
 
   const articleRequest = body && body.mode === 'article' ? classifyArticleRequest(input) : null;
+  const requestedQuestionIntent = shouldTreatAsQuestionIntent(input, body && body.intent);
   const intent = {
-    type: submittedUrl ? 'knowledge' : (articleRequest || (body && body.intent === 'question') ? 'question' : classifyInput(input)),
+    type: submittedUrl ? 'knowledge' : (articleRequest || requestedQuestionIntent ? 'question' : classifyInput(input)),
     confidence: articleRequest ? articleRequest.confidence : 0.9,
     ...(articleRequest || {}),
   };
@@ -7350,6 +7360,7 @@ module.exports = {
   fallbackMeetingAnalysis,
   handleMeetingTool,
   requestedKnowledgeNodeBudget,
+  shouldTreatAsQuestionIntent,
   mindMapNodeCount,
   isSingleKnowledgeTerm,
   ensureShortTermFiveDirections,

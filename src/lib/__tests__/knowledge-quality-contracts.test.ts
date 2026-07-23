@@ -23,6 +23,8 @@ const proxy = require("../../../fc-proxy/index.js") as {
     minimum: number;
     maximum: number;
   };
+  shouldTreatAsQuestionIntent: (input: string, requestedIntent?: string) => boolean;
+  classifyInput: (input: string) => string;
   mindMapNodeCount: (mindMap: unknown) => number;
   isSingleKnowledgeTerm: (input: string) => boolean;
   ensureShortTermFiveDirections: (
@@ -253,6 +255,13 @@ describe("knowledge quality contracts", () => {
       expect(result.audit.actual).toBeLessThanOrEqual(budget.maximum);
       expect(result.audit.overflowCompressed).toBeGreaterThan(0);
     }
+  });
+
+  it("routes long pasted fragments to knowledge ingestion even when the client guessed question", () => {
+    expect(proxy.shouldTreatAsQuestionIntent("这段资料的结论是什么？", "question")).toBe(true);
+    expect(proxy.shouldTreatAsQuestionIntent("长文资料？".repeat(120), "question")).toBe(false);
+    expect(proxy.shouldTreatAsQuestionIntent("短文本", "knowledge")).toBe(false);
+    expect(proxy.classifyInput("长文资料？".repeat(120))).toBe("knowledge");
   });
 
   it("reuses canonical node labels and warns below 50% predicted reuse", () => {
