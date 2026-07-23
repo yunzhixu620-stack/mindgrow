@@ -49,7 +49,10 @@ export default function GuidePage() {
       <nav className="sticky top-0 z-20 border-b border-[var(--border)] bg-[var(--nav-glass)] backdrop-blur-xl">
         <div className="max-w-5xl mx-auto px-5 h-16 flex items-center justify-between">
           <Link href="/" className="font-semibold text-sm text-[var(--text-primary)] no-underline">MindGrow</Link>
-          <Link href="/" className="text-xs font-semibold rounded-lg px-4 py-2 bg-[var(--primary)] text-[var(--primary-foreground)] no-underline">立即体验</Link>
+          <div className="flex items-center gap-4">
+            <Link href="/product/" className="text-xs font-medium text-[var(--text-secondary)] no-underline hover:text-[var(--text-primary)]">产品说明</Link>
+            <Link href="/" className="text-xs font-semibold rounded-lg px-4 py-2 bg-[var(--primary)] text-[var(--primary-foreground)] no-underline">立即体验</Link>
+          </div>
         </div>
       </nav>
 
@@ -114,7 +117,7 @@ export default function GuidePage() {
         <footer className="rounded-3xl border border-[var(--primary-border)] bg-[var(--primary-subtle)] p-8 md:p-12 flex flex-col md:flex-row md:items-center md:justify-between gap-6">
           <div>
             <h2 className="text-2xl font-semibold mb-2">从一条知识开始</h2>
-            <p className="text-sm text-[var(--text-secondary)]">无需注册，数据默认保存在当前浏览器。</p>
+            <p className="text-sm text-[var(--text-secondary)]">云端版注册后自动建立私有工作区，无需配置令牌或模型密钥。</p>
           </div>
           <Link href="/" className="inline-flex justify-center text-sm font-semibold rounded-xl px-6 py-3 bg-[var(--primary)] text-[var(--primary-foreground)] no-underline">打开 MindGrow</Link>
         </footer>
