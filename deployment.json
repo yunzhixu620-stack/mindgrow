@@ -2,11 +2,11 @@
   "schemaVersion": 1,
   "product": "mindgrow",
   "frontend": {
-    "gitSha": "4eb33f5b4b66761d1ac1e66386d3d0ed1184bf16",
-    "builtAt": "2026-07-23T18:28:53.758Z"
+    "gitSha": "d41f1573b0626cbb10621c505c04f8e3355a9523",
+    "builtAt": "2026-07-23T18:48:36.454Z"
   },
   "api": {
-    "expectedVersion": "10.21.18",
+    "expectedVersion": "10.21.19",
     "healthUrl": "https://mindgrow-api-eyippxdkkh.cn-hangzhou.fcapp.run/health"
   }
 }
