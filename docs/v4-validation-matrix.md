@@ -189,5 +189,9 @@
 4. [x] 登录页提示只使用最新确认链接并检查垃圾邮件箱；Supabase 常见 429、频控和 security cooldown 错误统一转为中英文可读提示。
 5. [x] 新增公网 E2E：不真实发信，仅用本地时间戳验证倒计时、刷新保持和过期恢复，避免消耗邮件额度或制造滥用。
 6. [x] 本地 `check:api-version`、lint、unit 196/196、RAG 66/66、backend 9/9、产品 E2E 38/38 与 production build 均通过；未新增依赖或数据库迁移。
-7. [ ] 外部激活待 Owner：提供可修改 DNS 的自有域名，在 Resend 完成 SPF/DKIM 验证并创建 Supabase 专用 API key；密钥只输入 Supabase 控制台，不进入聊天或仓库。
-8. [ ] 激活后门禁：Gmail、Outlook、QQ 邮箱完成注册/重发/最新链接/垃圾箱/过期恢复验收；Resend 事件面板确认 delivered、bounced、complained、delayed/failed 可观测，再把 S2.18 状态改为已发布。
+7. [x] PR #60（实体悬停稳定性）与 PR #61（邮件投递防护）均经 CI/Vercel Preview 通过后合并，当前产品源码为 `main@3ca16f50529ebbb45284f5a52a48c4b00b3e9438`。
+8. [x] 阿里云 API `10.18.0` 已发布；公网 `/health` 精确返回上述提交、`status=ok`、`authRequired=true`、`deploymentIdentity=ready`，backend smoke 7/7 通过。
+9. [x] `gh-pages@74bf462ff3bb6af9b0849afe497dab2018a3eb99` 发布成功，Pages workflow `29980120639` 通过；公网前端 E2E 8/8 通过。
+10. [x] production fact workflow `29980184041` 精确核对线上前端与后端均为上述 `main` 提交、API `10.18.0` 与 `authRequired=true` 并通过。
+11. [ ] 外部激活待 Owner：提供可修改 DNS 的自有域名，在 Resend 完成 SPF/DKIM 验证并创建 Supabase 专用 API key；密钥只输入 Supabase 控制台，不进入聊天或仓库。
+12. [ ] 激活后门禁：Gmail、Outlook、QQ 邮箱完成注册/重发/最新链接/垃圾箱/过期恢复验收；Resend 事件面板确认 delivered、bounced、complained、delayed/failed 可观测，再把 S2.18 状态改为已发布。

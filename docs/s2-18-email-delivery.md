@@ -45,6 +45,14 @@ MindGrow 当前仍使用 Supabase 内置邮件服务。它是 best-effort 测试
 
 当日均发送超过 50 封或团队开始正式 on-call 后，增加签名 Webhook 自动告警。Webhook 必须校验原始请求体与 `svix-*` 签名、按 `svix-id` 去重，数据库默认只保存收件人哈希和事件元数据，不保存邮件正文。本轮不在没有真实 Webhook secret 和测试事件的情况下自制签名校验器。
 
+## 2026-07-23 线上发布证据
+
+- 实体悬停稳定性修复经 PR #60 合并；邮件投递防护经 PR #61 合并，当前产品源码为 `main@3ca16f50529ebbb45284f5a52a48c4b00b3e9438`。
+- 阿里云函数已发布 API `10.18.0`，`/health` 返回精确源码提交、`status=ok`、`authRequired=true`、`deploymentIdentity=ready`；公网后端 smoke 7/7 通过。
+- GitHub Pages 已发布 `gh-pages@74bf462ff3bb6af9b0849afe497dab2018a3eb99`，Pages workflow `29980120639` 通过；公网前端 E2E 8/8 通过。
+- production fact workflow `29980184041` 已精确核对线上前端与后端均来自上述 `main` 提交，API 版本与鉴权状态一致。
+- Supabase custom SMTP 仍为关闭状态；以上发布完成的是产品侧防误触与恢复体验，不代表第三方生产邮件通道已经激活。
+
 ## 明日需要 Owner 完成/提供
 
 这些步骤无法由现有 Supabase/阿里云登录状态代替：
