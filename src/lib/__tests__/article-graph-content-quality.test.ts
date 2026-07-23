@@ -201,6 +201,27 @@ describe("article core graph and semantic outline quality", () => {
     expect(proxy.sourceCriticalFacts(source, 20).join(" ")).not.toMatch(/标题|arxiv|发布日期|摘要/);
   });
 
+  it("always gives a grounded semantic branch at least one explanatory child", () => {
+    const source = "实验在 WebQSP 数据集上进行，并用 Hits@1 指标与 GraphRAG 基线比较。";
+    const result = proxy.ensureMindMapSourceCoverage({
+      root: "GraphContainer",
+      rootDesc: "用于比较图检索增强生成方法。",
+      children: [{
+        topic: "数据与实验",
+        desc: source,
+        citationIndexes: [1],
+        items: [],
+        itemCitationIndexes: [],
+      }],
+    }, source, [{ index: 1, quote: source, content: source }], new Set([1]), { appendFacts: false });
+
+    const experiment = result.mindMap.children[0];
+    expect(experiment.items).toHaveLength(2);
+    expect(experiment.items[0]).toMatch(/^数据：/);
+    expect(experiment.items[1]).toMatch(/^(对比方法|评估指标)：/);
+    expect(experiment.itemCitationIndexes).toEqual([[1], [1]]);
+  });
+
   it("replaces generic branches with semantic topics, merges duplicates, and drops unclassifiable placeholders", () => {
     const source = [
       "本文提出 RECAP 框架，通过可解码性监督训练验证器。",
@@ -253,6 +274,8 @@ describe("article core graph and semantic outline quality", () => {
     const experiment = result.mindMap.children.find((child) => child.topic === "数据与实验");
     expect(experiment?.desc).toContain("Sandbox");
     expect(experiment?.items).toEqual([
+      "数据：实验在 Sandbox 数据集上进行",
+      "对比方法：与 Probe 基线比较。",
       "评估指标：实验采用 F1 和 Recall@5 评估模型的验证能力。",
     ]);
     expect(JSON.stringify(result.mindMap)).not.toMatch(/要点|论文介绍了相关内容/);

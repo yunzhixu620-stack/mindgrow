@@ -29,7 +29,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.21.8';
+const API_VERSION = '10.21.9';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -2853,6 +2853,20 @@ function formatMindMapItem(topic, value) {
   return `${direction}：${text}`;
 }
 
+function explanatoryMindMapItems(topic, value, sourceText) {
+  const text = normalizeSpaces(value);
+  if (!text) return [];
+  const clauses = text.split(/[；;]+|[，,]\s*(?=(?:并且?|以及|同时|其中|此外|但|然而|而且?))/i)
+    .map((item) => normalizeSpaces(item).replace(/^(?:并且?|以及|同时|其中|此外|但|然而|而且?)\s*/i, ''))
+    .filter(Boolean);
+  const candidates = clauses.length > 1 ? clauses : [text];
+  const items = candidates.filter((item) => (
+    mindMapItemMatchesBranch(topic, item)
+    && structureItemGrounded(item, sourceText)
+  )).map((item) => formatMindMapItem(topic, item));
+  return [...new Set(items)].slice(0, 5);
+}
+
 function mindMapDescriptionIsConcrete(topic, value) {
   const text = normalizeSpaces(value);
   if (!mindMapItemMatchesBranch(topic, text) || !text) return false;
@@ -3007,6 +3021,13 @@ function ensureMindMapSourceCoverage(mindMap, sourceText, citations, allowedInde
       && structureItemGrounded(rawDescription, sourceText)
       ? rawDescription
       : '';
+    if (items.length === 0 && verifiedDescription && mindMapBranchKind(topic) !== 'general') {
+      const explanatoryItems = explanatoryMindMapItems(topic, verifiedDescription, sourceText);
+      explanatoryItems.forEach((item) => {
+        items.push(item);
+        itemCitationIndexes.push(normalizeCitationIndexes(child && child.citationIndexes, allowedIndexes));
+      });
+    }
     const semanticDescription = verifiedDescription || items.slice(0, 2).join('；');
     return {
       ...child,
