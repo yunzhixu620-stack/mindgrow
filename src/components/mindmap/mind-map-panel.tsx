@@ -311,6 +311,7 @@ function EntityNode({ data, selected }: NodeProps) {
   const entity = data.entity as GraphEntity;
   const color = ENTITY_TYPE_COLORS[entity.entityType] || ENTITY_TYPE_COLORS.other;
   const neighborCount = data.neighborCount as number;
+  const hovered = Boolean(data.hovered);
   const descriptionCitation = (entity.descriptionCitations || [])[0];
   return (
     <div
@@ -329,7 +330,7 @@ function EntityNode({ data, selected }: NodeProps) {
         <div className="mt-1 text-[8px]" style={{ color }}>{ENTITY_TYPE_LABELS[entity.entityType] || entity.entityType}</div>
       </div>
       <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full border border-[var(--border-default)] bg-[var(--bg-base)] px-1 text-[8px] text-[var(--text-tertiary)]">{neighborCount}</span>
-      <div className="pointer-events-none absolute left-[calc(100%+12px)] top-1/2 z-[120] hidden w-72 -translate-y-1/2 rounded-2xl border border-violet-400/30 bg-[var(--tooltip-bg)] p-4 text-left shadow-2xl backdrop-blur-xl group-hover:block" data-testid="entity-hover-card">
+      <div className={`pointer-events-none absolute left-[calc(100%+12px)] top-1/2 z-[120] w-72 -translate-y-1/2 rounded-2xl border border-violet-400/30 bg-[var(--tooltip-bg)] p-4 text-left shadow-2xl backdrop-blur-xl ${hovered ? "block" : "hidden group-hover:block"}`} data-testid="entity-hover-card">
         <div className="flex items-start justify-between gap-3">
           <div>
             <div className="text-sm font-semibold text-[var(--text-primary)]">{entity.canonicalName}</div>
@@ -437,6 +438,7 @@ function buildEntityNetworkGraph(
       data: {
         entity,
         neighborCount: neighbors.get(entity.id)?.size || 0,
+        hovered: entityViewNodeId(entity.id) === hoveredEntityId,
       },
     };
   });
