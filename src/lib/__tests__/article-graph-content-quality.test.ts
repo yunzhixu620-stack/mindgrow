@@ -34,6 +34,21 @@ const proxy = require("../../../fc-proxy/index.js") as {
       children: Array<{ topic: string; desc: string; items: string[] }>;
     };
   };
+  deterministicArticleMindMap: (
+    title: string,
+    content: string,
+    citations: Array<{ index: number; quote: string; content: string }>,
+    allowedIndexes: Set<number>,
+  ) => {
+    root: string;
+    children: Array<{
+      topic: string;
+      desc: string;
+      citationIndexes: number[];
+      items: string[];
+      itemCitationIndexes: number[][];
+    }>;
+  };
 };
 
 describe("article core graph and semantic outline quality", () => {
@@ -149,5 +164,42 @@ describe("article core graph and semantic outline quality", () => {
       "实验采用 Recall@20 和 NDCG@20 评估推荐效果，并报告消融实验。",
     ]);
     expect(proxy.sourceCriticalFacts(source, 20).join(" ")).not.toMatch(/标题|arxiv|发布日期|摘要/);
+  });
+
+  it("builds an evidence-backed semantic outline when the article model is unavailable", () => {
+    const facts = [
+      "研究目标是减少长文档问答中的语义误召回。",
+      "本文提出 EvidenceGraph-RAG，使用实体路径重排并通过证据门控生成答案。",
+      "实验使用 HotpotQA、Qasper 和 300 条中文技术问题，基线包括 BM25 与 GraphRAG。",
+      "评价指标包括 Recall@10、引用准确率和平均响应延迟，每组实验重复三次。",
+      "结果显示 Recall@10 从 71.2% 提升到 82.6%，引用准确率提升到 88.1%。",
+      "局限是跨语言缩写会拆分同一实体，两跳路径无法覆盖长链推理。",
+      "标题：A Very Long English Paper Title",
+      "发布日期：2026/07/23",
+      "来源：https://example.com/paper",
+    ];
+    const citations = facts.map((quote, index) => ({
+      index: index + 1,
+      quote,
+      content: quote,
+    }));
+    const graph = proxy.deterministicArticleMindMap(
+      "EvidenceGraph-RAG",
+      facts.join("\n"),
+      citations,
+      new Set(citations.map((item) => item.index)),
+    );
+
+    expect(graph.children.map((child) => child.topic)).toEqual([
+      "研究问题",
+      "方法/架构",
+      "数据与实验",
+      "结果",
+      "局限与启示",
+    ]);
+    const experiment = graph.children.find((child) => child.topic === "数据与实验");
+    expect(`${experiment?.desc} ${experiment?.items.join(" ")}`).toMatch(/HotpotQA|Qasper|Recall@10|重复三次/);
+    expect(JSON.stringify(graph)).not.toMatch(/Very Long English Paper Title|发布日期|example\.com/);
+    expect(graph.children.every((child) => child.citationIndexes.length > 0)).toBe(true);
   });
 });

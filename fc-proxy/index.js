@@ -22,7 +22,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.21.0';
+const API_VERSION = '10.21.1';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -3655,7 +3655,68 @@ function fallbackMindMap(title, text) {
   };
 }
 
-function recoveredChineseArticleResponse(body, context) {
+function deterministicArticleMindMap(title, content, citations, allowedIndexes) {
+  const definitions = [
+    {
+      topic: '局限与启示',
+      pattern: /局限|限制|不足|适用边界|失败情形|无法|依赖.+质量|后续|未来|启示|limitation|drawback|future work|cannot|fails?\b/i,
+    },
+    {
+      topic: '结果',
+      pattern: /结果|提升|下降|优于|超过|达到|提高|降低|百分点|显著|result|outperform|improv|increase|decrease/i,
+    },
+    {
+      topic: '数据与实验',
+      pattern: /数据集|样本|训练集|验证集|测试集|划分|基线|对比方法|评价指标|实验设置|消融|GPU|重复.+次|dataset|benchmark|baseline|metric|experiment|ablation|train(?:ing)? set|test set|validation set/i,
+    },
+    {
+      topic: '方法/架构',
+      pattern: /方法|提出|系统|框架|模型|算法|架构|模块|检索|重排|编码器|门控|method|approach|framework|architecture|model|retriev|rerank|encoder|gating/i,
+    },
+    {
+      topic: '研究问题',
+      pattern: /研究目标|研究问题|目标|问题|动机|挑战|旨在|research question|objective|motivation|challenge|problem/i,
+    },
+  ];
+  const buckets = new Map(definitions.map((definition) => [definition.topic, []]));
+  const seen = new Set();
+  (Array.isArray(citations) ? citations : []).forEach((citation) => {
+    const text = normalizeSpaces((citation && (citation.quote || citation.content)) || '').slice(0, 500);
+    if (!text || text.length < 8 || isDocumentMetadataFact(text)) return;
+    const definition = definitions.find((item) => item.pattern.test(text));
+    if (!definition) return;
+    const key = `${definition.topic}:${text.toLowerCase()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    buckets.get(definition.topic).push({
+      text,
+      citationIndexes: normalizeCitationIndexes([citation.index], allowedIndexes),
+    });
+  });
+  const children = definitions.slice().reverse().map((definition) => {
+    const facts = buckets.get(definition.topic).slice(0, 6);
+    if (!facts.length) return null;
+    return {
+      topic: definition.topic,
+      desc: facts[0].text,
+      citationIndexes: facts[0].citationIndexes,
+      items: facts.slice(1).map((item) => item.text),
+      itemCitationIndexes: facts.slice(1).map((item) => item.citationIndexes),
+    };
+  }).filter(Boolean);
+  const firstFact = children[0] && children[0].desc
+    ? children[0].desc
+    : sourceCriticalFacts(content, 1)[0] || '';
+  return {
+    root: String(title || '论文解析结果').slice(0, 200),
+    rootDesc: firstFact,
+    rootCitationIndexes: children[0] ? children[0].citationIndexes : [],
+    children,
+    relatedTopics: [],
+  };
+}
+
+function recoveredChineseArticleResponse(body, context, warningCode) {
   const content = String((context && context.content) || body.content || '').slice(0, 120000);
   const sourceType = String((context && context.sourceType) || body.sourceType || 'text');
   const fileName = String((context && context.fileName) || body.fileName || '').slice(0, 300);
@@ -3678,7 +3739,8 @@ function recoveredChineseArticleResponse(body, context) {
   if (/retrieval[- ]augmented generation|\bRAG\b/i.test(content)) title = '检索增强生成（RAG）论文';
   else if (/dense passage retriev|\bDPR\b/i.test(content)) title = '稠密段落检索（DPR）论文';
   else if (/LayoutLMv3/i.test(content)) title = '文档智能预训练（LayoutLMv3）论文';
-  let mindMap = {
+  const deterministicMindMap = deterministicArticleMindMap(title, content, citations, allowedIndexes);
+  let mindMap = deterministicMindMap.children.length >= 2 && !englishHeavyArticleText(content) ? deterministicMindMap : {
     root: title,
     rootDesc: '中文字段修复出现波动，系统已保留原文证据并生成可继续使用的中文结构。',
     rootCitationIndexes: citationAt(0),
@@ -3693,12 +3755,17 @@ function recoveredChineseArticleResponse(body, context) {
     mindMap, content, citations, allowedIndexes, { appendFacts: !englishHeavyArticleText(content) },
   );
   mindMap = recoveredCoverage.mindMap;
-  const summary = '文章已完成证据切分；部分中文节点采用安全标签，原文内容和页码仍完整保留在引用中。';
-  const keyPoints = [
-    { text: '研究问题与背景', citationIndexes: citationAt(0) },
-    { text: '核心方法与系统结构', citationIndexes: citationAt(1) },
-    { text: '实验结论与适用边界', citationIndexes: citationAt(2) },
-  ];
+  const semanticBranches = mindMap.children.filter((item) => item.desc);
+  const summary = semanticBranches.length
+    ? semanticBranches.slice(0, 3).map((item) => item.desc).join('；')
+    : '文章已完成证据切分；部分中文节点采用安全标签，原文内容和页码仍完整保留在引用中。';
+  const keyPoints = semanticBranches.length
+    ? semanticBranches.slice(0, 6).map((item) => ({ text: `${item.topic}：${item.desc}`, citationIndexes: item.citationIndexes }))
+    : [
+      { text: '研究问题与背景', citationIndexes: citationAt(0) },
+      { text: '核心方法与系统结构', citationIndexes: citationAt(1) },
+      { text: '实验结论与适用边界', citationIndexes: citationAt(2) },
+    ];
   const extraction = body.extraction && typeof body.extraction === 'object' ? body.extraction : {};
   const audit = citationAudit([
     { id: 'summary', section: 'conclusion', text: summary, citationIndexes: citationAt(0) },
@@ -3741,7 +3808,7 @@ function recoveredChineseArticleResponse(body, context) {
         fileName: fileName || undefined,
       },
       degraded: true,
-      warningCode: 'ARTICLE_CHINESE_LOCALIZATION_RECOVERED',
+      warningCode: String(warningCode || 'ARTICLE_CHINESE_LOCALIZATION_RECOVERED'),
     },
   };
 }
@@ -4749,11 +4816,17 @@ async function handleArticleTool(body) {
     },
   };
   } catch (error) {
-    if (stage === 'CHINESE_LOCALIZATION') {
-      console.warn('Article localization recovered at handler boundary', {
-        code: error && error.publicCode ? error.publicCode : 'LOCALIZATION_RUNTIME_ERROR',
+    if (stage === 'CHINESE_LOCALIZATION' || stage === 'ANALYSIS_MODEL') {
+      const modelRecovery = stage === 'ANALYSIS_MODEL';
+      console.warn('Article analysis recovered at handler boundary', {
+        stage,
+        code: error && error.publicCode ? error.publicCode : (modelRecovery ? 'MODEL_RUNTIME_ERROR' : 'LOCALIZATION_RUNTIME_ERROR'),
       });
-      return recoveredChineseArticleResponse(body, recoveryContext);
+      return recoveredChineseArticleResponse(
+        body,
+        recoveryContext,
+        modelRecovery ? 'ARTICLE_ANALYSIS_MODEL_RECOVERED' : 'ARTICLE_CHINESE_LOCALIZATION_RECOVERED',
+      );
     }
     if (error && error.publicCode) throw error;
     console.error('Article processing failed', { stage, message: error && error.message ? error.message : 'UNKNOWN' });
@@ -6770,6 +6843,7 @@ module.exports = {
   articleTranslationTargets,
   applyArticleFieldTranslations,
   applyDeterministicChineseArticleFallback,
+  deterministicArticleMindMap,
   recoveredChineseArticleResponse,
   buildAudioEvidenceClaims,
   groundedAudioSegments,
