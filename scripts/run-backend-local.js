@@ -171,6 +171,48 @@ async function testUnifiedUniverseAndMeetingGate() {
   console.log("Unified universe aggregate and meeting confirmation gate passed");
 }
 
+async function testArticleSourceAndAudioGate() {
+  const headers = {
+    Authorization: "Bearer local-bootstrap-token",
+    "Content-Type": "application/json",
+    "X-Workspace-Id": "ws_localbootstrapuser",
+  };
+  const ambiguous = await fetch(`${backendBase}/api/tools/article`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      url: "https://example.com/paper",
+      content: "同一次请求不应同时提交网页和正文。".repeat(8),
+      sourceType: "url",
+    }),
+  });
+  const ambiguousBody = await ambiguous.json();
+  if (ambiguous.status !== 400 || ambiguousBody.code !== "ARTICLE_SOURCE_AMBIGUOUS") {
+    throw new Error(`Article single-source gate failed (HTTP ${ambiguous.status}, ${ambiguousBody.code || "no code"})`);
+  }
+
+  const blocked = await fetch(`${backendBase}/api/tools/article`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ url: "http://127.0.0.1/private", sourceType: "url" }),
+  });
+  const blockedBody = await blocked.json();
+  if (blocked.status !== 400 || blockedBody.code !== "URL_NOT_ALLOWED") {
+    throw new Error(`Unreadable URL refusal failed (HTTP ${blocked.status}, ${blockedBody.code || "no code"})`);
+  }
+
+  const ungroundedAudio = await fetch(`${backendBase}/api/tools/audio-overview`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ title: "无引用文章", summary: "这段摘要没有可核验证据。", citations: [] }),
+  });
+  const ungroundedBody = await ungroundedAudio.json();
+  if (ungroundedAudio.status !== 422 || ungroundedBody.code !== "AUDIO_EVIDENCE_REQUIRED") {
+    throw new Error(`Audio evidence gate failed (HTTP ${ungroundedAudio.status}, ${ungroundedBody.code || "no code"})`);
+  }
+  console.log("Article single-source, unreadable URL, and audio evidence gates passed");
+}
+
 function runLocalSmoke() {
   return new Promise((resolve, reject) => {
     const smoke = spawn(process.execPath, [path.join(__dirname, "backend-smoke.js")], {
@@ -245,6 +287,7 @@ async function main() {
     await waitForHealthyBackend();
     console.log(`Local backend is healthy at ${backendBase}`);
     await testUnifiedUniverseAndMeetingGate();
+    await testArticleSourceAndAudioGate();
     exitCode = await runLocalSmoke();
   } catch (error) {
     console.error(`Local backend test failed: ${error.message}`);

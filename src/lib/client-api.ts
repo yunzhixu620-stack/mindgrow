@@ -822,6 +822,13 @@ function handleLocalTool(path: string, init?: RequestInit): Response {
       sourceType: body.sourceType || "text",
       fileName: body.fileName || "",
       mimeType: body.mimeType || "",
+      sourceStatus: {
+        readStatus: "ready",
+        acquisition: body.sourceType === "pdf" ? "local_pdf_extraction" : "pasted_text",
+        characterCount: content.length,
+        citationCount: citations.length,
+        fileName: body.fileName || undefined,
+      },
     });
   }
   if (toolPath.endsWith("/audio-overview")) {
@@ -831,7 +838,19 @@ function handleLocalTool(path: string, init?: RequestInit): Response {
       text: `${index === 0 ? "先看核心结论：" : "接着来看："}${String(item.text || item)}`,
       citationIndexes: Array.isArray(item.citationIndexes) ? item.citationIndexes : [],
     }));
-    return json({ title: String(body.title || "文章音频概览"), intro: "根据文章引用生成的双角色概览。", segments, synthesis: "browser" });
+    const scriptCharacters = segments.reduce((total, item) => total + item.speaker.length + item.text.length + 2, 0);
+    return json({
+      title: String(body.title || "文章音频概览"),
+      intro: "根据文章引用生成的双角色概览。",
+      segments,
+      synthesis: "browser",
+      grounding: {
+        status: "verified",
+        evidenceClaimCount: segments.length,
+        groundedSegmentCount: segments.length,
+        scriptCharacters,
+      },
+    });
   }
   return json({ error: "Tool not found" }, 404);
 }

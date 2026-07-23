@@ -21,7 +21,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.14.0';
+const API_VERSION = '10.15.0';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -2240,9 +2240,8 @@ function decodeHtmlEntities(value) {
     .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)));
 }
 
-function htmlToReadableText(html) {
+function htmlFragmentToReadableText(html) {
   return decodeHtmlEntities(String(html || '')
-    .replace(/<(script|style|noscript|svg)[^>]*>[\s\S]*?<\/\1>/gi, ' ')
     .replace(/<\/(p|div|article|section|h[1-6]|li|blockquote)>/gi, '\n')
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<[^>]+>/g, ' '))
@@ -2250,6 +2249,54 @@ function htmlToReadableText(html) {
     .replace(/\n\s*\n+/g, '\n')
     .trim()
     .slice(0, 120000);
+}
+
+function htmlToReadableText(html) {
+  const cleaned = String(html || '')
+    .replace(/<(script|style|noscript|svg|nav|header|footer|aside|form|dialog)[^>]*>[\s\S]*?<\/\1>/gi, ' ');
+  const candidates = [];
+  for (const tag of ['article', 'main']) {
+    const pattern = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'gi');
+    let match;
+    while ((match = pattern.exec(cleaned))) {
+      const text = htmlFragmentToReadableText(match[1]);
+      if (text.length >= 80) candidates.push(text);
+    }
+  }
+  if (candidates.length) return candidates.sort((left, right) => right.length - left.length)[0].slice(0, 120000);
+  return htmlFragmentToReadableText(cleaned);
+}
+
+function normalizeArticleSourceInput(body) {
+  const input = body && typeof body === 'object' ? body : {};
+  const content = String(input.content || '').trim();
+  const url = String(input.url || '').trim();
+  const declaredType = String(input.sourceType || '').trim().toLowerCase();
+  const fileName = String(input.fileName || '').trim().slice(0, 300);
+  const mimeType = String(input.mimeType || '').trim().slice(0, 100);
+  if (declaredType && !['url', 'pdf', 'text'].includes(declaredType)) {
+    throw requestError(400, 'UNSUPPORTED_ARTICLE_SOURCE', '仅支持公开网页、PDF 或粘贴正文');
+  }
+  if (url && content) {
+    throw requestError(400, 'ARTICLE_SOURCE_AMBIGUOUS', '一次只能解析一种来源，请在网页、PDF 或正文中选择一种');
+  }
+  if (url) {
+    if (declaredType && declaredType !== 'url') {
+      throw requestError(400, 'ARTICLE_SOURCE_TYPE_MISMATCH', '网址来源必须标记为 url');
+    }
+    return { content: '', url, sourceType: 'url', fileName: '', mimeType: '' };
+  }
+  if (!content) {
+    throw requestError(400, 'ARTICLE_SOURCE_REQUIRED', '请输入文章网址、选择 PDF，或粘贴正文');
+  }
+  if (declaredType === 'url') {
+    throw requestError(400, 'ARTICLE_SOURCE_TYPE_MISMATCH', '没有网址时不能把正文标记为 url');
+  }
+  const sourceType = declaredType || 'text';
+  if (sourceType === 'pdf' && !fileName.toLowerCase().endsWith('.pdf') && mimeType.toLowerCase() !== 'application/pdf') {
+    throw requestError(400, 'PDF_METADATA_REQUIRED', 'PDF 来源缺少可核验的文件名或文件类型');
+  }
+  return { content, url: '', sourceType, fileName, mimeType };
 }
 
 function normalizeCitationIndexes(value, allowedIndexes) {
@@ -3051,6 +3098,14 @@ function recoveredChineseArticleResponse(body, context) {
       sourceType,
       fileName,
       mimeType,
+      sourceStatus: {
+        readStatus: 'ready',
+        acquisition: sourceType === 'url' ? 'remote_fetch' : (sourceType === 'pdf' ? 'local_pdf_extraction' : 'pasted_text'),
+        characterCount: content.length,
+        citationCount: citations.length,
+        finalUrl: sourceUrl || undefined,
+        fileName: fileName || undefined,
+      },
       degraded: true,
       warningCode: 'ARTICLE_CHINESE_LOCALIZATION_RECOVERED',
     },
@@ -3670,19 +3725,25 @@ async function handleArticleTool(body) {
     citations: [],
   };
   try {
-  let content = String(body.content || '').trim();
+  const sourceInput = normalizeArticleSourceInput(body);
+  let content = sourceInput.content;
   let sourceUrl = '';
-  let sourceType = ['url', 'pdf', 'text'].includes(body.sourceType) ? body.sourceType : (body.url ? 'url' : 'text');
-  const fileName = String(body.fileName || '').trim().slice(0, 300);
-  const mimeType = String(body.mimeType || '').trim().slice(0, 100);
-  if (!content && body.url) {
+  let sourceType = sourceInput.sourceType;
+  const fileName = sourceInput.fileName;
+  const mimeType = sourceInput.mimeType;
+  if (sourceInput.url) {
     stage = 'SOURCE_FETCH';
-    const fetched = await fetchArticleText(String(body.url), 0);
+    const fetched = await fetchArticleText(sourceInput.url, 0);
     content = htmlToReadableText(fetched.html);
     sourceUrl = fetched.finalUrl;
     sourceType = 'url';
   }
-  if (content.length < 50) return { status: 400, data: { error: '请粘贴至少 50 个字的文章，或输入可公开访问的网址', code: 'INVALID_INPUT' } };
+  if (content.length < 50) {
+    if (sourceType === 'url') {
+      throw requestError(422, 'ARTICLE_CONTENT_TOO_SHORT', '链接可以打开，但没有提取到足够的正文内容，因此不会生成或猜测答案');
+    }
+    return { status: 400, data: { error: sourceType === 'pdf' ? 'PDF 可提取正文不足 50 个字；扫描版请先完成 OCR' : '请粘贴至少 50 个字的文章正文', code: 'ARTICLE_CONTENT_TOO_SHORT' } };
+  }
   if (content.length > 120000) content = content.slice(0, 120000);
   recoveryContext.content = content;
   recoveryContext.sourceUrl = sourceUrl;
@@ -3798,6 +3859,14 @@ async function handleArticleTool(body) {
       sourceType,
       fileName,
       mimeType,
+      sourceStatus: {
+        readStatus: 'ready',
+        acquisition: sourceType === 'url' ? 'remote_fetch' : (sourceType === 'pdf' ? 'local_pdf_extraction' : 'pasted_text'),
+        characterCount: content.length,
+        citationCount: citations.length,
+        finalUrl: sourceUrl || undefined,
+        fileName: fileName || undefined,
+      },
     },
   };
   } catch (error) {
@@ -3821,7 +3890,7 @@ async function synthesizeOverviewAudio(text) {
     }, {
       model: 'cosyvoice-v3-flash',
       input: {
-        text: String(text).slice(0, 3200),
+        text: String(text),
         voice: 'longanyang',
         format: 'mp3',
         sample_rate: 24000,
@@ -3841,49 +3910,110 @@ async function synthesizeOverviewAudio(text) {
   }
 }
 
+function buildAudioEvidenceClaims(body, citations) {
+  const allowedIndexes = new Set(citations.map((item) => item.index));
+  const claims = [];
+  const push = (id, text, indexes) => {
+    const normalizedText = String(text || '').trim().slice(0, 1000);
+    const citationIndexes = normalizeCitationIndexes(indexes, allowedIndexes);
+    if (!normalizedText || !citationIndexes.length) return;
+    claims.push({ id, text: normalizedText, citationIndexes });
+  };
+  push('S1', body.summary, body.summaryCitationIndexes);
+  (Array.isArray(body.keyPoints) ? body.keyPoints : []).slice(0, 20).forEach((item, index) => {
+    push(`K${index + 1}`, item && item.text, item && item.citationIndexes);
+  });
+  (Array.isArray(body.arguments) ? body.arguments : []).slice(0, 15).forEach((item, index) => {
+    push(`A${index + 1}`, `${String((item && item.claim) || '').trim()}${item && item.evidence ? `；依据：${String(item.evidence).trim()}` : ''}`, item && item.citationIndexes);
+  });
+  return claims;
+}
+
+function groundedAudioSegments(value, claims) {
+  const claimById = new Map(claims.map((item) => [item.id, item]));
+  return (Array.isArray(value) ? value : []).slice(0, 12).map((item, index) => {
+    const claimIds = [...new Set((Array.isArray(item && item.claimIds) ? item.claimIds : [])
+      .map((id) => String(id || '').trim()).filter((id) => claimById.has(id)))].slice(0, 3);
+    const citationIndexes = [...new Set(claimIds.reduce((indexes, id) => indexes.concat(claimById.get(id).citationIndexes), []))];
+    const text = String((item && item.text) || '').trim().slice(0, 600);
+    const supportingText = claimIds.map((id) => claimById.get(id).text).join(' ');
+    return {
+      speaker: item && item.speaker === '分析师' ? '分析师' : (index % 2 === 0 ? '主持人' : '分析师'),
+      text,
+      claimIds,
+      citationIndexes,
+      sourceSimilarity: contentSimilarity(text, supportingText),
+    };
+  }).filter((item) => item.text && item.claimIds.length && item.citationIndexes.length && item.sourceSimilarity >= 0.06)
+    .map(({ sourceSimilarity: _sourceSimilarity, ...item }) => item);
+}
+
+function fallbackAudioSegments(claims) {
+  const selected = claims.slice(0, 8);
+  if (!selected.length) return [];
+  if (selected.length === 1) {
+    const claim = selected[0];
+    return [
+      { speaker: '主持人', text: '先从这篇文章有直接证据支持的核心结论开始。', claimIds: [claim.id], citationIndexes: claim.citationIndexes },
+      { speaker: '分析师', text: claim.text, claimIds: [claim.id], citationIndexes: claim.citationIndexes },
+    ];
+  }
+  return selected.map((claim, index) => ({
+    speaker: index % 2 === 0 ? '主持人' : '分析师',
+    text: `${index === 0 ? '先看核心结论：' : '接着来看：'}${claim.text}`,
+    claimIds: [claim.id],
+    citationIndexes: claim.citationIndexes,
+  }));
+}
+
+function fitAudioSegments(value, maximumCharacters) {
+  const maximum = Math.max(800, Number(maximumCharacters || 3100));
+  const result = [];
+  let used = 0;
+  for (const item of Array.isArray(value) ? value : []) {
+    const prefix = `${item.speaker}：`;
+    const available = maximum - used - prefix.length - 1;
+    if (available < 80) break;
+    const text = String(item.text || '').trim().slice(0, Math.min(600, available));
+    if (!text) continue;
+    result.push({ ...item, text });
+    used += prefix.length + text.length + 1;
+  }
+  return result;
+}
+
 async function handleAudioOverview(body) {
   const title = String(body.title || '文章音频概览').trim().slice(0, 200);
-  const summary = String(body.summary || '').trim().slice(0, 3000);
   const citations = (Array.isArray(body.citations) ? body.citations : []).slice(0, 40).map((item) => ({
-    index: Number.parseInt(item && item.index, 10), quote: String((item && item.quote) || '').slice(0, 260), locator: String((item && item.locator) || '').slice(0, 100),
-  })).filter((item) => Number.isFinite(item.index) && item.index > 0 && item.quote);
-  const allowedIndexes = new Set(citations.map((item) => item.index));
+    index: Number.parseInt(item && item.index, 10),
+    quote: String((item && item.quote) || '').slice(0, 800),
+    locator: String((item && item.locator) || '').slice(0, 100),
+    sourceType: String((item && item.sourceType) || '').toLowerCase(),
+  })).filter((item) => Number.isFinite(item.index) && item.index > 0 && item.quote && item.locator && ['url', 'pdf', 'text'].includes(item.sourceType));
+  const claims = buildAudioEvidenceClaims(body, citations);
+  if (!claims.length) {
+    throw requestError(422, 'AUDIO_EVIDENCE_REQUIRED', '关键结论没有可核验引用，因此不会生成音频概览');
+  }
   const source = {
     title,
-    summary,
-    keyPoints: Array.isArray(body.keyPoints) ? body.keyPoints.slice(0, 20) : [],
-    arguments: Array.isArray(body.arguments) ? body.arguments.slice(0, 15) : [],
+    claims,
     citations,
   };
-  if (!summary && source.keyPoints.length === 0) return { status: 400, data: { error: '请先解析文章再生成音频概览', code: 'INVALID_INPUT' } };
 
   let parsed = {};
   try {
     const raw = await dashscopeChat([
-      { role: 'system', content: '你是 NotebookLM 风格的中文音频概览编导。只返回 JSON：{"title":"","intro":"","segments":[{"speaker":"主持人|分析师","text":"自然口语","citationIndexes":[1]}]}。生成 6-12 段双人对话，每段 1-3 句；只讨论给定材料，关键结论必须带有效引用，不得编造。' },
+      { role: 'system', content: '你是 NotebookLM 风格的中文音频概览编导。只返回 JSON：{"title":"","intro":"","segments":[{"speaker":"主持人|分析师","text":"自然口语","claimIds":["K1"]}]}。生成 6-10 段双人对话，每段 1-2 句、尽量不超过 180 字；每段必须填写直接支持该段的 claimIds，只能使用输入给出的 claim id。只讨论给定材料，不得补充外部事实；没有 claim id 支持的段落会被删除。' },
       { role: 'user', content: JSON.stringify(source) },
     ], 'qwen-plus', 2600, 0.3);
     parsed = JSON.parse(stripJsonFence(raw));
   } catch (error) {
     console.warn('Audio script generation fallback', { message: error.message });
   }
-  let segments = (Array.isArray(parsed.segments) ? parsed.segments : []).slice(0, 14).map((item, index) => ({
-    speaker: item && item.speaker === '分析师' ? '分析师' : (index % 2 === 0 ? '主持人' : '分析师'),
-    text: String((item && item.text) || '').trim().slice(0, 800),
-    citationIndexes: normalizeCitationIndexes(item && item.citationIndexes, allowedIndexes),
-  })).filter((item) => item.text);
-  if (segments.length < 2) {
-    const points = Array.isArray(source.keyPoints) ? source.keyPoints : [];
-    segments = points.slice(0, 8).map((item, index) => ({
-      speaker: index % 2 === 0 ? '主持人' : '分析师',
-      text: `${index === 0 ? '先看核心结论：' : '接着来看：'}${String((item && item.text) || item || summary).slice(0, 500)}`,
-      citationIndexes: normalizeCitationIndexes(item && item.citationIndexes, allowedIndexes),
-    }));
-  }
-  if (segments.length < 2) segments = [
-    { speaker: '主持人', text: `今天我们概览《${title}》的核心内容。`, citationIndexes: [] },
-    { speaker: '分析师', text: summary.slice(0, 800), citationIndexes: citations.slice(0, 2).map((item) => item.index) },
-  ];
+  let segments = groundedAudioSegments(parsed.segments, claims);
+  if (segments.length < 2) segments = fallbackAudioSegments(claims);
+  segments = fitAudioSegments(segments, 3100);
+  if (segments.length < 2) segments = fitAudioSegments(fallbackAudioSegments(claims), 3100);
   const scriptText = segments.map((item) => `${item.speaker}：${item.text}`).join('\n');
   const audio = await synthesizeOverviewAudio(scriptText);
   return {
@@ -3895,6 +4025,12 @@ async function handleAudioOverview(body) {
       audioUrl: audio ? audio.url : '',
       audioExpiresAt: audio ? audio.expiresAt : null,
       synthesis: audio ? 'cosyvoice' : 'browser',
+      grounding: {
+        status: 'verified',
+        evidenceClaimCount: claims.length,
+        groundedSegmentCount: segments.length,
+        scriptCharacters: scriptText.length,
+      },
     },
   };
 }
@@ -5419,6 +5555,8 @@ module.exports = {
   normalizeDocumentLayout,
   sourcePages,
   standaloneHttpUrl,
+  htmlToReadableText,
+  normalizeArticleSourceInput,
   safeBase64Url,
   handleChat,
   assertPublicUrl,
@@ -5435,6 +5573,10 @@ module.exports = {
   applyArticleFieldTranslations,
   applyDeterministicChineseArticleFallback,
   recoveredChineseArticleResponse,
+  buildAudioEvidenceClaims,
+  groundedAudioSegments,
+  fallbackAudioSegments,
+  fitAudioSegments,
   mergeArticleChineseTranslation,
   needsConversationalContext,
   isTableQuestion,
