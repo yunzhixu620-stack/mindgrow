@@ -29,7 +29,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.21.11';
+const API_VERSION = '10.21.12';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -1973,6 +1973,75 @@ function ensureShortTermFiveDirections(mindMap, input) {
   return { ...source, children: children.slice(0, 5) };
 }
 
+function compactKnowledgeDisplayText(value, maximum) {
+  const limit = Math.max(20, Number(maximum) || 80);
+  const normalized = normalizeSpaces(String(value || '')
+    .replace(/^#{1,6}\s*/, '')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/^\s*(?:[-*+]|\d+[.)])\s+/, ''));
+  if (normalized.length <= limit) return normalized;
+  const clauses = normalized.split(/(?<=[。！？；;])\s*/).filter(Boolean);
+  let output = '';
+  for (const clause of clauses) {
+    if ((output + clause).length > limit) break;
+    output += clause;
+  }
+  if (output.length >= Math.min(24, Math.floor(limit * 0.45))) return output;
+  const commaClauses = normalized.split(/(?<=[，,])\s*/).filter(Boolean);
+  output = '';
+  for (const clause of commaClauses) {
+    if ((output + clause).length > limit) break;
+    output += clause;
+  }
+  if (output.length >= Math.min(24, Math.floor(limit * 0.45))) return output;
+  return `${normalized.slice(0, Math.max(1, limit - 1)).trimEnd()}…`;
+}
+
+function incompleteKnowledgeDisplayText(value) {
+  const text = normalizeSpaces(value);
+  if (!text) return true;
+  if (text.length < 80 && /(?:[/:：，,、\-–—]|(?:PDF|URL)\/)$/i.test(text)) return true;
+  const opening = (text.match(/[（(【[]/g) || []).length;
+  const closing = (text.match(/[）)】\]]/g) || []).length;
+  return opening > closing && text.length < 80;
+}
+
+function normalizeKnowledgeMindMapDisplay(mindMap) {
+  const input = mindMap && typeof mindMap === 'object' ? mindMap : {};
+  const children = (Array.isArray(input.children) ? input.children : []).map((child) => {
+    const topic = compactKnowledgeDisplayText(child && child.topic, 24);
+    const desc = compactKnowledgeDisplayText(child && child.desc, 90);
+    const sourceItems = Array.isArray(child && child.items) ? child.items : [];
+    const sourceIndexes = Array.isArray(child && child.itemCitationIndexes) ? child.itemCitationIndexes : [];
+    const items = [];
+    const itemCitationIndexes = [];
+    const seen = new Set();
+    sourceItems.forEach((item, index) => {
+      const cleaned = compactKnowledgeDisplayText(item, 96);
+      const key = cleaned.toLocaleLowerCase().replace(/[\s，,。；;：:、“”"'‘’()[\]（）【】]/g, '');
+      if (!cleaned || incompleteKnowledgeDisplayText(cleaned) || seen.has(key)) return;
+      seen.add(key);
+      items.push(cleaned);
+      itemCitationIndexes.push(sourceIndexes[index] || []);
+    });
+    return {
+      ...child,
+      topic,
+      desc,
+      items,
+      itemCitationIndexes,
+    };
+  }).filter((child) => child.topic && !incompleteKnowledgeDisplayText(child.topic));
+  return {
+    ...input,
+    root: compactKnowledgeDisplayText(input.root, 48),
+    rootDesc: compactKnowledgeDisplayText(input.rootDesc, 96),
+    children,
+  };
+}
+
 function applyKnowledgeNodeBudget(mindMap, budget) {
   const input = mindMap && typeof mindMap === 'object' ? mindMap : {};
   const children = (Array.isArray(input.children) ? input.children : []).slice(0, Math.min(6, budget.maximum - 1))
@@ -2135,7 +2204,7 @@ async function handleChat(body, context) {
     maximumFactLength: nodeBudget.kind === 'long_text' ? 180 : 140,
     rejectMarkdownFacts: true,
   });
-  mindMap = structureCoverage.mindMap;
+  mindMap = normalizeKnowledgeMindMapDisplay(structureCoverage.mindMap);
   mindMap = ensureShortTermFiveDirections(mindMap, structureInput);
   let supplementPlan = null;
   if (supplementMode) {
@@ -3098,7 +3167,7 @@ function ensureMindMapSourceCoverage(mindMap, sourceText, citations, allowedInde
   const appendableFacts = missingFacts.filter((fact) => {
     const text = normalizeSpaces(fact);
     if (!text || text.length > maximumFactLength) return false;
-    if (rejectMarkdownFacts && (/[|`]/.test(text) || /^#{1,6}\s/.test(text))) return false;
+    if (rejectMarkdownFacts && (/[|`]/.test(text) || /\*\*|__/.test(text) || /^#{1,6}\s/.test(text))) return false;
     return true;
   }).slice(0, maxAppendedFacts);
   if (appendableFacts.length && appendFacts) {
@@ -7219,6 +7288,7 @@ module.exports = {
   mindMapNodeCount,
   isSingleKnowledgeTerm,
   ensureShortTermFiveDirections,
+  normalizeKnowledgeMindMapDisplay,
   applyKnowledgeNodeBudget,
   canonicalizeSupplementMindMap,
   bestCitationIndexes,

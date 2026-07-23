@@ -36,6 +36,17 @@ const proxy = require("../../../fc-proxy/index.js") as {
     root: string;
     children: Array<{ topic: string; desc?: string; items?: string[] }>;
   };
+  normalizeKnowledgeMindMapDisplay: (
+    mindMap: {
+      root: string;
+      rootDesc?: string;
+      children: Array<{ topic: string; desc?: string; items?: string[]; itemCitationIndexes?: number[][] }>;
+    },
+  ) => {
+    root: string;
+    rootDesc: string;
+    children: Array<{ topic: string; desc: string; items: string[]; itemCitationIndexes: number[][] }>;
+  };
   ensureMindMapSourceCoverage: (
     mindMap: unknown,
     sourceText: string,
@@ -141,6 +152,31 @@ describe("knowledge quality contracts", () => {
     expect(items.some((item) => item.includes("未明确具体机制"))).toBe(false);
     expect(items.some((item) => item.includes("|"))).toBe(false);
     expect(result.audit.appendedFacts).toBeLessThanOrEqual(2);
+  });
+
+  it("keeps long-fragment display nodes semantic, compact, and complete", () => {
+    const result = proxy.normalizeKnowledgeMindMapDisplay({
+      root: "# MindGrow V8 SEO 内容建设与国际化增长策略",
+      rootDesc: "这是一个超过显示宽度的根节点说明，需要保留核心含义但不能让卡片变成极长的横条。" + "补充".repeat(40),
+      children: [{
+        topic: "## 数据与实验",
+        desc: "用于解释采用了哪些数据、如何设置实验、比较哪些基线以及使用什么指标。" + "说明".repeat(30),
+        items: [
+          "2. **输入词**：AI PDF summarizer with citations、网页文章解析、URL to mind map、会议转知识库、扫描 PDF OCR。",
+          "SEV2：PDF/",
+          "实验在 MovieLens-1M 数据集上比较传统 RAG 和协同过滤基线，并使用 Recall@20 与 NDCG@20 评估推荐效果。" + "结果".repeat(30),
+        ],
+        itemCitationIndexes: [[1], [2], [3]],
+      }],
+    });
+
+    expect(result.root).not.toContain("#");
+    expect(result.children[0].topic).toBe("数据与实验");
+    expect(result.children[0].desc.length).toBeLessThanOrEqual(90);
+    expect(result.children[0].items).toHaveLength(2);
+    expect(result.children[0].items.join(" ")).not.toMatch(/\*\*|SEV2：PDF\/$/);
+    expect(result.children[0].items.every((item) => item.length <= 96)).toBe(true);
+    expect(result.children[0].itemCitationIndexes).toEqual([[1], [3]]);
   });
 
   it("enforces the 4–8, 10–20 and 12–20 node budgets", () => {
