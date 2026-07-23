@@ -135,6 +135,7 @@ describe("article core graph and semantic outline quality", () => {
       "来源：https://arxiv.org/abs/2501.00001",
       "发布日期：2025/01/04",
       "摘要：Recommender systems have become increasingly complex.",
+      "Knowledge Graph Retrieval-Augmented Recommender Systems for Large-Scale Personalized Recommendation with External Evidence",
       "本文使用 MovieLens-1M 数据集，将 K-RagRec 与传统 RAG 和协同过滤基线进行比较。",
       "实验采用 Recall@20 和 NDCG@20 评估推荐效果，并报告消融实验。",
     ].join("\n");
@@ -145,15 +146,17 @@ describe("article core graph and semantic outline quality", () => {
       children: [
         {
           topic: "数据与实验",
-          desc: "本文使用 MovieLens-1M 数据集，将 K-RagRec 与传统 RAG 和协同过滤基线进行比较。",
+          desc: "进行了大量实验验证 K-RagRec 的有效性。",
           items: [
             "标题：Knowledge Graph Retrieval-Augmented Recommender Systems",
             "来源：https://arxiv.org/abs/2501.00001",
             "发布日期：2025/01/04",
             "摘要：Recommender systems have become increasingly complex.",
+            "Knowledge Graph Retrieval-Augmented Recommender Systems for Large-Scale Personalized Recommendation with External Evidence",
+            "本文使用 MovieLens-1M 数据集，将 K-RagRec 与传统 RAG 和协同过滤基线进行比较。",
             "实验采用 Recall@20 和 NDCG@20 评估推荐效果，并报告消融实验。",
           ],
-          itemCitationIndexes: [[1], [1], [1], [1], [1]],
+          itemCitationIndexes: [[1], [1], [1], [1], [1], [1], [1]],
         },
         { topic: "局限与启示", desc: "", items: [], itemCitationIndexes: [] },
       ],
@@ -161,8 +164,11 @@ describe("article core graph and semantic outline quality", () => {
 
     expect(result.mindMap.children.map((child) => child.topic)).toEqual(["数据与实验"]);
     expect(result.mindMap.children[0].items).toEqual([
-      "实验采用 Recall@20 和 NDCG@20 评估推荐效果，并报告消融实验。",
+      "数据：本文使用 MovieLens-1M 数据集，将 K-RagRec 与传统 RAG 和协同过滤基线进行比较。",
+      "消融设计：实验采用 Recall@20 和 NDCG@20 评估推荐效果，并报告消融实验。",
     ]);
+    expect(result.mindMap.children[0].desc).toContain("MovieLens-1M");
+    expect(result.mindMap.children[0].desc).not.toContain("大量实验");
     expect(proxy.sourceCriticalFacts(source, 20).join(" ")).not.toMatch(/标题|arxiv|发布日期|摘要/);
   });
 

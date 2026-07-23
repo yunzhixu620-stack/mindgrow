@@ -22,7 +22,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.21.1';
+const API_VERSION = '10.21.2';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -2668,6 +2668,11 @@ function isDocumentMetadataFact(value) {
     return true;
   }
   if (/^https?:\/\/\S+$/i.test(text) || /(?:^|\s)https?:\/\/\S+/i.test(text)) return true;
+  if (/^(?:19|20)\d{2}[-/.年](?:0?[1-9]|1[0-2])[-/.月](?:0?[1-9]|[12]\d|3[01])日?$/i.test(text)) return true;
+  if (/(?:arxiv\.org|doi\.org|openreview\.net|aclanthology\.org)\//i.test(text)) return true;
+  const latinWords = text.match(/[A-Za-z][A-Za-z0-9'’-]*/g) || [];
+  const chineseChars = text.match(/[\u3400-\u9fff]/g) || [];
+  if (latinWords.length >= 12 && chineseChars.length < 4) return true;
   return false;
 }
 
@@ -2701,6 +2706,54 @@ function mindMapItemMatchesBranch(topic, value) {
     return /(问题|目标|任务|挑战|研究|探索|验证|是否|如何|为什么|problem|question|objective|task|challenge|study|investigat|whether|how|why)/i.test(text);
   }
   return true;
+}
+
+function mindMapItemDirection(topic, value) {
+  const text = normalizeSpaces(value);
+  const kind = mindMapBranchKind(topic);
+  if (kind === 'experiment') {
+    if (/(消融|ablation)/i.test(text)) return '消融设计';
+    if (/(数据集|语料|样本|训练集|测试集|验证集|dataset|corpus|sample|train(?:ing)? set|test set|validation set)/i.test(text)) return '数据';
+    if (/(基线|对比方法|相比|比较|baseline|compare|versus|\bvs\.?\b)/i.test(text)) return '对比方法';
+    if (/(指标|准确率|召回|精度|F1|AUC|NDCG|MRR|BLEU|ROUGE|延迟|吞吐|metric|accuracy|recall|precision|latency|throughput)/i.test(text)) return '评估指标';
+    if (/(重复|随机种子|参数|批次|轮次|学习率|硬件|GPU|实验设置|experiment setup|seed|epoch|batch|learning rate)/i.test(text)) return '实验设置';
+    return '实验设计';
+  }
+  if (kind === 'limitation') {
+    if (/(未来|后续|改进|future|improv)/i.test(text)) return '后续方向';
+    if (/(启示|建议|implication|suggest)/i.test(text)) return '启示';
+    if (/(边界|适用|仅限|boundary|applicable)/i.test(text)) return '适用边界';
+    return '具体局限';
+  }
+  if (kind === 'method') {
+    if (/(流程|阶段|先.+再|pipeline|stage)/i.test(text)) return '处理流程';
+    if (/(模块|组件|编码器|解码器|module|component|encoder|decoder)/i.test(text)) return '关键组件';
+    return '核心机制';
+  }
+  if (kind === 'result') return '主要结果';
+  if (kind === 'question') return '核心问题';
+  return '';
+}
+
+function formatMindMapItem(topic, value) {
+  const text = normalizeSpaces(value);
+  const direction = mindMapItemDirection(topic, text);
+  if (!direction || /^[^：:]{1,12}[：:]/.test(text)) return text;
+  return `${direction}：${text}`;
+}
+
+function mindMapDescriptionIsConcrete(topic, value) {
+  const text = normalizeSpaces(value);
+  if (!mindMapItemMatchesBranch(topic, text) || !text) return false;
+  const kind = mindMapBranchKind(topic);
+  if (kind === 'experiment') {
+    return /(数据集|语料|样本|训练集|测试集|验证集|基线|对比方法|指标|准确率|召回|精度|消融|F1|AUC|NDCG|MRR|BLEU|ROUGE|延迟|吞吐|重复|随机种子|GPU|dataset|corpus|sample|baseline|metric|accuracy|recall|precision|ablation|latency|throughput)/i.test(text);
+  }
+  if (kind === 'limitation') {
+    if (/^(?:本文|该研究|该方法)?(?:仍|也)?(?:存在|具有)?(?:一定|若干|一些)?(?:局限|限制|不足)(?:与启示)?[。.]?$/i.test(text)) return false;
+    return /(因为|由于|导致|依赖|缺少|无法|不能|尚未|仅|只适用|误差|失败|风险|后续|未来|改进|because|depend|lack|cannot|only|error|failure|risk|future|improv)/i.test(text);
+  }
+  return text.length >= 10;
 }
 
 function sourceCriticalFacts(value, limit) {
@@ -2775,18 +2828,21 @@ function ensureMindMapSourceCoverage(mindMap, sourceText, citations, allowedInde
     (Array.isArray(child && child.items) ? child.items : []).slice(0, 20).forEach((item, index) => {
       const text = normalizeSpaces(item).slice(0, 1000);
       if (!mindMapItemMatchesBranch(child && child.topic, text) || !structureItemGrounded(text, sourceText)) return;
-      items.push(text);
+      items.push(formatMindMapItem(child && child.topic, text));
       itemCitationIndexes.push(normalizeCitationIndexes(
         child && child.itemCitationIndexes && child.itemCitationIndexes[index], allowedIndexes,
       ));
     });
+    const rawDescription = normalizeSpaces((child && child.desc) || '').slice(0, 1000);
+    const verifiedDescription = mindMapDescriptionIsConcrete(child && child.topic, rawDescription)
+      && structureItemGrounded(rawDescription, sourceText)
+      ? rawDescription
+      : '';
+    const semanticDescription = verifiedDescription || items.slice(0, 2).join('；');
     return {
       ...child,
       topic: normalizeSpaces((child && child.topic) || '要点').slice(0, 200),
-      desc: mindMapItemMatchesBranch(child && child.topic, (child && child.desc) || '')
-        && structureItemGrounded((child && child.desc) || '', sourceText)
-        ? normalizeSpaces((child && child.desc) || '').slice(0, 1000)
-        : '',
+      desc: semanticDescription.slice(0, 1000),
       items,
       itemCitationIndexes,
     };
@@ -4709,7 +4765,7 @@ async function handleArticleTool(body) {
   const raw = await dashscopeChat([
     {
       role: 'system',
-      content: `你是忠于原文的论文与文章解析助手。只返回严格 JSON：{"title":"","summary":"","summaryCitationIndexes":[1],"keyPoints":[{"text":"","citationIndexes":[1]}],"arguments":[{"claim":"","evidence":"","citationIndexes":[1]}],"questions":[""],"mindMap":{"root":"","rootDesc":"","rootCitationIndexes":[1],"children":[{"topic":"","desc":"","citationIndexes":[1],"items":[""],"itemCitationIndexes":[[1]]}]},"entityGraph":{"entities":[],"relations":[]}}。论文的 mindMap.children 优先使用“研究问题、方法/架构、数据与实验、结果、局限与启示”等 3-6 个语义主干；每个主干 desc 必须用一句话直接解释该主干在本文中的具体内容，不能只重复栏目名。每个主干的 items 必须与父节点语义一致：“数据与实验”只放数据集、样本、实验设置、基线、指标、消融与实验结果；“局限与启示”只放原文明示的具体局限、适用边界、失败情形、后续方向或启示；如果原文没有具体内容就不要生成该主干。标题、URL、来源、作者、发布日期、关键词和英文摘要属于文档元数据，绝对不能成为导图节点或 items。具体模型、指标、对比和证据放入 items，不得把大量细节平铺为一级节点，也不得因聚合而删减原文信息。所有标题、摘要、要点、论证、问题和导图节点必须使用简体中文；英文原文要准确翻译成中文，专业术语或缩写可在中文后用括号保留英文。输入由带页码/段落定位的 C 编号证据块组成。每个结论、数字、表格结论和导图分支必须引用直接支持它的 C 编号；只能引用给定编号；不得自行填写 quote 或页码；引用原文保持原始语言，不得伪造中文原文；证据不足就省略结论，不得补充原文没有的事实。${ENTITY_GRAPH_SCHEMA_PROMPT}${ARTICLE_CORE_ENTITY_GRAPH_PROMPT}`,
+      content: `你是忠于原文的论文与文章解析助手。只返回严格 JSON：{"title":"","summary":"","summaryCitationIndexes":[1],"keyPoints":[{"text":"","citationIndexes":[1]}],"arguments":[{"claim":"","evidence":"","citationIndexes":[1]}],"questions":[""],"mindMap":{"root":"","rootDesc":"","rootCitationIndexes":[1],"children":[{"topic":"","desc":"","citationIndexes":[1],"items":[""],"itemCitationIndexes":[[1]]}]},"entityGraph":{"entities":[],"relations":[]}}。论文的 mindMap.children 优先使用“研究问题、方法/架构、数据与实验、结果、局限与启示”等 3-6 个语义主干；每个主干 desc 必须用一句话直接解释该主干在本文中的具体内容，不能只重复栏目名。每个主干的 items 必须回答父节点下不同的内容方向，不得只是重复父节点或罗列文档信息：“数据与实验”应在证据存在时分别说明“数据是什么”“与哪些基线比较”“实验如何进行”“使用什么指标”“消融验证了什么”，每项写成可独立理解的中文结论；“局限与启示”应分别说明“具体局限是什么”“在什么条件下发生”“影响什么”“如何改进”。如果原文没有某一方向的直接证据就省略该项，不得用“进行了大量实验”“证明有效”“存在一定局限”等空泛句占位。标题、URL、来源、作者、发布日期、关键词和英文摘要属于文档元数据，绝对不能成为导图节点或 items；超过 12 个英文单词的原文标题或摘要也不得原样进入导图。具体模型、指标、对比和证据放入 items，不得把大量细节平铺为一级节点，也不得因聚合而删减原文信息。所有标题、摘要、要点、论证、问题和导图节点必须使用简体中文；英文原文要准确翻译成中文，专业术语或缩写可在中文后用括号保留英文。输入由带页码/段落定位的 C 编号证据块组成。每个结论、数字、表格结论和导图分支必须引用直接支持它的 C 编号；只能引用给定编号；不得自行填写 quote 或页码；引用原文保持原始语言，不得伪造中文原文；证据不足就省略结论，不得补充原文没有的事实。${ENTITY_GRAPH_SCHEMA_PROMPT}${ARTICLE_CORE_ENTITY_GRAPH_PROMPT}`,
     },
     { role: 'user', content: `以下内容只包含文章正文证据；来源 URL、文档标题和文件名属于元数据，未放入证据区，禁止把元数据当成结论：\n${evidencePrompt(citations)}` },
   ], 'qwen-plus', 3600, 0.1);
