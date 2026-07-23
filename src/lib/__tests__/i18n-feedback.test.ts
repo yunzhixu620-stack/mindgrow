@@ -13,6 +13,8 @@ describe("S2.17 interface locale", () => {
   it("renders parameterized Chinese and English shell copy", () => {
     expect(translate("zh-CN", "header.nodes", { count: 12 })).toBe("12 节点");
     expect(translate("en", "header.nodes", { count: 12 })).toBe("12 nodes");
+    expect(translate("zh-CN", "auth.resendCooldown", { seconds: 42 })).toBe("42 秒后可再次发送");
+    expect(translate("en", "auth.resendCooldown", { seconds: 42 })).toBe("Resend in 42s");
     expect(translate("en", "feedback.fixedIn", { version: "10.17.0" })).toBe("Fixed in 10.17.0");
   });
 });

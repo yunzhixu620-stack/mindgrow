@@ -1,6 +1,6 @@
 import type { AppLocale } from "@/lib/i18n";
 
-export const FEEDBACK_CLIENT_VERSION = "10.17.0";
+export const FEEDBACK_CLIENT_VERSION = "10.18.0";
 export const FEEDBACK_CATEGORIES = ["retrieval", "answer", "citation", "performance", "ux", "account", "feature", "community", "other"] as const;
 export const FEEDBACK_SEVERITIES = ["low", "normal", "high", "blocker"] as const;
 export const FEEDBACK_STATUSES = ["new", "triaged", "planned", "resolved", "closed"] as const;

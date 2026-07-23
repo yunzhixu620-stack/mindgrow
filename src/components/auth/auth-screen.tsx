@@ -1,9 +1,16 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
 import { useLocale } from "@/components/i18n/locale-provider";
 import { LocaleSwitcher } from "@/components/i18n/locale-switcher";
+import {
+  clearAuthEmailCooldown,
+  getAuthEmailCooldownSeconds,
+  isAuthEmailRateLimitError,
+  readAuthEmailCooldown,
+  startAuthEmailCooldown,
+} from "@/lib/auth-email";
 
 export function AuthScreen() {
   const { signIn, signUp, resendConfirmation, message } = useAuth();
@@ -14,6 +21,33 @@ export function AuthScreen() {
   const [busy, setBusy] = useState(false);
   const [resending, setResending] = useState(false);
   const [error, setError] = useState("");
+  const [cooldownUntil, setCooldownUntil] = useState(0);
+  const [clock, setClock] = useState(() => Date.now());
+  const cooldownSeconds = getAuthEmailCooldownSeconds(cooldownUntil, clock);
+
+  useEffect(() => {
+    const now = Date.now();
+    setClock(now);
+    setCooldownUntil(readAuthEmailCooldown(window.localStorage, now));
+  }, []);
+
+  useEffect(() => {
+    if (!cooldownUntil) return;
+    const remaining = cooldownUntil - Date.now();
+    if (remaining <= 0) {
+      clearAuthEmailCooldown(window.localStorage);
+      setCooldownUntil(0);
+      return;
+    }
+    const timer = window.setTimeout(() => setClock(Date.now()), Math.min(1_000, remaining));
+    return () => window.clearTimeout(timer);
+  }, [clock, cooldownUntil]);
+
+  function beginEmailCooldown() {
+    const now = Date.now();
+    setClock(now);
+    setCooldownUntil(startAuthEmailCooldown(window.localStorage, now));
+  }
   const localizedMessage = message && t("auth.signIn") === "Sign in"
     ? message
       .replace("注册成功。确认邮件已发送，请使用最新邮件中的链接完成验证。", "Account created. Use the newest confirmation email to verify it.")
@@ -24,7 +58,7 @@ export function AuthScreen() {
   function describeAuthError(raw: string) {
     if (raw.includes("Invalid login")) return t("auth.invalid");
     if (raw.includes("Email not confirmed")) return t("auth.unconfirmed");
-    if (raw.includes("rate limit")) return t("auth.rateLimit");
+    if (isAuthEmailRateLimitError(raw)) return t("auth.rateLimit");
     return raw;
   }
 
@@ -38,7 +72,10 @@ export function AuthScreen() {
     setBusy(true);
     try {
       if (mode === "signin") await signIn(email.trim(), password);
-      else await signUp(email.trim(), password);
+      else {
+        await signUp(email.trim(), password);
+        beginEmailCooldown();
+      }
     } catch (reason) {
       const raw = reason instanceof Error ? reason.message : t("auth.failure");
       setError(describeAuthError(raw));
@@ -49,6 +86,7 @@ export function AuthScreen() {
 
   async function resend() {
     setError("");
+    if (cooldownSeconds > 0) return;
     const normalizedEmail = email.trim();
     if (!normalizedEmail) {
       setError(t("auth.emailRequired"));
@@ -57,8 +95,10 @@ export function AuthScreen() {
     setResending(true);
     try {
       await resendConfirmation(normalizedEmail);
+      beginEmailCooldown();
     } catch (reason) {
       const raw = reason instanceof Error ? reason.message : t("auth.sendFailure");
+      if (isAuthEmailRateLimitError(raw)) beginEmailCooldown();
       setError(describeAuthError(raw));
     } finally {
       setResending(false);
@@ -95,9 +135,14 @@ export function AuthScreen() {
           <button disabled={busy} className="w-full rounded-xl bg-[var(--primary)] py-3 text-sm font-semibold text-[var(--primary-foreground)] disabled:opacity-50">{busy ? t("auth.wait") : mode === "signin" ? t("auth.enter") : t("auth.create")}</button>
           <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2.5 text-center">
             <p className="text-[11px] text-[var(--text-tertiary)]">{t("auth.recoveryPrompt")}</p>
-            <button type="button" disabled={busy || resending} onClick={resend} className="mt-1 text-xs font-medium text-[var(--primary)] hover:underline disabled:opacity-50">
-              {resending ? t("auth.resending") : t("auth.resend")}
+            <button type="button" disabled={busy || resending || cooldownSeconds > 0} onClick={resend} className="mt-1 text-xs font-medium text-[var(--primary)] hover:underline disabled:opacity-50">
+              {resending
+                ? t("auth.resending")
+                : cooldownSeconds > 0
+                  ? t("auth.resendCooldown", { seconds: cooldownSeconds })
+                  : t("auth.resend")}
             </button>
+            <p className="mt-1 text-[10px] leading-relaxed text-[var(--text-muted)]">{t("auth.deliveryHint")}</p>
           </div>
         </form>
         <p className="mt-5 text-center text-[10px] leading-relaxed text-[var(--text-muted)]">{t("auth.privacy")}</p>
