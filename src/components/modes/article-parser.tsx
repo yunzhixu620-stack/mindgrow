@@ -533,7 +533,10 @@ export function ArticleParser() {
           acquisition: prepared.acquisition,
           extraction: pdf ? { pageCount: pdf.pageCount, truncated: pdf.truncated, tablePages: pdf.tablePages, imagePages: pdf.imagePages, scannedPages: pdf.scannedPages } : undefined,
         }),
-      }, controller, 60_000);
+      // One response contains the cited summary, mind map, and evidence-backed
+      // entity graph. The model may legitimately need longer than a chat turn;
+      // keep the client budget above the bounded 90s upstream budget.
+      }, controller, 120_000);
       const data = await response.json() as ArticleResult & Record<string, unknown>;
       if (!isActiveArticleMap(requestMapId)) return;
       if (!response.ok) throw articlePipelineError(data, "文章分析失败");
