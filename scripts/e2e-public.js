@@ -36,6 +36,20 @@ async function check(name, task) {
     if (!labels.includes("重新发送确认邮件")) throw new Error("Resend confirmation action is missing");
   });
 
+  await check("confirmation resend cooldown survives a refresh", async () => {
+    await page.evaluate(() => localStorage.setItem("mindgrow.auth-email-resend.v1", String(Date.now() + 60_000)));
+    await page.reload({ waitUntil: "networkidle2", timeout: 60000 });
+    await page.waitForFunction(() => Array.from(document.querySelectorAll("button"))
+      .some((button) => button.disabled && /秒后可再次发送/.test(button.textContent || "")), { timeout: 30000 });
+    await page.reload({ waitUntil: "networkidle2", timeout: 60000 });
+    await page.waitForFunction(() => Array.from(document.querySelectorAll("button"))
+      .some((button) => button.disabled && /秒后可再次发送/.test(button.textContent || "")), { timeout: 30000 });
+    await page.evaluate(() => localStorage.setItem("mindgrow.auth-email-resend.v1", String(Date.now() - 1)));
+    await page.reload({ waitUntil: "networkidle2", timeout: 60000 });
+    await page.waitForFunction(() => Array.from(document.querySelectorAll("button"))
+      .some((button) => !button.disabled && button.textContent?.trim() === "重新发送确认邮件"), { timeout: 30000 });
+  });
+
   await check("expired confirmation links show a recovery path", async () => {
     const callbackPage = await browser.newPage();
     try {
