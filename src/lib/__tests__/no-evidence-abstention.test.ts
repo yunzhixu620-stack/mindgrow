@@ -48,7 +48,7 @@ describe("hard abstention without direct evidence", () => {
     const response = noEvidenceAnswer({ type: "question" }, evidence);
     expect(response.status).toBe(200);
     expect(response.data).toMatchObject({
-      reply: "当前知识库没有相关证据",
+      reply: "当前知识库没有相关证据，无法回答此问题。",
       sources: [],
       grounded: true,
       abstained: true,
@@ -81,7 +81,7 @@ describe("hard abstention without direct evidence", () => {
 
     expect(modelCalls).toBe(0);
     expect(decision?.data).toMatchObject({
-      reply: "当前知识库没有相关证据",
+      reply: "当前知识库没有相关证据，无法回答此问题。",
       sources: [],
       refusalReason: "NO_EVIDENCE",
     });

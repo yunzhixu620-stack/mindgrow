@@ -22,7 +22,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.20.1';
+const API_VERSION = '10.20.2';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -1651,7 +1651,7 @@ function noEvidenceAnswer(intent, evidence, missingInformation) {
     data: {
       intent,
       type: 'answer',
-      reply: '当前知识库没有相关证据',
+      reply: '当前知识库没有相关证据，无法回答此问题。',
       sources: [],
       grounded: true,
       abstained: true,
