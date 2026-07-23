@@ -160,3 +160,13 @@
 5. [x] `gh-pages@8e8bcc534700e5f60c0351dc808a10c1b2997fe5` 发布成功，Pages workflow `29970768271` 通过；公网前端 E2E 7/7 通过。
 6. [x] production fact workflow `29970868143` 精确核对前端与后端均为 `af00ec59e58c4ea742e73b7d3dc62f59aae2bdfb`、API `10.15.0` 与 `authRequired=true` 并通过。
 7. [x] 本地 unit 187/187、RAG 64/64、backend 9/9、产品 E2E 37/37 均通过，另有混合来源、不可读 URL 和无证据音频三项接口门禁。
+
+## S2.16 发布检查点
+
+1. [x] PR #58 压缩合并为 `main@2a5fa505d3ade0d67c3ba20e562ecc89e6351492`；合并前 CI、Vercel Preview 与部署事实门禁全部通过。
+2. [x] Supabase Production 已执行 V16 migration；工作区搜索 RPC 与 trigram 索引上线，未改写现有用户数据，RPC 仅授予 `service_role`。
+3. [x] 阿里云环境变量 `MINDGROW_GIT_SHA` 与实际后端源码均更新为该合并提交，API `10.16.0` 发布成功。
+4. [x] 公网 `/health` 返回 `status=ok`、`version=10.16.0`、精确 `gitSha`、`authRequired=true`、`nodeEnv=production`、`deploymentIdentity=ready`、`workspaceSearch=ready`；公网 backend smoke 7/7 通过。
+5. [x] `gh-pages@e0c3340febdcc8b135be3e1d3064651f0e99595e` 发布成功，Pages workflow `29973061109` 通过；公网前端 E2E 7/7 通过。
+6. [x] production fact workflow `29973110087` 精确核对前端与后端均为 `2a5fa505d3ade0d67c3ba20e562ecc89e6351492`、API `10.16.0` 与 `authRequired=true` 并通过。
+7. [x] 本地 unit 189/189、RAG 65/65、backend 9/9、产品 E2E 37/37 均通过，覆盖 220ms 防抖、跨知识库定位、命中原因、过期请求取消与云端失败降级。
