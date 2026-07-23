@@ -29,7 +29,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.21.12';
+const API_VERSION = '10.21.13';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -3043,10 +3043,29 @@ function mergeSemanticMindMapBranches(children) {
   return merged;
 }
 
+function readableSourceFact(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (/^\|?(?:\s*:?-{3,}:?\s*\|)+\s*$/.test(raw)) return '';
+  if (raw.includes('|')) {
+    const cells = raw.split('|').map((cell) => compactKnowledgeDisplayText(cell, 72)).filter(Boolean);
+    const normalizedCells = cells.filter((cell) => !/^:?-{3,}:?$/.test(cell));
+    if (normalizedCells.length >= 2) {
+      const headerOnly = normalizedCells.every((cell) => /^(?:服务|SLO|延迟\/质量目标|页面|目标|状态)$/i.test(cell));
+      if (headerOnly) return '';
+      return compactKnowledgeDisplayText(
+        `${normalizedCells[0]}：${normalizedCells.slice(1).join('；')}`,
+        180,
+      );
+    }
+  }
+  return compactKnowledgeDisplayText(raw, 180);
+}
+
 function sourceCriticalFacts(value, limit) {
   const rows = String(value || '').replace(/\r\n?/g, '\n')
     .split(/\n+|(?<=[。！？!?；;])\s*/)
-    .map((item, index) => ({ index, text: normalizeSpaces(item).slice(0, 420) }))
+    .map((item, index) => ({ index, text: readableSourceFact(item) }))
     .filter((item) => item.text.length >= 6 && !isDocumentMetadataFact(item.text));
   const scored = rows.map((item) => {
     const text = item.text;
@@ -7343,6 +7362,7 @@ module.exports = {
   anchorCoverage,
   retrieveEvidence,
   sourceCriticalFacts,
+  readableSourceFact,
   selectArticleAnalysisCitations,
   repairArticleMindMapRoot,
   ensureMindMapSourceCoverage,

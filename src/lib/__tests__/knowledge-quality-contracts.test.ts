@@ -47,6 +47,7 @@ const proxy = require("../../../fc-proxy/index.js") as {
     rootDesc: string;
     children: Array<{ topic: string; desc: string; items: string[]; itemCitationIndexes: number[][] }>;
   };
+  readableSourceFact: (value: string) => string;
   ensureMindMapSourceCoverage: (
     mindMap: unknown,
     sourceText: string,
@@ -177,6 +178,17 @@ describe("knowledge quality contracts", () => {
     expect(result.children[0].items.join(" ")).not.toMatch(/\*\*|SEV2：PDF\/$/);
     expect(result.children[0].items.every((item) => item.length <= 96)).toBe(true);
     expect(result.children[0].itemCitationIndexes).toEqual([[1], [3]]);
+  });
+
+  it("turns markdown table rows into short semantic facts instead of raw table nodes", () => {
+    expect(proxy.readableSourceFact("| 服务 | SLO | 延迟/质量目标 |")).toBe("");
+    expect(proxy.readableSourceFact("|---|---:|---|")).toBe("");
+    const fact = proxy.readableSourceFact(
+      "| GitHub Pages 前端 | 99.9% | LCP p75 <2.5 秒，静态资源 404 = 0 |",
+    );
+    expect(fact).toBe("GitHub Pages 前端：99.9%；LCP p75 <2.5 秒，静态资源 404 = 0");
+    expect(fact).not.toContain("|");
+    expect(fact.length).toBeLessThanOrEqual(180);
   });
 
   it("enforces the 4–8, 10–20 and 12–20 node budgets", () => {
