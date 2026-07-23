@@ -44,6 +44,23 @@ beforeEach(() => {
 });
 
 describe("page graph response races", () => {
+  it("restores the mode captured when a new meeting library dialog opened", () => {
+    useMindGrowStore.getState().setCurrentMode("meeting");
+    const capturedCreateMode = useMindGrowStore.getState().currentMode;
+
+    // A late tenant bootstrap used to reset the product board while the
+    // create dialog remained open.
+    useMindGrowStore.getState().resetTenantContext();
+    expect(useMindGrowStore.getState().currentMode).toBe("knowledge");
+
+    useMindGrowStore.getState().setCurrentMode(capturedCreateMode);
+    useMindGrowStore.getState().setCurrentMapId("new-meeting-map");
+    expect(useMindGrowStore.getState()).toMatchObject({
+      currentMode: "meeting",
+      currentMapId: "new-meeting-map",
+    });
+  });
+
   it("keeps only the second map when its response wins before the first request", () => {
     const first = request(1, scopeA, "map-a");
     const second = request(2, scopeA, "map-b");

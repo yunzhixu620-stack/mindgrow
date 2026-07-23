@@ -92,6 +92,7 @@ export default function Home() {
   const [mapReloadVersion, setMapReloadVersion] = useState(0);
   const createRef = useRef<HTMLInputElement>(null);
   const catCreateRef = useRef<HTMLInputElement>(null);
+  const createMapModeRef = useRef<AppMode>("knowledge");
   const activeModeRef = useRef<AppMode>("knowledge");
   const lastMapByModeRef = useRef<Partial<Record<AppMode, string>>>({ knowledge: "map_default" });
   const provisioningModeRef = useRef<AppMode | null>(null);
@@ -372,7 +373,7 @@ export default function Home() {
     }
   }, [currentMapId, entityGraph.entities, nodes, setHighlightedNodeId, setSearchResults]);
 
-  const handleCreatedMap = useCallback(async (mapId: string) => {
+  const handleCreatedMap = useCallback(async (mapId: string, expectedMode?: AppMode) => {
     // Keep catalog prefetch from racing the explicit navigation while the new
     // map first appears in `maps`. The authoritative loader still performs the
     // one graph request after handleSwitchMap selects the target.
@@ -380,11 +381,15 @@ export default function Home() {
     if (prefetchKey) prefetchedMapKeysRef.current.add(prefetchKey);
     try {
       await reloadAll();
+      if (expectedMode) {
+        lastMapByModeRef.current[expectedMode] = mapId;
+        if (useMindGrowStore.getState().currentMode !== expectedMode) setCurrentMode(expectedMode);
+      }
       handleSwitchMap(mapId);
     } finally {
       if (prefetchKey) prefetchedMapKeysRef.current.delete(prefetchKey);
     }
-  }, [handleSwitchMap, reloadAll, tenantScope]);
+  }, [handleSwitchMap, reloadAll, setCurrentMode, tenantScope]);
 
   const createPersonalNotes = useCallback(async () => {
     if (onboardingBusy) return;
@@ -497,29 +502,29 @@ export default function Home() {
 
   const handleCreateMap = useCallback(async () => {
     if (!newName.trim()) { setIsCreating(false); setNewName(""); return; }
+    const createMode = createMapModeRef.current;
     try {
       const res = await apiFetch("/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "createMap",
-          mode: currentMode,
+          mode: createMode,
           name: newName.trim(),
-          categoryId: currentMode === "knowledge" ? newCategoryId : null,
-          description: currentMode === "knowledge" ? "" : modeLibraryDescription(currentMode),
+          categoryId: createMode === "knowledge" ? newCategoryId : null,
+          description: createMode === "knowledge" ? "" : modeLibraryDescription(createMode),
         }),
       });
       if (res.ok) {
         const { map } = await res.json();
-        await reloadAll();
-        handleSwitchMap(map.id);
+        await handleCreatedMap(map.id, createMode);
       }
     } catch (e) { console.error(e); }
     setIsCreating(false);
     setNewName("");
     setNewCategoryId(null);
     setDrawerOpen(false);
-  }, [newName, newCategoryId, currentMode, handleSwitchMap, reloadAll]);
+  }, [newName, newCategoryId, handleCreatedMap]);
 
   const handleDeleteMap = useCallback(async (map: MindMap) => {
     if (map.isDefault) return;
@@ -817,7 +822,11 @@ export default function Home() {
                 <div className="flex gap-1">
                   {/* Prominent create buttons */}
                   <button
-                    onClick={() => { setIsCreating(true); setNewCategoryId(null); }}
+                    onClick={() => {
+                      createMapModeRef.current = currentMode;
+                      setIsCreating(true);
+                      setNewCategoryId(null);
+                    }}
                     className="w-7 h-7 flex items-center justify-center rounded-lg bg-[var(--primary)] text-[var(--primary-foreground)] cursor-pointer"
                     title="新建知识库"
                   >
@@ -1136,7 +1145,13 @@ export default function Home() {
         <MobileBottomNav
           currentMode={currentMode}
           onModeChange={(mode) => { setCurrentMode(mode); setMobileTab("chat"); setDrawerOpen(false); }}
-          onCreate={() => { setMobileTab("chat"); setDrawerOpen(true); setIsCreating(true); setNewCategoryId(null); }}
+          onCreate={() => {
+            createMapModeRef.current = currentMode;
+            setMobileTab("chat");
+            setDrawerOpen(true);
+            setIsCreating(true);
+            setNewCategoryId(null);
+          }}
         />
         {/* Mobile Template Browser */}
         {showTemplates && (

@@ -237,7 +237,7 @@ function IconPicker({ onSelect }: { onSelect: (icon: string) => void }) {
 // ============================================================
 interface SidebarProps {
   onSwitchMap: (mapId: string) => void;
-  onMapCreated: (mapId: string) => Promise<void>;
+  onMapCreated: (mapId: string, expectedMode: MindMap["mode"]) => Promise<void>;
 }
 
 export function Sidebar({ onSwitchMap, onMapCreated }: SidebarProps) {
@@ -279,6 +279,7 @@ export function Sidebar({ onSwitchMap, onMapCreated }: SidebarProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const createRef = useRef<HTMLInputElement>(null);
   const catCreateRef = useRef<HTMLInputElement>(null);
+  const createModeRef = useRef(currentMode);
 
   // Close context menu on click outside
   useEffect(() => {
@@ -318,22 +319,23 @@ export function Sidebar({ onSwitchMap, onMapCreated }: SidebarProps) {
       setIsCreating(false);
       return;
     }
+    const createMode = createModeRef.current;
     try {
       const res = await apiFetch("/api/knowledge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "createMap",
-          mode: currentMode,
+          mode: createMode,
           name: newName.trim(),
           color: newColor,
-          categoryId: currentMode === "knowledge" ? newCategoryId : null,
-          description: currentMode === "knowledge" ? "" : modeLibraryDescription(currentMode),
+          categoryId: createMode === "knowledge" ? newCategoryId : null,
+          description: createMode === "knowledge" ? "" : modeLibraryDescription(createMode),
         }),
       });
       if (res.ok) {
         const { map } = await res.json();
-        await onMapCreated(map.id);
+        await onMapCreated(map.id, createMode);
         setNewName("");
         setIsCreating(false);
         setNewCategoryId(null);
@@ -341,7 +343,7 @@ export function Sidebar({ onSwitchMap, onMapCreated }: SidebarProps) {
     } catch (e) {
       console.error("Failed to create map:", e);
     }
-  }, [newName, newColor, newCategoryId, currentMode, onMapCreated]);
+  }, [newName, newColor, newCategoryId, onMapCreated]);
 
   const handleSwitch = useCallback((mapId: string) => {
     if (mapId === currentMapId) return;
@@ -575,7 +577,11 @@ export function Sidebar({ onSwitchMap, onMapCreated }: SidebarProps) {
         <div className="flex gap-1">
           {/* Prominent New Map button */}
           <button
-            onClick={() => { setIsCreating(true); setNewCategoryId(null); }}
+            onClick={() => {
+              createModeRef.current = currentMode;
+              setIsCreating(true);
+              setNewCategoryId(null);
+            }}
             className="w-7 h-7 flex items-center justify-center rounded-lg bg-[var(--primary)] text-[var(--primary-foreground)] hover:opacity-90 transition-opacity cursor-pointer"
             title={english ? "New library" : "新建知识库"}
           >
