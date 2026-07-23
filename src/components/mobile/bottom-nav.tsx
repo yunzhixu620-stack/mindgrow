@@ -2,6 +2,7 @@
 
 import { MODE_LIBRARY_CONFIG } from "@/lib/mode-libraries";
 import type { AppMode } from "@/store/mindgrow-store";
+import { useLocale } from "@/components/i18n/locale-provider";
 
 export const MOBILE_NAV_MODES: AppMode[] = ["knowledge", "article", "meeting"];
 
@@ -14,11 +15,16 @@ export function MobileBottomNav({
   onModeChange: (mode: AppMode) => void;
   onCreate: () => void;
 }) {
+  const { locale } = useLocale();
+  const english = locale === "en";
+  const labels: Record<AppMode, string> = english
+    ? { knowledge: "Knowledge", article: "Articles", meeting: "Meetings" }
+    : { knowledge: "知识", article: "文章", meeting: "会议" };
   return (
     <nav
       className="relative z-[150] shrink-0 border-t border-[var(--border)] bg-[var(--card)]/95 shadow-[0_-12px_32px_rgba(0,0,0,0.22)] backdrop-blur-xl"
       style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
-      aria-label="移动端产品导航"
+      aria-label={english ? "Mobile product navigation" : "移动端产品导航"}
       data-testid="mobile-bottom-nav"
     >
       <div className="grid min-h-16 grid-cols-3">
@@ -30,12 +36,12 @@ export function MobileBottomNav({
               key={mode}
               type="button"
               onClick={() => onModeChange(mode)}
-              aria-label={`切换到${config.label}`}
+              aria-label={english ? `Switch to ${labels[mode]}` : `切换到${config.label}`}
               aria-current={active ? "page" : undefined}
               className={`flex min-w-0 flex-col items-center justify-center gap-0.5 text-[10px] font-medium transition-colors ${index === 1 ? "pt-7" : "pt-1"} ${active ? "text-[var(--primary)]" : "text-[var(--text-muted)] hover:text-[var(--foreground)]"}`}
             >
               {index !== 1 && <span className="text-lg leading-none" aria-hidden="true">{config.emoji}</span>}
-              <span>{config.shortLabel}</span>
+              <span>{labels[mode]}</span>
             </button>
           );
         })}
@@ -43,12 +49,12 @@ export function MobileBottomNav({
       <button
         type="button"
         onClick={onCreate}
-        aria-label={`在${MODE_LIBRARY_CONFIG[currentMode].label}中新建知识库`}
+        aria-label={english ? `Create a library in ${labels[currentMode]}` : `在${MODE_LIBRARY_CONFIG[currentMode].label}中新建知识库`}
         data-testid="mobile-create-library"
         className="absolute left-1/2 top-0 flex h-14 w-14 -translate-x-1/2 -translate-y-1/3 flex-col items-center justify-center rounded-full border-4 border-[var(--card)] bg-[var(--primary)] text-[var(--primary-foreground)] shadow-[0_8px_24px_rgba(34,211,167,0.3)] transition-transform hover:scale-105 active:scale-95"
       >
         <span className="text-xl font-light leading-4" aria-hidden="true">＋</span>
-        <span className="mt-0.5 text-[8px] font-bold">新建</span>
+        <span className="mt-0.5 text-[8px] font-bold">{english ? "New" : "新建"}</span>
       </button>
     </nav>
   );

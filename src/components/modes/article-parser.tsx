@@ -10,6 +10,7 @@ import { aiEntityGraphToEntityGraph } from "@/lib/entity-graph";
 import { AnswerCard } from "@/components/answer/answer-card";
 import { PdfCitationViewer } from "@/components/article/pdf-citation-viewer";
 import type { AIEntityGraph, AIMindMap, Citation, CitationAudit } from "@/types";
+import { useLocale } from "@/components/i18n/locale-provider";
 
 interface CitedText { text: string; citationIndexes: number[] }
 interface ArticleResult {
@@ -305,6 +306,8 @@ function articleApiError(data: Record<string, unknown>, fallback: string) {
 }
 
 export function ArticleParser() {
+  const { locale } = useLocale();
+  const english = locale === "en";
   const currentMapId = useMindGrowStore((state) => state.currentMapId);
   const currentMap = useMindGrowStore((state) => state.maps.find((map) => map.id === state.currentMapId));
   const setCurrentMapId = useMindGrowStore((state) => state.setCurrentMapId);
@@ -514,17 +517,17 @@ export function ArticleParser() {
   return (
     <section className="h-full w-full overflow-y-auto bg-[var(--background)]" data-mode-library-id={currentMapId} data-testid="article-content-workspace">
       <div className="mx-auto max-w-5xl p-4">
-      <div className="mb-6 flex flex-col gap-3 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4 md:flex-row md:items-center md:justify-between"><div><h2 className="text-lg font-semibold">📄 文章解析</h2><p className="mt-1 text-xs text-[var(--text-tertiary)]">支持公开网页、粘贴正文和 PDF；要点、导图节点与音频脚本均可回到原文引用，内容只进入文章板块。</p></div><div className="rounded-xl border border-violet-400/30 bg-violet-400/10 px-3 py-2 text-xs text-violet-200"><span className="font-semibold">独立文章知识库</span><span className="mx-2 opacity-40">·</span>{currentMap?.name || "文章知识库"}<span className="mx-2 opacity-40">·</span>{nodeCount} 节点</div></div>
+      <div className="mb-6 flex flex-col gap-3 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4 md:flex-row md:items-center md:justify-between"><div><h2 className="text-lg font-semibold">📄 {english ? "Article Parser" : "文章解析"}</h2><p className="mt-1 text-xs text-[var(--text-tertiary)]">{english ? "Parse public pages, pasted text, or PDFs. Every insight, graph node, and audio segment links back to source evidence." : "支持公开网页、粘贴正文和 PDF；要点、导图节点与音频脚本均可回到原文引用，内容只进入文章板块。"}</p></div><div className="rounded-xl border border-violet-400/30 bg-violet-400/10 px-3 py-2 text-xs text-violet-200"><span className="font-semibold">{english ? "Dedicated article library" : "独立文章知识库"}</span><span className="mx-2 opacity-40">·</span>{currentMap?.name || (english ? "Article library" : "文章知识库")}<span className="mx-2 opacity-40">·</span>{english ? `${nodeCount} nodes` : `${nodeCount} 节点`}</div></div>
       <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4">
       <div className="space-y-3">
-        <input type="url" value={url} onChange={(event) => { setUrl(event.target.value); if (event.target.value) { setPdf(null); setPdfFile(null); setPdfViewerCitation(null); setContent(""); } }} placeholder="https://… 公开文章网址" className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2.5 text-sm outline-none focus:border-[var(--primary)]" />
-        <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 text-[10px] text-[var(--text-muted)]"><span className="h-px bg-[var(--border)]" />或<span className="h-px bg-[var(--border)]" /></div>
+        <input type="url" value={url} onChange={(event) => { setUrl(event.target.value); if (event.target.value) { setPdf(null); setPdfFile(null); setPdfViewerCitation(null); setContent(""); } }} placeholder={english ? "https://… public article URL" : "https://… 公开文章网址"} className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2.5 text-sm outline-none focus:border-[var(--primary)]" />
+        <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 text-[10px] text-[var(--text-muted)]"><span className="h-px bg-[var(--border)]" />{english ? "or" : "或"}<span className="h-px bg-[var(--border)]" /></div>
         <input ref={fileInputRef} type="file" accept="application/pdf,.pdf" className="hidden" onChange={(event) => void choosePdf(event.target.files?.[0])} />
-        <button type="button" onClick={() => fileInputRef.current?.click()} disabled={pdfBusy} className="w-full rounded-xl border border-dashed border-[var(--primary-border)] bg-[var(--primary-subtle)] px-3 py-2.5 text-xs text-[var(--primary-hover)] disabled:opacity-40">{pdfBusy ? "正在读取 PDF…" : pdf ? `PDF：${pdf.name}（${pdf.pages} 页）` : "选择 PDF 文件（最大 15MB）"}</button>
-        <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 text-[10px] text-[var(--text-muted)]"><span className="h-px bg-[var(--border)]" />或粘贴正文<span className="h-px bg-[var(--border)]" /></div>
-        <textarea value={content} onChange={(event) => { setContent(event.target.value); setPdf(null); setPdfFile(null); setPdfViewerCitation(null); }} rows={9} placeholder="粘贴文章正文。PDF 文字也会显示在这里，便于解析前核对。" className="w-full resize-y rounded-xl border border-[var(--border)] bg-[var(--background)] p-3 text-sm leading-relaxed outline-none focus:border-[var(--primary)]" />
+        <button type="button" onClick={() => fileInputRef.current?.click()} disabled={pdfBusy} className="w-full rounded-xl border border-dashed border-[var(--primary-border)] bg-[var(--primary-subtle)] px-3 py-2.5 text-xs text-[var(--primary-hover)] disabled:opacity-40">{pdfBusy ? (english ? "Reading PDF…" : "正在读取 PDF…") : pdf ? (english ? `PDF: ${pdf.name} (${pdf.pages} pages)` : `PDF：${pdf.name}（${pdf.pages} 页）`) : (english ? "Choose a PDF (max 15 MB)" : "选择 PDF 文件（最大 15MB）")}</button>
+        <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 text-[10px] text-[var(--text-muted)]"><span className="h-px bg-[var(--border)]" />{english ? "or paste text" : "或粘贴正文"}<span className="h-px bg-[var(--border)]" /></div>
+        <textarea value={content} onChange={(event) => { setContent(event.target.value); setPdf(null); setPdfFile(null); setPdfViewerCitation(null); }} rows={9} placeholder={english ? "Paste article text. Extracted PDF text also appears here for review before parsing." : "粘贴文章正文。PDF 文字也会显示在这里，便于解析前核对。"} className="w-full resize-y rounded-xl border border-[var(--border)] bg-[var(--background)] p-3 text-sm leading-relaxed outline-none focus:border-[var(--primary)]" />
         {notice && <div role="status" className="rounded-lg bg-[var(--bg-elevated)] px-3 py-2 text-xs text-[var(--text-secondary)]">{notice}</div>}
-        <button onClick={() => void parse()} disabled={busy || pdfBusy || (!url.trim() && content.trim().length < 50)} className="w-full rounded-xl bg-[var(--primary)] py-2.5 text-sm font-semibold text-[var(--primary-foreground)] disabled:opacity-40">{busy ? "正在阅读、定位引用并核对原文…" : "解析文章"}</button>
+        <button onClick={() => void parse()} disabled={busy || pdfBusy || (!url.trim() && content.trim().length < 50)} className="w-full rounded-xl bg-[var(--primary)] py-2.5 text-sm font-semibold text-[var(--primary-foreground)] disabled:opacity-40">{busy ? (english ? "Reading, locating citations, and verifying sources…" : "正在阅读、定位引用并核对原文…") : (english ? "Parse article" : "解析文章")}</button>
       </div>
 
       {result && <div className="mt-5 space-y-3 animate-fade-in">
@@ -550,15 +553,15 @@ export function ArticleParser() {
           onCitationOpen={openCitation}
         />
         {selectedCitation && <ArticleBlock title={`引用 [${selectedCitation.index}] · ${selectedCitation.locator || "原文"}`}><blockquote className="border-l-2 border-[var(--primary)] pl-2 text-[var(--text-secondary)]">“{selectedCitation.quote}”</blockquote>{result.sourceUrl && <a className="mt-2 inline-block text-[var(--primary-hover)] underline" href={result.sourceUrl} target="_blank" rel="noreferrer">打开原网页核对</a>}</ArticleBlock>}
-        <button onClick={() => void createAudioOverview()} disabled={audioBusy || answerRefused} className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] py-2.5 text-sm font-medium disabled:opacity-40">{audioBusy ? "正在生成引用型播客脚本与音频…" : answerRefused ? "证据不足，暂不生成音频" : "🎧 生成音频概览"}</button>
+        <button onClick={() => void createAudioOverview()} disabled={audioBusy || answerRefused} className="w-full rounded-xl border border-[var(--border)] bg-[var(--background)] py-2.5 text-sm font-medium disabled:opacity-40">{audioBusy ? (english ? "Generating a cited audio overview…" : "正在生成引用型播客脚本与音频…") : answerRefused ? (english ? "Insufficient evidence for audio" : "证据不足，暂不生成音频") : (english ? "🎧 Generate Audio Overview" : "🎧 生成音频概览")}</button>
         {audio && <AudioOverviewCard audio={audio} speech={speech} showCitations={showCitations} />}
-        <button onClick={() => void save()} disabled={saving || answerRefused} className="w-full rounded-xl border border-[var(--primary-border)] bg-[var(--primary-subtle)] py-2.5 text-sm font-medium text-[var(--primary-hover)] disabled:opacity-40">{saving ? "正在保存…" : answerRefused ? "证据不足，暂不保存" : "保存到文章知识库（含引用）"}</button>
+        <button onClick={() => void save()} disabled={saving || answerRefused} className="w-full rounded-xl border border-[var(--primary-border)] bg-[var(--primary-subtle)] py-2.5 text-sm font-medium text-[var(--primary-hover)] disabled:opacity-40">{saving ? (english ? "Saving…" : "正在保存…") : answerRefused ? (english ? "Insufficient evidence — not saved" : "证据不足，暂不保存") : (english ? "Save to article library with citations" : "保存到文章知识库（含引用）")}</button>
       </div>}
       </div>
       <div className="mt-4 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4">
         <div className="mb-3 flex items-start justify-between gap-3">
-          <div><h3 className="text-sm font-semibold">与文章知识库对话</h3><p className="mt-1 text-xs text-[var(--text-tertiary)]">自动识别翻译、总结、解释、比较、信息提取与事实问答；事实结论仍可回到原文核验。</p></div>
-          {qaMessages.length > 0 && <button type="button" onClick={() => setQaMessages([])} className="shrink-0 rounded-lg border border-[var(--border)] px-2 py-1 text-[10px] text-[var(--text-tertiary)]">清空对话</button>}
+          <div><h3 className="text-sm font-semibold">{english ? "Chat with the article library" : "与文章知识库对话"}</h3><p className="mt-1 text-xs text-[var(--text-tertiary)]">{english ? "Translate, summarize, explain, compare, extract facts, and ask grounded questions with source verification." : "自动识别翻译、总结、解释、比较、信息提取与事实问答；事实结论仍可回到原文核验。"}</p></div>
+          {qaMessages.length > 0 && <button type="button" onClick={() => setQaMessages([])} className="shrink-0 rounded-lg border border-[var(--border)] px-2 py-1 text-[10px] text-[var(--text-tertiary)]">{english ? "Clear chat" : "清空对话"}</button>}
         </div>
         <div className="mb-3 grid grid-cols-3 gap-1.5 sm:grid-cols-6" aria-label="文章问答任务分类">
           {articleQuickTasks.map((item) => {
@@ -585,8 +588,8 @@ export function ArticleParser() {
           {qaBusy && <div className="mr-8 rounded-xl bg-[var(--bg-elevated)] px-3 py-2 text-xs text-[var(--text-tertiary)]">正在识别意图并处理论文内容…</div>}
         </div>}
         <div className="flex items-end gap-2 rounded-xl border border-[var(--border)] bg-[var(--background)] p-2 focus-within:border-[var(--primary)]">
-          <textarea value={qaInput} onChange={(event) => setQaInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void askArticleLibrary(); } }} rows={2} aria-label="与文章知识库对话" placeholder="例如：翻译这篇论文的摘要；比较三篇论文的检索方法" className="min-h-[44px] flex-1 resize-none bg-transparent px-1 text-sm outline-none" />
-          <button type="button" onClick={() => void askArticleLibrary()} disabled={!qaInput.trim() || qaBusy} className="rounded-lg bg-[var(--primary)] px-3 py-2 text-xs font-semibold text-[var(--primary-foreground)] disabled:opacity-40">{qaBusy ? "处理中" : "发送"}</button>
+          <textarea value={qaInput} onChange={(event) => setQaInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void askArticleLibrary(); } }} rows={2} aria-label={english ? "Chat with article library" : "与文章知识库对话"} placeholder={english ? "Example: translate the abstract; compare retrieval methods across three papers" : "例如：翻译这篇论文的摘要；比较三篇论文的检索方法"} className="min-h-[44px] flex-1 resize-none bg-transparent px-1 text-sm outline-none" />
+          <button type="button" onClick={() => void askArticleLibrary()} disabled={!qaInput.trim() || qaBusy} className="rounded-lg bg-[var(--primary)] px-3 py-2 text-xs font-semibold text-[var(--primary-foreground)] disabled:opacity-40">{qaBusy ? (english ? "Working" : "处理中") : (english ? "Send" : "发送")}</button>
         </div>
         <p className="mt-2 text-[10px] text-[var(--text-muted)]">长论文全文翻译会先请你指定摘要、章节或页码，避免单次输出截断；原文引用保持原语言。</p>
       </div>
@@ -597,6 +600,8 @@ export function ArticleParser() {
 }
 
 function ArticleWikiNavigator({ mindMap, showCitations }: { mindMap: AIMindMap; showCitations: (indexes?: number[]) => React.ReactNode }) {
+  const { locale } = useLocale();
+  const english = locale === "en";
   const [query, setQuery] = useState("");
   const normalized = query.trim().toLowerCase();
   const branches = mindMap.children.map((child) => ({
@@ -604,10 +609,10 @@ function ArticleWikiNavigator({ mindMap, showCitations }: { mindMap: AIMindMap; 
     visibleItems: child.items.map((item, index) => ({ item, index })).filter(({ item }) => !normalized || item.toLowerCase().includes(normalized)),
   })).filter((child) => !normalized || child.topic.toLowerCase().includes(normalized) || String(child.desc || "").toLowerCase().includes(normalized) || child.visibleItems.length > 0);
 
-  return <ArticleBlock title="图谱增强检索（GraphRAG）论文结构预览">
+  return <ArticleBlock title={english ? "GraphRAG article structure" : "图谱增强检索（GraphRAG）论文结构预览"}>
     <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
       <div className="font-medium text-[var(--text-primary)]">📄 {mindMap.root}{showCitations(mindMap.rootCitationIndexes)}</div>
-      <input value={query} onChange={(event) => setQuery(event.target.value)} aria-label="搜索论文链路" placeholder="搜索章节、主题或证据…" className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-2 py-1.5 text-xs outline-none focus:border-[var(--primary)]" />
+      <input value={query} onChange={(event) => setQuery(event.target.value)} aria-label={english ? "Search article paths" : "搜索论文链路"} placeholder={english ? "Search sections, topics, or evidence…" : "搜索章节、主题或证据…"} className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-2 py-1.5 text-xs outline-none focus:border-[var(--primary)]" />
     </div>
     {mindMap.rootDesc && <p className="mb-2 text-[var(--text-tertiary)]">{mindMap.rootDesc}</p>}
     <div className="space-y-1.5 border-l border-[var(--primary-border)] pl-3">
@@ -618,26 +623,30 @@ function ArticleWikiNavigator({ mindMap, showCitations }: { mindMap: AIMindMap; 
           {child.visibleItems.map(({ item, index }) => <li key={index}>↳ {item}{showCitations(child.itemCitationIndexes?.[index] || child.citationIndexes)}</li>)}
         </ul>}
       </details>)}
-      {branches.length === 0 && <div className="rounded-lg bg-[var(--bg-elevated)] px-3 py-2 text-[var(--text-tertiary)]">没有匹配的链路节点</div>}
+      {branches.length === 0 && <div className="rounded-lg bg-[var(--bg-elevated)] px-3 py-2 text-[var(--text-tertiary)]">{english ? "No matching graph paths" : "没有匹配的链路节点"}</div>}
     </div>
-    <p className="mt-2 text-[10px] text-[var(--text-muted)]">右侧同步生成可交互知识图谱；保存后将通过实体入口、关系邻域和文档引用参与图谱增强检索，避免只靠语义相似度误召回。</p>
+    <p className="mt-2 text-[10px] text-[var(--text-muted)]">{english ? "The interactive graph is generated on the right. After saving, entities, relation neighborhoods, and document citations improve retrieval beyond semantic similarity alone." : "右侧同步生成可交互知识图谱；保存后将通过实体入口、关系邻域和文档引用参与图谱增强检索，避免只靠语义相似度误召回。"}</p>
   </ArticleBlock>;
 }
 
 function AudioOverviewCard({ audio, speech, showCitations }: { audio: AudioOverview; speech: ReturnType<typeof useScriptSpeech>; showCitations: (indexes?: number[]) => React.ReactNode }) {
-  return <ArticleBlock title={`音频概览 · ${audio.title}`}>
+  const { locale } = useLocale();
+  const english = locale === "en";
+  return <ArticleBlock title={`${english ? "Audio Overview" : "音频概览"} · ${audio.title}`}>
     <p className="mb-2 text-[var(--text-tertiary)]">{audio.intro}</p>
-    {audio.grounding && <div data-testid="audio-grounding-status" className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-emerald-400/20 bg-emerald-400/[0.07] px-2.5 py-2 text-[10px] text-emerald-200"><strong>引用核验通过</strong><span>{audio.grounding.groundedSegmentCount} 段全部绑定原文证据</span><span>·</span><span>约 {Math.max(1, Math.ceil(audio.grounding.scriptCharacters / 320))} 分钟</span></div>}
+    {audio.grounding && <div data-testid="audio-grounding-status" className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-emerald-400/20 bg-emerald-400/[0.07] px-2.5 py-2 text-[10px] text-emerald-200"><strong>{english ? "Citations verified" : "引用核验通过"}</strong><span>{english ? `${audio.grounding.groundedSegmentCount} segments grounded in source evidence` : `${audio.grounding.groundedSegmentCount} 段全部绑定原文证据`}</span><span>·</span><span>{english ? `about ${Math.max(1, Math.ceil(audio.grounding.scriptCharacters / 320))} min` : `约 ${Math.max(1, Math.ceil(audio.grounding.scriptCharacters / 320))} 分钟`}</span></div>}
     {audio.audioUrl ? <audio className="mb-3 w-full" controls preload="none" src={audio.audioUrl}>你的浏览器不支持音频播放。</audio> : <div className="mb-3 flex gap-2"><button type="button" onClick={speech.toggle} disabled={!speech.supported} className="rounded-lg bg-[var(--primary)] px-3 py-1.5 text-xs font-semibold text-[var(--primary-foreground)] disabled:opacity-40">{speech.state === "playing" ? "暂停" : speech.state === "paused" ? "继续" : "播放"}</button><button type="button" onClick={speech.stop} className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs">停止</button></div>}
     <div className="max-h-48 space-y-2 overflow-y-auto pr-1">{audio.segments.map((segment, index) => <button type="button" key={index} onClick={() => speech.playFrom(index)} className={`block w-full rounded-lg p-2 text-left ${speech.currentIndex === index ? "bg-[var(--primary-subtle)] ring-1 ring-[var(--primary)]" : "bg-[var(--bg-elevated)]"}`}><strong>{segment.speaker}：</strong>{segment.text}{showCitations(segment.citationIndexes)}</button>)}</div>
   </ArticleBlock>;
 }
 
 function ArticleSourceStatus({ status, sourceType }: { status: NonNullable<ArticleResult["sourceStatus"]>; sourceType: ArticleResult["sourceType"] }) {
-  const label = sourceType === "url" ? "公开网页已抓取" : sourceType === "pdf" ? "PDF 文字已提取" : "粘贴正文已读取";
+  const { locale } = useLocale();
+  const english = locale === "en";
+  const label = sourceType === "url" ? (english ? "Public page fetched" : "公开网页已抓取") : sourceType === "pdf" ? (english ? "PDF text extracted" : "PDF 文字已提取") : (english ? "Pasted text loaded" : "粘贴正文已读取");
   const detail = status.finalUrl || status.fileName || `${status.characterCount.toLocaleString()} 字符`;
   return <div data-testid="article-source-status" data-source-type={sourceType} className="rounded-xl border border-emerald-400/20 bg-emerald-400/[0.07] px-3 py-2 text-xs text-emerald-100">
-    <div className="flex flex-wrap items-center gap-2"><strong>来源校验通过 · {label}</strong><span className="text-emerald-200/70">{status.characterCount.toLocaleString()} 字符 · {status.citationCount} 个可定位证据块</span></div>
+    <div className="flex flex-wrap items-center gap-2"><strong>{english ? "Source verified" : "来源校验通过"} · {label}</strong><span className="text-emerald-200/70">{status.characterCount.toLocaleString()} {english ? "characters" : "字符"} · {status.citationCount} {english ? "locatable evidence chunks" : "个可定位证据块"}</span></div>
     <div className="mt-1 truncate text-[10px] text-emerald-200/60" title={detail}>{detail}</div>
   </div>;
 }

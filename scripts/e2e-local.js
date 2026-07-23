@@ -91,6 +91,8 @@ const expandOneVisibleLevel = async (page, previousCount) => {
   await page.evaluateOnNewDocument(() => {
     if (!sessionStorage.getItem("mindgrow.e2e.initialized")) {
       localStorage.removeItem("mindgrow.local.v2");
+      localStorage.removeItem("mindgrow.local.feedback.v1");
+      localStorage.removeItem("mindgrow.locale.v1");
       for (const key of Object.keys(localStorage)) {
         if (key.startsWith("mindgrow.feedback.")) localStorage.removeItem(key);
       }
@@ -102,10 +104,35 @@ const expandOneVisibleLevel = async (page, previousCount) => {
   // Next dev keeps a live HMR connection, so DOM readiness plus the explicit
   // feature waits below is a more stable gate than global network idleness.
   await page.goto(BASE_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
+  await page.waitForFunction(() => document.documentElement.dataset.mindgrowHydrated === "true", { timeout: 60000 });
 
   await check("seed knowledge map renders", async () => {
     const count = await revealAllStoredNodes(page);
     if (count !== 13) throw new Error(`Expected 13 stored seed nodes, got ${count}`);
+  });
+
+  await check("English UI persists and feedback enters the tagged status loop", async () => {
+    await page.waitForSelector('select[aria-label="界面语言"]');
+    await page.select('select[aria-label="界面语言"]', "en");
+    await page.waitForSelector('textarea[aria-label="Add knowledge or ask the library"]');
+    if (!(await page.evaluate(() => document.documentElement.lang))?.startsWith("en")) throw new Error("Document language did not switch to English");
+    await page.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
+    await page.waitForSelector('select[aria-label="Interface language"]');
+    const persistedLocale = await page.$eval('select[aria-label="Interface language"]', (element) => element.value);
+    if (persistedLocale !== "en") throw new Error("English locale did not persist across reload");
+
+    await page.click('button[aria-label="Feedback"]');
+    await page.waitForSelector('section[aria-labelledby="feedback-title"]');
+    const feedbackText = await page.$('textarea[placeholder^="Describe what happened"]');
+    await feedbackText.type("Workspace search returned the wrong source for a precise entity query.");
+    await page.click('[data-testid="feedback-submit"]');
+    await page.waitForFunction(() => Boolean(localStorage.getItem("mindgrow.local.feedback.v1")));
+    const feedback = await page.evaluate(() => JSON.parse(localStorage.getItem("mindgrow.local.feedback.v1") || "[]")[0]);
+    if (!feedback?.issueTags?.includes("category:ux") || feedback.status !== "new") throw new Error("Feedback tags or initial status are missing");
+    if (Object.prototype.hasOwnProperty.call(feedback, "contactEmail")) throw new Error("Feedback stored contact data without consent");
+    await page.click('button[aria-label="Close feedback center"]');
+    await page.select('select[aria-label="Interface language"]', "zh-CN");
+    await page.waitForSelector('textarea[aria-label="输入知识或向知识库提问"]');
   });
 
   await check("whiteboard view persists card positions and returns to the mind map", async () => {

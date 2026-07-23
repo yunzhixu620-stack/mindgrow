@@ -573,12 +573,27 @@ check("workspace search migration indexes every knowledge surface and enforces t
   assert(rollback.includes("DROP FUNCTION IF EXISTS search_workspace_knowledge"));
 });
 
+check("feedback migration is service-role only and supports tagged release follow-up", () => {
+  const migration = fs.readFileSync(path.join(__dirname, "..", "supabase-v17-feedback-loop-migration.sql"), "utf8");
+  const rollback = fs.readFileSync(path.join(__dirname, "..", "supabase-v17-feedback-loop-rollback.sql"), "utf8");
+  assert(migration.includes("CREATE TABLE IF NOT EXISTS product_feedback"));
+  ["workspace_id", "user_id", "issue_tags", "resolved_version", "follow_up_acknowledged_at"].forEach((field) => {
+    assert(migration.includes(field), `feedback loop is missing ${field}`);
+  });
+  assert(migration.includes("ALTER TABLE product_feedback ENABLE ROW LEVEL SECURITY"));
+  assert(migration.includes("REVOKE ALL ON TABLE product_feedback FROM PUBLIC, anon, authenticated"));
+  assert(migration.includes("GRANT ALL ON TABLE product_feedback TO service_role"));
+  assert(rollback.includes("DROP TABLE IF EXISTS product_feedback"));
+});
+
 check("health readiness verifies required entity-grounding columns", () => {
   const healthSource = fs.readFileSync(path.join(__dirname, "..", "fc-proxy", "index.js"), "utf8");
   assert(healthSource.includes("graph_entities?select=id,description_citation_indexes&limit=1"));
   assert(healthSource.includes("graph_relations?select=id,explanation&limit=1"));
   assert(healthSource.includes("rpc/hybrid_search_document_chunks_v2"));
   assert(healthSource.includes("checks.graphRagRanking === 'ready'"));
+  assert(healthSource.includes("product_feedback?select=id,status,resolved_version&limit=1"));
+  assert(healthSource.includes("checks.feedbackLoop === 'ready'"));
 });
 
 check("canonical entity ids are stable inside one library and isolated across libraries", () => {

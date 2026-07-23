@@ -11,13 +11,16 @@ import { Breadcrumb } from "@/components/ui/breadcrumb";
 import { CommandPalette } from "@/components/ui/command-palette";
 import { SyncIndicator } from "@/components/ui/sync-indicator";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
+import { LocaleProvider, useLocale } from "@/components/i18n/locale-provider";
+import { LocaleSwitcher } from "@/components/i18n/locale-switcher";
+import { FeedbackCenter } from "@/components/feedback/feedback-center";
 
 export function MainLayout({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     void warmupHealth();
   }, []);
 
-  return <AuthProvider><AuthenticatedLayout>{children}</AuthenticatedLayout></AuthProvider>;
+  return <LocaleProvider><AuthProvider><AuthenticatedLayout>{children}</AuthenticatedLayout></AuthProvider></LocaleProvider>;
 }
 
 function AuthenticatedLayout({ children }: { children: React.ReactNode }) {
@@ -38,15 +41,20 @@ function AuthenticatedLayout({ children }: { children: React.ReactNode }) {
   }
 
   if (!IS_LOCAL_MODE && loading) {
-    return <div className="h-screen w-screen bg-[var(--bg-base)] flex items-center justify-center text-sm text-[var(--text-tertiary)]">正在安全连接…</div>;
+    return <ConnectingScreen />;
   }
   if (!IS_LOCAL_MODE && !session) return <AuthScreen />;
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden">
-      {isMobile ? <div className="flex shrink-0 items-center gap-2 border-b border-[var(--border-subtle)] bg-[var(--bg-surface)] pr-2" data-testid="mobile-breadcrumb-bar"><div className="min-w-0 flex-1"><Breadcrumb compact /></div><SyncIndicator compact /><ThemeToggle compact /></div> : <Header />}
+      {isMobile ? <div className="flex shrink-0 items-center gap-1 border-b border-[var(--border-subtle)] bg-[var(--bg-surface)] pr-2" data-testid="mobile-breadcrumb-bar"><div className="min-w-0 flex-1"><Breadcrumb compact /></div><SyncIndicator compact /><ThemeToggle compact /><LocaleSwitcher compact /><FeedbackCenter compact /></div> : <Header />}
       <div className="flex-1 overflow-hidden">{children}</div>
       {pathname === "/" && <CommandPalette />}
     </div>
   );
+}
+
+function ConnectingScreen() {
+  const { t } = useLocale();
+  return <div className="flex h-screen w-screen items-center justify-center bg-[var(--bg-base)] text-sm text-[var(--text-tertiary)]">{t("app.connecting")}</div>;
 }

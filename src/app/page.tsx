@@ -18,11 +18,12 @@ import { tenantCache, tenantMapKey, tenantScopeKey, type TenantScope } from "@/l
 import { commitPageGraphResponse, graphSnapshotFromResponse, type PageGraphRequest } from "@/app/page-loader";
 import {
   NewUserEmptyState,
-  PERSONAL_NOTES_TEMPLATE,
+  personalNotesTemplate,
   onboardingStorageKey,
   shouldShowNewUserEmptyState,
   type OnboardingState,
 } from "@/components/onboarding/new-user-empty-state";
+import { useLocale } from "@/components/i18n/locale-provider";
 import { MobileBottomNav } from "@/components/mobile/bottom-nav";
 import { COMMAND_ENTITY_FOCUS_EVENT, COMMAND_NAVIGATE_EVENT, type CommandSearchResult } from "@/lib/command-search";
 import { matchesBootstrapTenant } from "@/lib/bootstrap";
@@ -30,6 +31,7 @@ import { matchesBootstrapTenant } from "@/lib/bootstrap";
 const LOCAL_TENANT_SCOPE: TenantScope = { userId: "local-user", workspaceId: "local-workspace" };
 
 export default function Home() {
+  const { locale } = useLocale();
   const { currentWorkspace, user, bootstrap } = useAuth();
   const currentWorkspaceId = currentWorkspace?.id;
   const currentWorkspaceDefaultMapId = currentWorkspace?.defaultMapId;
@@ -374,6 +376,7 @@ export default function Home() {
     if (onboardingBusy) return;
     setOnboardingBusy(true);
     setOnboardingError("");
+    const template = personalNotesTemplate(locale);
     try {
       const response = await apiFetch("/api/knowledge", {
         method: "POST",
@@ -381,10 +384,10 @@ export default function Home() {
         body: JSON.stringify({
           action: "createFromTemplate",
           mode: "knowledge",
-          name: PERSONAL_NOTES_TEMPLATE.root,
-          description: PERSONAL_NOTES_TEMPLATE.rootDesc,
+          name: template.root,
+          description: template.rootDesc,
           color: "#22d3a7",
-          template: PERSONAL_NOTES_TEMPLATE,
+          template,
         }),
       });
       const data = await response.json();
@@ -396,7 +399,7 @@ export default function Home() {
     } finally {
       setOnboardingBusy(false);
     }
-  }, [handleCreatedMap, onboardingBusy, persistOnboardingState]);
+  }, [handleCreatedMap, locale, onboardingBusy, persistOnboardingState]);
 
   const enterOnboardingMode = useCallback((mode: "article" | "meeting") => {
     persistOnboardingState("completed");

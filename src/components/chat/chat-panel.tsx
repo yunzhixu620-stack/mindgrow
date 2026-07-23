@@ -5,6 +5,7 @@ import { useMindGrowStore } from "@/store/mindgrow-store";
 import { ChatMessage, AIMindMap } from "@/types";
 import { apiFetch, IS_LOCAL_MODE } from "@/lib/client-api";
 import { useSpeechInput } from "@/hooks/use-speech-input";
+import { useLocale } from "@/components/i18n/locale-provider";
 
 // ============================================================
 // Simple Markdown renderer
@@ -349,6 +350,8 @@ function TypingIndicator() {
 // Main Chat Panel
 // ============================================================
 export function ChatPanel() {
+  const { locale } = useLocale();
+  const english = locale === "en";
   const {
     currentMapId,
     messages,
@@ -367,7 +370,7 @@ export function ChatPanel() {
   const appendSpeech = useCallback((text: string) => {
     setInput((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}${text}`);
   }, []);
-  const speech = useSpeechInput(appendSpeech);
+  const speech = useSpeechInput(appendSpeech, english ? "en-US" : "zh-CN");
   const [confirming, setConfirming] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [cloudStatus, setCloudStatus] = useState<"checking" | "connected" | "offline">(
@@ -608,19 +611,19 @@ export function ChatPanel() {
             className={`w-2 h-2 rounded-full ${cloudStatus === "offline" ? "bg-amber-400" : "bg-[var(--primary)] animate-pulse-glow"}`}
           />
           <div>
-            <div className="text-xs font-semibold text-[var(--foreground)]">知识对话</div>
+            <div className="text-xs font-semibold text-[var(--foreground)]">{english ? "Knowledge chat" : "知识对话"}</div>
             <div className="text-[9px] text-[var(--text-tertiary)] mt-0.5">
               {IS_LOCAL_MODE
-                ? "本地知识库 · 自动保存"
+                ? (english ? "Local library · autosaved" : "本地知识库 · 自动保存")
                 : cloudStatus === "checking"
-                  ? "正在连接云端 API…"
+                  ? (english ? "Connecting to cloud API…" : "正在连接云端 API…")
                   : cloudStatus === "connected"
-                    ? "云端知识库 · API 已连接"
-                    : "云端 API 暂不可用 · 自动重试"}
+                    ? (english ? "Cloud library · API connected" : "云端知识库 · API 已连接")
+                    : (english ? "Cloud API unavailable · retrying" : "云端 API 暂不可用 · 自动重试")}
             </div>
           </div>
         </div>
-        <span className="text-[10px] text-[var(--muted-foreground)]">{nodeCount} 个节点</span>
+        <span className="text-[10px] text-[var(--muted-foreground)]">{english ? `${nodeCount} nodes` : `${nodeCount} 个节点`}</span>
       </div>
 
       {/* Messages */}
@@ -631,7 +634,9 @@ export function ChatPanel() {
 
         {messages.length <= 1 && !pendingMindMap && (
           <div className="flex flex-wrap gap-2 animate-fade-in">
-            {[CAPABILITY_PROMPT, "记录：RAG 回答需要引用可追溯来源", "如何发现当前知识库的缺口？"].map((prompt) => (
+            {(english
+              ? ["What can this AI knowledge assistant do?", "Remember: RAG answers need traceable sources", "How can I find gaps in this library?"]
+              : [CAPABILITY_PROMPT, "记录：RAG 回答需要引用可追溯来源", "如何发现当前知识库的缺口？"]).map((prompt) => (
               <button
                 type="button"
                 key={prompt}
@@ -666,8 +671,8 @@ export function ChatPanel() {
             disabled={isProcessing || confirming}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="输入知识点、粘贴文章片段..."
-            aria-label="输入知识或向知识库提问"
+            placeholder={english ? "Add a note, paste a passage, or ask a question…" : "输入知识点、粘贴文章片段..."}
+            aria-label={english ? "Add knowledge or ask the library" : "输入知识或向知识库提问"}
             rows={1}
             className="flex-1 bg-transparent text-sm resize-none outline-none max-h-[120px] text-[var(--foreground)] placeholder:text-[var(--muted-foreground)]"
             style={{ height: "auto", minHeight: "24px", lineHeight: "24px" }}
@@ -680,8 +685,8 @@ export function ChatPanel() {
           <button
             type="button"
             onClick={speech.toggle}
-            aria-label={speech.isListening ? "停止语音输入" : "开始语音输入"}
-            title={speech.supported ? (speech.isListening ? "停止语音输入" : "语音输入") : "当前浏览器不支持语音输入"}
+            aria-label={speech.isListening ? (english ? "Stop voice input" : "停止语音输入") : (english ? "Start voice input" : "开始语音输入")}
+            title={speech.supported ? (speech.isListening ? (english ? "Stop voice input" : "停止语音输入") : (english ? "Voice input" : "语音输入")) : (english ? "Voice input is not supported in this browser" : "当前浏览器不支持语音输入")}
             className={`flex-shrink-0 w-8 h-8 rounded-xl flex items-center justify-center ${speech.isListening ? "bg-red-500/20 text-red-300" : "bg-[var(--bg-elevated)] text-[var(--text-secondary)]"}`}
           >
             {speech.isListening ? "■" : "🎙"}
@@ -689,7 +694,7 @@ export function ChatPanel() {
           <button
             onClick={handleSend}
             disabled={!input.trim() || isProcessing || confirming}
-            aria-label="发送"
+            aria-label={english ? "Send" : "发送"}
             className="flex-shrink-0 w-8 h-8 bg-[var(--primary)] text-[var(--primary-foreground)] rounded-xl flex items-center justify-center hover:opacity-90 transition-opacity disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -698,8 +703,8 @@ export function ChatPanel() {
           </button>
         </div>
         <div className="flex items-center justify-between mt-1 px-1">
-          <span className="text-[10px] text-[var(--muted-foreground)]">Enter 发送 · Shift+Enter 换行</span>
-          {speech.interimText && <span className="max-w-[180px] truncate text-[10px] text-[var(--primary)]">正在识别：{speech.interimText}</span>}
+          <span className="text-[10px] text-[var(--muted-foreground)]">{english ? "Enter send · Shift+Enter new line" : "Enter 发送 · Shift+Enter 换行"}</span>
+          {speech.interimText && <span className="max-w-[180px] truncate text-[10px] text-[var(--primary)]">{english ? "Recognizing: " : "正在识别："}{speech.interimText}</span>}
         </div>
         {speech.error && <div role="status" className="mt-1 px-1 text-[10px] text-amber-300">{speech.error}</div>}
       </div>

@@ -21,7 +21,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.16.0';
+const API_VERSION = '10.17.0';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -4885,6 +4885,47 @@ const WORKSPACE_SEARCH_FIELDS = new Set([
   'entity_name', 'entity_alias', 'entity_description', 'document_title', 'citation_text',
 ]);
 
+const FEEDBACK_CATEGORIES = new Set(['retrieval', 'answer', 'citation', 'performance', 'ux', 'account', 'feature', 'community', 'other']);
+const FEEDBACK_SEVERITIES = new Set(['low', 'normal', 'high', 'blocker']);
+const FEEDBACK_STATUSES = new Set(['new', 'triaged', 'planned', 'resolved', 'closed']);
+const FEEDBACK_PRODUCT_AREAS = new Set(['knowledge', 'article', 'meeting', 'universe', 'auth', 'guide', 'other']);
+
+function convertProductFeedback(row) {
+  return {
+    id: String(row.id || ''),
+    category: FEEDBACK_CATEGORIES.has(row.category) ? row.category : 'other',
+    severity: FEEDBACK_SEVERITIES.has(row.severity) ? row.severity : 'normal',
+    message: String(row.message || ''),
+    locale: row.locale === 'en' ? 'en' : 'zh-CN',
+    productArea: FEEDBACK_PRODUCT_AREAS.has(row.product_area) ? row.product_area : 'other',
+    issueTags: Array.isArray(row.issue_tags) ? row.issue_tags.map(String).slice(0, 12) : [],
+    status: FEEDBACK_STATUSES.has(row.status) ? row.status : 'new',
+    resolutionNote: String(row.resolution_note || ''),
+    resolvedVersion: String(row.resolved_version || ''),
+    followUpAcknowledgedAt: row.follow_up_acknowledged_at || null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function normalizeFeedbackContext(value) {
+  const input = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const deviceClass = ['mobile', 'tablet', 'desktop'].includes(input.deviceClass) ? input.deviceClass : 'unknown';
+  const route = String(input.route || '').replace(/[^a-zA-Z0-9/_?=&.-]/g, '').slice(0, 160);
+  const mode = FEEDBACK_PRODUCT_AREAS.has(String(input.mode || '')) ? String(input.mode) : 'other';
+  const mapId = String(input.mapId || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 120);
+  return { route, mode, mapId, deviceClass };
+}
+
+function feedbackIssueTags(category, severity, productArea, locale) {
+  return Array.from(new Set([
+    `category:${category}`,
+    `severity:${severity}`,
+    `area:${productArea}`,
+    `locale:${locale}`,
+  ])).slice(0, 12);
+}
+
 function normalizeWorkspaceSearchRows(rows) {
   if (!Array.isArray(rows)) throw dependencyError('knowledge_store');
   return rows.reduce((results, row) => {
@@ -4958,6 +4999,12 @@ async function handleKnowledge(req, context) {
   const workspace = encodeURIComponent(workspaceId);
 
   if (req.method === 'GET') {
+    if (query.action === 'feedback') {
+      const userId = encodeURIComponent(context.user.id);
+      const rows = await supabaseRequest('GET', `product_feedback?workspace_id=eq.${workspace}&user_id=eq.${userId}&select=id,category,severity,message,locale,product_area,issue_tags,status,resolution_note,resolved_version,follow_up_acknowledged_at,created_at,updated_at&order=created_at.desc&limit=50`);
+      if (!Array.isArray(rows)) throw dependencyError('feedback_loop');
+      return { status: 200, data: { feedback: rows.map(convertProductFeedback) } };
+    }
     if (query.action === 'maps') {
       const rows = await supabaseRequest('GET', `maps?workspace_id=eq.${workspace}&select=*&order=is_default.desc,updated_at.desc`);
       if (!Array.isArray(rows)) throw dependencyError('knowledge_store');
@@ -5161,6 +5208,73 @@ async function handleKnowledge(req, context) {
   }
   const body = await readBody(req);
   const action = body.action;
+
+  if (action === 'submitFeedback') {
+    const category = FEEDBACK_CATEGORIES.has(body.category) ? body.category : null;
+    const severity = FEEDBACK_SEVERITIES.has(body.severity) ? body.severity : null;
+    const message = String(body.message || '').replace(/\u0000/g, '').trim().slice(0, 4000);
+    const locale = body.locale === 'en' ? 'en' : 'zh-CN';
+    const productArea = FEEDBACK_PRODUCT_AREAS.has(body.productArea) ? body.productArea : 'other';
+    const allowContact = body.allowContact === true;
+    const accountEmail = String(context.user.email || '').trim().toLowerCase().slice(0, 320);
+    const requestedContactEmail = String(body.contactEmail || '').trim().toLowerCase().slice(0, 320);
+    const contactEmail = allowContact && requestedContactEmail === accountEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(accountEmail)
+      ? accountEmail
+      : '';
+    if (!category || !severity || message.length < 20) {
+      return { status: 400, data: { error: 'Feedback category, severity, and at least 20 characters are required', code: 'INVALID_FEEDBACK' } };
+    }
+    if (category === 'community' && (!allowContact || !contactEmail)) {
+      return { status: 400, data: { error: 'Contact permission is required for a community invitation', code: 'CONTACT_PERMISSION_REQUIRED' } };
+    }
+    const userId = encodeURIComponent(context.user.id);
+    const oneHourAgo = encodeURIComponent(new Date(Date.now() - 60 * 60 * 1000).toISOString());
+    const recentRows = await supabaseRequest('GET', `product_feedback?workspace_id=eq.${workspace}&user_id=eq.${userId}&created_at=gte.${oneHourAgo}&select=id&limit=6`);
+    if (!Array.isArray(recentRows)) throw dependencyError('feedback_loop');
+    if (recentRows.length >= 5) return { status: 429, data: { error: 'Too many feedback submissions. Try again later.', code: 'FEEDBACK_RATE_LIMIT' } };
+    const timestamp = new Date().toISOString();
+    const row = {
+      id: `feedback_${Date.now()}_${crypto.randomBytes(5).toString('hex')}`,
+      workspace_id: workspaceId,
+      user_id: context.user.id,
+      category,
+      severity,
+      message,
+      locale,
+      product_area: productArea,
+      issue_tags: feedbackIssueTags(category, severity, productArea, locale),
+      status: 'new',
+      contact_allowed: Boolean(contactEmail),
+      contact_email: contactEmail,
+      client_version: String(body.clientVersion || '').trim().slice(0, 40),
+      context: normalizeFeedbackContext(body.context),
+      created_at: timestamp,
+      updated_at: timestamp,
+    };
+    const rows = await supabaseRequest('POST', 'product_feedback', row, 'return=representation');
+    const created = Array.isArray(rows) ? rows[0] : rows;
+    return { status: 201, data: { feedback: convertProductFeedback(created || row) } };
+  }
+
+  if (action === 'acknowledgeFeedback') {
+    const feedbackId = String(body.feedbackId || '').trim();
+    if (!/^feedback_[a-zA-Z0-9_-]{8,90}$/.test(feedbackId)) return { status: 400, data: { error: 'Invalid feedback id', code: 'INVALID_INPUT' } };
+    const userId = encodeURIComponent(context.user.id);
+    const encodedId = encodeURIComponent(feedbackId);
+    const existingRows = await supabaseRequest('GET', `product_feedback?workspace_id=eq.${workspace}&user_id=eq.${userId}&id=eq.${encodedId}&select=*&limit=1`);
+    const existing = Array.isArray(existingRows) ? existingRows[0] : null;
+    if (!existing) return { status: 404, data: { error: 'Feedback not found', code: 'NOT_FOUND' } };
+    if (!['resolved', 'closed'].includes(existing.status) || !existing.resolved_version) {
+      return { status: 409, data: { error: 'No release follow-up is available', code: 'FOLLOW_UP_NOT_READY' } };
+    }
+    const timestamp = new Date().toISOString();
+    const updatedRows = await supabaseRequest('PATCH', `product_feedback?workspace_id=eq.${workspace}&user_id=eq.${userId}&id=eq.${encodedId}`, {
+      follow_up_acknowledged_at: timestamp,
+      updated_at: timestamp,
+    }, 'return=representation');
+    const updated = Array.isArray(updatedRows) ? updatedRows[0] : updatedRows;
+    return { status: 200, data: { feedback: convertProductFeedback(updated || { ...existing, follow_up_acknowledged_at: timestamp, updated_at: timestamp }) } };
+  }
 
   if (action === 'suggestOrganization') {
     const proposal = await suggestKnowledgeOrganization(workspaceId, body.mapIds);
@@ -5463,6 +5577,7 @@ const server = http.createServer(async (req, res) => {
         hybridRetrieval: 'unknown',
         graphRagRanking: 'unknown',
         workspaceSearch: 'unknown',
+        feedbackLoop: 'unknown',
         entityGraph: 'unknown',
         nodeTimeline: 'unknown',
         whiteboardLayout: 'unknown',
@@ -5483,11 +5598,14 @@ const server = http.createServer(async (req, res) => {
           checks.entityGraph = 'ready';
           await supabaseRequest('GET', 'node_revisions?select=id&limit=1');
           checks.nodeTimeline = 'ready';
+          await supabaseRequest('GET', 'product_feedback?select=id,status,resolved_version&limit=1');
+          checks.feedbackLoop = 'ready';
         } catch (_) {
           if (checks.knowledgeStore !== 'ok') checks.knowledgeStore = 'unreachable';
           if (checks.hybridRetrieval !== 'ready') checks.hybridRetrieval = 'unavailable';
           if (checks.graphRagRanking !== 'ready') checks.graphRagRanking = 'unavailable';
           if (checks.workspaceSearch !== 'ready') checks.workspaceSearch = 'unavailable';
+          checks.feedbackLoop = 'unavailable';
           checks.entityGraph = 'unavailable';
           checks.nodeTimeline = 'unavailable';
         }
@@ -5530,6 +5648,7 @@ const server = http.createServer(async (req, res) => {
         checks.hybridRetrieval = 'not_configured';
         checks.graphRagRanking = 'not_configured';
         checks.workspaceSearch = 'not_configured';
+        checks.feedbackLoop = 'not_configured';
         checks.entityGraph = 'not_configured';
         checks.nodeTimeline = 'not_configured';
         checks.whiteboardLayout = 'not_configured';
@@ -5537,6 +5656,7 @@ const server = http.createServer(async (req, res) => {
       const healthy = checks.authConfiguration === 'ok' && checks.modelConfigured && checks.knowledgeStore === 'ok'
         && checks.hybridRetrieval === 'ready' && checks.graphRagRanking === 'ready'
         && checks.workspaceSearch === 'ready'
+        && checks.feedbackLoop === 'ready'
         && checks.entityGraph === 'ready' && checks.nodeTimeline === 'ready'
         && checks.whiteboardLayout === 'ready' && checks.deploymentIdentity !== 'missing';
       res.writeHead(healthy ? 200 : 503, { 'Content-Type': 'application/json; charset=utf-8' });

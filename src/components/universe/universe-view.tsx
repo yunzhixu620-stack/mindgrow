@@ -17,6 +17,7 @@ import {
   universeFallbackWarning,
   type LibraryGraph,
 } from "@/components/universe/universe-loader";
+import { useLocale } from "@/components/i18n/locale-provider";
 
 const UNIVERSE_CACHE_TTL_MS = 60_000;
 const LOCAL_TENANT_SCOPE: TenantScope = { userId: "local-user", workspaceId: "local-workspace" };
@@ -367,6 +368,8 @@ export function pointToSegmentDistance(
 }
 
 export function UniverseView() {
+  const { locale } = useLocale();
+  const english = locale === "en";
   const router = useRouter();
   const { user, currentWorkspace } = useAuth();
   const tenantScope = useMemo<TenantScope | null>(() => {
@@ -771,7 +774,9 @@ export function UniverseView() {
   }, [openNodeLibrary, selectedEntityNode]);
 
   const totalNodes = visibleLibraries.reduce((sum, library) => sum + library.nodes.length, 0);
-  const modeConfig = scope === "all" ? { label: "统一知识", shortLabel: "全部" } : MODE_LIBRARY_CONFIG[scope];
+  const modeConfig = english
+    ? ({ all: { label: "Unified Knowledge", shortLabel: "All" }, knowledge: { label: "Knowledge", shortLabel: "Knowledge" }, article: { label: "Article", shortLabel: "Articles" }, meeting: { label: "Meeting", shortLabel: "Meetings" } } as const)[scope]
+    : scope === "all" ? { label: "统一知识", shortLabel: "全部" } : MODE_LIBRARY_CONFIG[scope];
 
   return (
     <div
@@ -799,23 +804,23 @@ export function UniverseView() {
         }}
         onMouseLeave={() => { setDragging(false); setHoveredNode(null); setHoveredLinkId(null); }}
         onWheel={(event) => { event.preventDefault(); changeZoom(zoom * (event.deltaY < 0 ? 1.12 : 0.89), event.clientX, event.clientY); }}
-        aria-label={`${modeConfig.label}知识宇宙，可拖动和缩放`}
+        aria-label={english ? `${modeConfig.label} universe, draggable and zoomable` : `${modeConfig.label}知识宇宙，可拖动和缩放`}
         data-focus-node-id={activeFocusNodeId || ""}
         data-focus-neighbor-count={activeFocusNeighbors?.size || 0}
         data-canvas-theme-revision={themeRevision}
       />
 
       <div className="absolute left-4 top-16 z-30 max-w-[min(620px,calc(100%-2rem))] rounded-2xl border border-[var(--border-default)] bg-[var(--tooltip-bg)] p-4 shadow-[var(--shadow-md)] backdrop-blur-xl">
-        <div className="text-sm font-semibold text-[var(--text-primary)]">🌌 {modeConfig.label}宇宙</div>
-        <div className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">{visibleLibraries.length} 个知识库 · {totalNodes} 个节点 · <span data-testid="universe-cross-library-count" data-count={universeData.crossLibraryCount}>{universeData.crossLibraryCount}</span> 个共享实体与跨库关系</div>
+        <div className="text-sm font-semibold text-[var(--text-primary)]">🌌 {modeConfig.label}{english ? " Universe" : "宇宙"}</div>
+        <div className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">{english ? `${visibleLibraries.length} libraries · ${totalNodes} nodes · ` : `${visibleLibraries.length} 个知识库 · ${totalNodes} 个节点 · `}<span data-testid="universe-cross-library-count" data-count={universeData.crossLibraryCount}>{universeData.crossLibraryCount}</span>{english ? " shared entities and cross-library relations" : " 个共享实体与跨库关系"}</div>
         <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-[var(--text-secondary)]">
-          <span><i className="mr-1 inline-block h-px w-4 bg-[var(--canvas-edge)] align-middle" />库内层级</span>
-          <span><i className="mr-1 inline-block h-px w-4 border-t border-dashed border-pink-300/70 align-middle" />概念关联</span>
-          <span><i className="mr-1 inline-block h-px w-4 border-t border-dashed border-yellow-300/80 align-middle" />跨库生长关系</span>
+          <span><i className="mr-1 inline-block h-px w-4 bg-[var(--canvas-edge)] align-middle" />{english ? "Library hierarchy" : "库内层级"}</span>
+          <span><i className="mr-1 inline-block h-px w-4 border-t border-dashed border-pink-300/70 align-middle" />{english ? "Concept link" : "概念关联"}</span>
+          <span><i className="mr-1 inline-block h-px w-4 border-t border-dashed border-yellow-300/80 align-middle" />{english ? "Cross-library growth" : "跨库生长关系"}</span>
         </div>
-        <div className="mt-2 text-[10px] text-[var(--text-tertiary)]">悬停节点突出一跳关系；悬停连线查看证据；点击实体保留一跳焦点并查看解释。</div>
+        <div className="mt-2 text-[10px] text-[var(--text-tertiary)]">{english ? "Hover a node for one-hop relations, hover an edge for evidence, or click an entity to keep focus and read its explanation." : "悬停节点突出一跳关系；悬停连线查看证据；点击实体保留一跳焦点并查看解释。"}</div>
         <div className="mt-3 flex flex-wrap gap-1" data-testid="universe-scope-switch">
-          {(["all", "knowledge", "article", "meeting"] as const).map((item) => <button key={item} type="button" onClick={() => setScope(item)} className={`rounded-lg px-2.5 py-1.5 text-[10px] font-semibold ${scope === item ? "bg-violet-600 text-white" : "border border-[var(--border-default)] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"}`}>{item === "all" ? "全部知识" : item === "knowledge" ? "知识碎片" : item === "article" ? "文章" : "会议"}</button>)}
+          {(["all", "knowledge", "article", "meeting"] as const).map((item) => <button key={item} type="button" onClick={() => setScope(item)} className={`rounded-lg px-2.5 py-1.5 text-[10px] font-semibold ${scope === item ? "bg-violet-600 text-white" : "border border-[var(--border-default)] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"}`}>{english ? ({ all: "All knowledge", knowledge: "Knowledge", article: "Articles", meeting: "Meetings" } as const)[item] : item === "all" ? "全部知识" : item === "knowledge" ? "知识碎片" : item === "article" ? "文章" : "会议"}</button>)}
         </div>
       </div>
 
@@ -855,8 +860,8 @@ export function UniverseView() {
         <div className="absolute inset-0 z-20 flex items-center justify-center bg-[var(--overlay-bg)] px-6">
           <div className="max-w-sm rounded-2xl border border-[var(--border-default)] bg-[var(--tooltip-bg)] p-6 text-center shadow-2xl">
             <div className="text-4xl">{error ? "⚠️" : loading ? "🪐" : "🌱"}</div>
-            <h2 className="mt-4 text-base font-semibold text-[var(--text-primary)]">{error ? "知识宇宙加载失败" : loading ? `正在连接${modeConfig.label}知识库…` : `${modeConfig.label}宇宙还是一片空地`}</h2>
-            <p className="mt-2 text-xs leading-6 text-[var(--text-secondary)]">{error || (loading ? "正在汇总库内关系与跨库共享概念；慢请求会自动重试，不会无限等待。" : "先创建知识库并保存内容，新增节点会在这里继续生长。")}</p>
+            <h2 className="mt-4 text-base font-semibold text-[var(--text-primary)]">{error ? (english ? "Could not load the knowledge universe" : "知识宇宙加载失败") : loading ? (english ? `Connecting ${modeConfig.label} libraries…` : `正在连接${modeConfig.label}知识库…`) : (english ? `${modeConfig.label} Universe is empty` : `${modeConfig.label}宇宙还是一片空地`)}</h2>
+            <p className="mt-2 text-xs leading-6 text-[var(--text-secondary)]">{error || (loading ? (english ? "Collecting in-library relations and shared concepts. Slow requests retry with a bounded wait." : "正在汇总库内关系与跨库共享概念；慢请求会自动重试，不会无限等待。") : (english ? "Create a library and save content; new nodes will grow here." : "先创建知识库并保存内容，新增节点会在这里继续生长。"))}</p>
             {error && <button type="button" onClick={() => setReloadToken((value) => value + 1)} className="mt-4 rounded-lg border border-[var(--border-default)] bg-[var(--bg-elevated)] px-3 py-2 text-xs font-semibold text-[var(--text-primary)] hover:bg-[var(--bg-hover)]">重新连接</button>}
           </div>
         </div>

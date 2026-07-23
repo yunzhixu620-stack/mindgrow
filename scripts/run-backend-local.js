@@ -19,12 +19,14 @@ const allowedHealthTables = new Set([
   "graph_relations",
   "graph_evidence",
   "node_revisions",
+  "product_feedback",
 ]);
 
 let backendProcess;
 let supabaseStub;
 let cleanupPromise;
 const workspaceSearchPayloads = [];
+const feedbackRows = [];
 
 function startSupabaseStub() {
   return new Promise((resolve, reject) => {
@@ -68,6 +70,32 @@ function startSupabaseStub() {
         return;
       }
 
+      if (request.method === "POST" && url.pathname === "/rest/v1/product_feedback") {
+        let rawBody = "";
+        request.on("data", (chunk) => { rawBody += chunk; });
+        request.on("end", () => {
+          const payload = JSON.parse(rawBody || "{}");
+          feedbackRows.unshift(payload);
+          response.writeHead(201, { "Content-Type": "application/json; charset=utf-8" });
+          response.end(JSON.stringify([payload]));
+        });
+        return;
+      }
+
+      if (request.method === "PATCH" && url.pathname === "/rest/v1/product_feedback") {
+        let rawBody = "";
+        request.on("data", (chunk) => { rawBody += chunk; });
+        request.on("end", () => {
+          const payload = JSON.parse(rawBody || "{}");
+          const id = String(url.searchParams.get("id") || "").replace(/^eq\./, "");
+          const row = feedbackRows.find((item) => item.id === id);
+          if (row) Object.assign(row, payload);
+          response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+          response.end(JSON.stringify(row ? [row] : []));
+        });
+        return;
+      }
+
       const match = url.pathname.match(/^\/rest\/v1\/([^/]+)$/);
       const table = match?.[1];
       const rowsByTable = {
@@ -86,6 +114,7 @@ function startSupabaseStub() {
         node_citations: [],
         node_revisions: [],
         document_chunks: [],
+        product_feedback: feedbackRows,
       };
 
       if (request.method === "GET" && (Object.prototype.hasOwnProperty.call(rowsByTable, table) || allowedHealthTables.has(table))) {
@@ -254,6 +283,45 @@ async function testTenantScopedWorkspaceSearch() {
   console.log("Tenant-scoped workspace search and hit explanation passed");
 }
 
+async function testTenantScopedFeedbackLoop() {
+  const headers = {
+    Authorization: "Bearer local-bootstrap-token",
+    "Content-Type": "application/json",
+    "X-Workspace-Id": "ws_localbootstrapuser",
+  };
+  const response = await fetch(`${backendBase}/api/knowledge`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      action: "submitFeedback",
+      workspaceId: "ws_attacker_controlled",
+      userId: "attacker-controlled",
+      category: "retrieval",
+      severity: "high",
+      message: "Workspace search returned the wrong article for a precise query.",
+      locale: "en",
+      productArea: "article",
+      allowContact: false,
+      clientVersion: "10.17.0",
+      context: { route: "/", mode: "article", mapId: "map_ws_localbootstrapuser_default", deviceClass: "desktop", leakedContent: "must not persist" },
+    }),
+  });
+  const body = await response.json();
+  const stored = feedbackRows.find((item) => item.id === body.feedback?.id);
+  if (response.status !== 201 || !stored || stored.workspace_id !== "ws_localbootstrapuser" || stored.user_id !== "local-bootstrap-user") {
+    throw new Error(`Tenant-scoped feedback submission failed (HTTP ${response.status})`);
+  }
+  if (stored.context?.leakedContent || stored.contact_email || !stored.issue_tags?.includes("category:retrieval")) {
+    throw new Error("Feedback minimization, contact consent, or issue tagging failed");
+  }
+  const listResponse = await fetch(`${backendBase}/api/knowledge?action=feedback`, { headers });
+  const listBody = await listResponse.json();
+  if (listResponse.status !== 200 || listBody.feedback?.[0]?.id !== stored.id || Object.prototype.hasOwnProperty.call(listBody.feedback[0], "contactEmail")) {
+    throw new Error(`Feedback status list failed (HTTP ${listResponse.status})`);
+  }
+  console.log("Tenant-scoped feedback, issue tags, and data minimization passed");
+}
+
 function runLocalSmoke() {
   return new Promise((resolve, reject) => {
     const smoke = spawn(process.execPath, [path.join(__dirname, "backend-smoke.js")], {
@@ -330,6 +398,7 @@ async function main() {
     await testUnifiedUniverseAndMeetingGate();
     await testArticleSourceAndAudioGate();
     await testTenantScopedWorkspaceSearch();
+    await testTenantScopedFeedbackLoop();
     exitCode = await runLocalSmoke();
   } catch (error) {
     console.error(`Local backend test failed: ${error.message}`);
