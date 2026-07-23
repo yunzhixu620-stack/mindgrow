@@ -391,7 +391,7 @@ describe("knowledge quality contracts", () => {
 
   it("captures an explicit next-meeting commitment and caps the saved meeting outline", async () => {
     const transcript = [
-      "JHD: If the tests are not merged by the next meeting, I'm happy to demote the proposal to stage 2.7. I'll commit to that.",
+      "JHD: If it doesn't happen by the next meeting, I'm happy to demote it to 2.7.",
       "RGN: The tests are actively under review.",
       "### Conclusion",
       "* Error stack accessor reaches stage 3.",
