@@ -29,7 +29,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.21.21';
+const API_VERSION = '10.21.22';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -3005,9 +3005,12 @@ function deterministicExperimentEvidenceFact(citation) {
   }
   if (effects.length > 0) return `消融结果：${effects.join('；')}。`;
 
-  const numericEffects = [...quote.matchAll(/[−–-]\s*(\d+(?:\.\d+)?)\s*pp\s+on\s+([A-Za-z][A-Za-z0-9-]{1,30})/gi)]
-    .slice(0, 4)
-    .map((item) => `${item[2]} 下降 ${item[1]} 个百分点`);
+  const numericEffects = [];
+  const numericPattern = /[−–-]\s*(\d+(?:\.\d+)?)\s*pp\s+on\s+([A-Za-z][A-Za-z0-9-]{1,30})/gi;
+  let numericMatch;
+  while ((numericMatch = numericPattern.exec(quote)) && numericEffects.length < 4) {
+    numericEffects.push(`${numericMatch[2]} 下降 ${numericMatch[1]} 个百分点`);
+  }
   if (numericEffects.length > 0 && /ablation|removed|mechanism specialization/i.test(quote)) {
     return `消融结果：${numericEffects.join('；')}；具体移除机制见原文引用。`;
   }

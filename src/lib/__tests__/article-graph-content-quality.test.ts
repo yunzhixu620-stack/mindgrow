@@ -443,6 +443,24 @@ describe("article core graph and semantic outline quality", () => {
     expect(repaired.children[0].desc).toContain("LoCoMo 下降 8.6 个百分点");
     expect(repaired.children[0].desc).not.toContain("伦理审查");
     expect(repaired.children[0].citationIndexes).toEqual([12]);
+
+    const fallbackPattern = proxy.repairArticleExperimentEvidence({
+      root: "Model",
+      rootDesc: "",
+      rootCitationIndexes: [],
+      children: [{
+        topic: "数据与实验",
+        desc: "实验已完成。",
+        citationIndexes: [3],
+        items: [],
+        itemCitationIndexes: [],
+      }],
+    }, [{
+      index: 3,
+      quote: "Ablation result: -11.2 pp on BenchmarkX after removal.",
+      content: "Ablation result: -11.2 pp on BenchmarkX after removal.",
+    }], new Set([3]));
+    expect(fallbackPattern.children[0].desc).toContain("BenchmarkX 下降 11.2 个百分点");
   });
 
   it("uses the first evidence-backed semantic branch when the model summary is empty", () => {
