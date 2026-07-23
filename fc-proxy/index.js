@@ -29,7 +29,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.21.9';
+const API_VERSION = '10.21.10';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -1939,6 +1939,40 @@ function mindMapNodeCount(mindMap) {
   );
 }
 
+function isSingleKnowledgeTerm(input) {
+  const normalized = String(input || '').trim().replace(/\s+/g, ' ');
+  if (!normalized || normalized.length > 40) return false;
+  if (/[。！？；，、.!?;,\n\r]/.test(normalized)) return false;
+  return normalized.split(' ').filter(Boolean).length <= 4;
+}
+
+function ensureShortTermFiveDirections(mindMap, input) {
+  if (!isSingleKnowledgeTerm(input)) return mindMap;
+  const source = mindMap && typeof mindMap === 'object' ? mindMap : {};
+  const children = (Array.isArray(source.children) ? source.children : [])
+    .filter((child) => child && String(child.topic || '').trim())
+    .map((child) => ({
+      ...child,
+      topic: String(child.topic).trim(),
+      items: Array.isArray(child.items) ? child.items : [],
+    }));
+  const seen = new Set(children.map((child) => child.topic.toLocaleLowerCase()));
+  const related = Array.isArray(source.relatedTopics) ? source.relatedTopics : [];
+  const chinese = /[\u3400-\u9fff]/.test(String(input || ''));
+  const fallbacks = chinese
+    ? ['定义与原理', '关键方法', '应用场景', '优势与局限', '评估指标']
+    : ['Definition and principles', 'Key methods', 'Applications', 'Strengths and limitations', 'Evaluation metrics'];
+  for (const candidate of [...related, ...fallbacks]) {
+    const topic = String(candidate || '').trim();
+    const key = topic.toLocaleLowerCase();
+    if (!topic || seen.has(key)) continue;
+    children.push({ topic, desc: '', items: [], itemCitationIndexes: [] });
+    seen.add(key);
+    if (children.length === 5) break;
+  }
+  return { ...source, children: children.slice(0, 5) };
+}
+
 function applyKnowledgeNodeBudget(mindMap, budget) {
   const input = mindMap && typeof mindMap === 'object' ? mindMap : {};
   const children = (Array.isArray(input.children) ? input.children : []).slice(0, Math.min(6, budget.maximum - 1))
@@ -2098,6 +2132,7 @@ async function handleChat(body, context) {
   }
   const structureCoverage = ensureMindMapSourceCoverage(mindMap, structureInput, [], null);
   mindMap = structureCoverage.mindMap;
+  mindMap = ensureShortTermFiveDirections(mindMap, structureInput);
   let supplementPlan = null;
   if (supplementMode) {
     const canonicalized = canonicalizeSupplementMindMap(mindMap, storedNodes);
@@ -7163,6 +7198,8 @@ module.exports = {
   handleMeetingTool,
   requestedKnowledgeNodeBudget,
   mindMapNodeCount,
+  isSingleKnowledgeTerm,
+  ensureShortTermFiveDirections,
   applyKnowledgeNodeBudget,
   canonicalizeSupplementMindMap,
   bestCitationIndexes,

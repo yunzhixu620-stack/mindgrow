@@ -24,6 +24,18 @@ const proxy = require("../../../fc-proxy/index.js") as {
     maximum: number;
   };
   mindMapNodeCount: (mindMap: unknown) => number;
+  isSingleKnowledgeTerm: (input: string) => boolean;
+  ensureShortTermFiveDirections: (
+    mindMap: {
+      root: string;
+      children: Array<{ topic: string; desc?: string; items?: string[] }>;
+      relatedTopics?: string[];
+    },
+    input: string,
+  ) => {
+    root: string;
+    children: Array<{ topic: string; desc?: string; items?: string[] }>;
+  };
   applyKnowledgeNodeBudget: (mindMap: unknown, budget: { kind: string; minimum: number; maximum: number }) => {
     mindMap: unknown;
     audit: { actual: number; proposed: number; overflowCompressed: number };
@@ -62,6 +74,30 @@ function oversizedMap() {
 }
 
 describe("knowledge quality contracts", () => {
+  it("expands a single knowledge term into exactly five first-level directions", () => {
+    expect(proxy.isSingleKnowledgeTerm("GraphRAG")).toBe(true);
+    expect(proxy.isSingleKnowledgeTerm("知识图谱")).toBe(true);
+    expect(proxy.isSingleKnowledgeTerm("GraphRAG improves retrieval.")).toBe(false);
+
+    const result = proxy.ensureShortTermFiveDirections({
+      root: "GraphRAG",
+      children: [
+        { topic: "技术优势", items: [] },
+        { topic: "应用场景", items: [] },
+      ],
+      relatedTopics: ["知识图谱构建", "大模型微调方法", "检索排序算法"],
+    }, "GraphRAG");
+
+    expect(result.children.map((child) => child.topic)).toEqual([
+      "技术优势",
+      "应用场景",
+      "知识图谱构建",
+      "大模型微调方法",
+      "检索排序算法",
+    ]);
+    expect(proxy.mindMapNodeCount(result)).toBe(6);
+  });
+
   it("enforces the 4–8, 10–20 and 12–20 node budgets", () => {
     expect(proxy.requestedKnowledgeNodeBudget("短文本", false)).toEqual({
       kind: "short_text",
