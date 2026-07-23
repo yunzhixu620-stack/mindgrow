@@ -59,7 +59,7 @@
 | S2.12 查询时 GraphRAG 定位 | 已合并 | PR #54 / `025cce2`；Supabase V15、阿里云 API `10.12.0` 与 GitHub Pages 均已发布；entity linking、混合召回、1–2 跳路径重排、拒答和可见路由已上线，冻结集全部指标 100%，公网 backend smoke 7/7、公网 E2E 7/7 与 production fact 均通过 |
 | S2.13 一键整理知识库 | 已合并 | PR #55 / `7366d96`；四策略、AI 失败显式降级、预览/逐项调整、默认不写入、工作区隔离撤销与部分失败自动回滚已发布；API `10.13.0` 与 GitHub Pages 已上线，公网 backend 7/7、前端 E2E 7/7 与 production fact 均通过 |
 | S2.14 统一知识宇宙 | 已合并并发布 | PR #56 / `f21be69`；文章、会议、碎片实体已在工作区只读投影中统一，原库证据与权限边界不改写；会议草稿默认不落库；API `10.14.0` 与 GitHub Pages 已发布，公网 backend 7/7、前端 E2E 7/7 与 production fact 均通过 |
-| S2.15 多源文章 + Audio Overview | 开发完成，待发布 | URL/PDF/正文单来源协议、不可读链接拒答、来源读取状态、逐字 citation 与 claim-id 音频证据映射已完成；API `10.15.0`，unit 187/187、RAG 64/64、backend 9/9、产品 E2E 37/37 通过 |
+| S2.15 多源文章 + Audio Overview | 已合并并发布 | PR #57 / `af00ec5`；URL/PDF/正文单来源协议、不可读链接拒答、来源读取状态、逐字 citation 与 claim-id 音频证据映射已上线；API `10.15.0` 与 GitHub Pages 已发布，公网 backend 7/7、前端 E2E 7/7 与 production fact 均通过 |
 | S2.16 跨库全局搜索 | 局部已有 | U5 仅本地命令搜索；缺后端索引、权限过滤和命中解释 |
 | S2.17 国际化与反馈闭环 | 待开发 | 英文 UI、反馈群机制、标签与版本回访均待完整实施 |
 | S2.18 邮件投递长期方案 | 待开发 | 需 SMTP 选型、退信监控、频控和成本验证 |
@@ -150,3 +150,13 @@
 5. [x] `gh-pages@a6ef3ff` 发布成功，Pages workflow `29968712888` 通过；公网前端 E2E 7/7 通过。
 6. [x] production fact workflow `29968776021` 精确核对前端与后端均为 `f21be697bf01827e1f38463f47855cecebd94d52`、API `10.14.0` 与 `authRequired=true` 并通过。
 7. [x] 本地 unit 181/181、RAG 64/64、backend 9/9、产品 E2E 37/37 均通过，覆盖跨板块统一实体、来源证据聚合与会议确认后入库。
+
+## S2.15 发布检查点
+
+1. [x] PR #57 压缩合并为 `main@af00ec59e58c4ea742e73b7d3dc62f59aae2bdfb`；合并前 CI、Vercel Preview 与部署事实门禁全部通过。
+2. [x] 本任务无数据库迁移和新依赖；阿里云环境变量 `MINDGROW_GIT_SHA` 与实际后端源码均更新为该合并提交，API `10.15.0` 发布成功。
+3. [x] 公网 `/health` 返回 `status=ok`、`version=10.15.0`、精确 `gitSha`、`authRequired=true`、`nodeEnv=production`、`deploymentIdentity=ready`，知识存储、实体图与 GraphRAG 排序均为 ready。
+4. [x] 公网 backend smoke 7/7 通过；匿名 bootstrap、知识库、PATCH、workspace 与 Audio Overview 均由应用层拒绝。
+5. [x] `gh-pages@8e8bcc534700e5f60c0351dc808a10c1b2997fe5` 发布成功，Pages workflow `29970768271` 通过；公网前端 E2E 7/7 通过。
+6. [x] production fact workflow `29970868143` 精确核对前端与后端均为 `af00ec59e58c4ea742e73b7d3dc62f59aae2bdfb`、API `10.15.0` 与 `authRequired=true` 并通过。
+7. [x] 本地 unit 187/187、RAG 64/64、backend 9/9、产品 E2E 37/37 均通过，另有混合来源、不可读 URL 和无证据音频三项接口门禁。
