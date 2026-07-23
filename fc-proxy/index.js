@@ -17,12 +17,19 @@ const PORT = Number.parseInt(process.env.FC_SERVER_PORT || process.env.PORT || '
 // Keep the timeout bounded, but do not turn a healthy 15-30 second model call
 // into a false 503. Transient 429/5xx responses are retried below.
 const UPSTREAM_TIMEOUT_MS = Number.parseInt(process.env.UPSTREAM_TIMEOUT_MS || '90000', 10);
+// FC currently stops an invocation after 60 seconds. A streaming model response
+// can keep the socket active beyond that window, so the ordinary socket idle
+// timeout is not enough. Finish or recover before FC kills the handler.
+const CHAT_TOTAL_TIMEOUT_MS = Math.max(
+  5000,
+  Math.min(Number.parseInt(process.env.CHAT_TOTAL_TIMEOUT_MS || '45000', 10), UPSTREAM_TIMEOUT_MS, 50000),
+);
 const AUTH_REQUIRED = process.env.AUTH_REQUIRED !== 'false';
 const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCase() || 'development';
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.21.4';
+const API_VERSION = '10.21.5';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -77,6 +84,14 @@ function fetchChatStream(targetUrl, headers, body) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(targetUrl);
     const postData = JSON.stringify({ ...(body || {}), stream: true });
+    let settled = false;
+    let totalTimer = null;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      if (totalTimer) clearTimeout(totalTimer);
+      callback(value);
+    };
     const request = https.request({
       hostname: parsed.hostname,
       port: parsed.port || 443,
@@ -110,7 +125,7 @@ function fetchChatStream(targetUrl, headers, body) {
       });
       response.on('end', () => {
         if (buffer) consumeLine(buffer);
-        resolve({ status: response.statusCode || 502, content, headers: response.headers });
+        finish(resolve, { status: response.statusCode || 502, content, headers: response.headers });
       });
     });
     request.setTimeout(UPSTREAM_TIMEOUT_MS, () => {
@@ -118,7 +133,13 @@ function fetchChatStream(targetUrl, headers, body) {
       error.code = 'UPSTREAM_TIMEOUT';
       request.destroy(error);
     });
-    request.on('error', reject);
+    totalTimer = setTimeout(() => {
+      const error = new Error('Upstream stream exceeded the function execution budget');
+      error.code = 'UPSTREAM_TIMEOUT';
+      request.destroy(error);
+      finish(reject, error);
+    }, CHAT_TOTAL_TIMEOUT_MS);
+    request.on('error', (error) => finish(reject, error));
     request.write(postData);
     request.end();
   });
@@ -4212,6 +4233,46 @@ function evidencePrompt(citations) {
   return citations.map((item) => `【C${item.index}|${item.locator}】${item.content}`).join('\n\n');
 }
 
+function selectArticleAnalysisCitations(citations, maxItems, maxCharacters) {
+  const rows = (Array.isArray(citations) ? citations : []).filter((item) => (
+    item && Number.isInteger(Number(item.index)) && normalizeSpaces(item.content).length >= 4
+  ));
+  const itemLimit = Math.max(20, Math.min(Number(maxItems || 84), 120));
+  const characterLimit = Math.max(12000, Math.min(Number(maxCharacters || 52000), 80000));
+  if (rows.length <= itemLimit && evidencePrompt(rows).length <= characterLimit) return rows;
+
+  const selected = new Map();
+  let characters = 0;
+  const add = (row) => {
+    if (!row || selected.has(row.index) || selected.size >= itemLimit) return;
+    const cost = normalizeSpaces(row.content).length + normalizeSpaces(row.locator).length + 24;
+    if (characters + cost > characterLimit) return;
+    selected.set(row.index, row);
+    characters += cost;
+  };
+
+  rows.slice(0, 8).forEach(add);
+  const semanticPatterns = [
+    /(research question|objective|motivation|challenge|problem|研究问题|研究目标|动机|挑战)/i,
+    /(method|approach|framework|architecture|algorithm|model|pipeline|方法|框架|架构|算法|模型)/i,
+    /(dataset|benchmark|experiment|evaluation|baseline|metric|accuracy|recall|precision|数据集|基准|实验|评估|基线|指标)/i,
+    /(result|finding|outperform|improv|increase|decrease|significant|结果|发现|优于|提升|降低|显著)/i,
+    /(limitation|failure|weakness|drawback|future work|however|局限|限制|失败|不足|未来工作)/i,
+  ];
+  semanticPatterns.forEach((pattern) => {
+    rows.filter((row) => pattern.test(normalizeSpaces(row.content))).slice(0, 10).forEach(add);
+  });
+
+  const uniformSlots = Math.min(24, rows.length);
+  for (let slot = 0; slot < uniformSlots; slot += 1) {
+    add(rows[Math.min(rows.length - 1, Math.floor((slot * (rows.length - 1)) / Math.max(1, uniformSlots - 1)))]);
+  }
+  rows.slice(-8).forEach(add);
+  rows.forEach(add);
+
+  return [...selected.values()].sort((left, right) => Number(left.index) - Number(right.index));
+}
+
 function buildMeetingCitations(transcript) {
   return buildSentenceCitations(transcript, 'meeting', '', 160);
 }
@@ -4851,13 +4912,14 @@ async function handleArticleTool(body) {
   recoveryContext.citations = citations;
   recoveryContext.documentChunks = prepared.documentChunks;
   const allowedIndexes = new Set(citations.map((item) => item.index));
+  const analysisCitations = selectArticleAnalysisCitations(citations, 84, 52000);
   stage = 'ANALYSIS_MODEL';
   const raw = await dashscopeChat([
     {
       role: 'system',
       content: `你是忠于原文的论文与文章解析助手。只返回严格 JSON：{"title":"","summary":"","summaryCitationIndexes":[1],"keyPoints":[{"text":"","citationIndexes":[1]}],"arguments":[{"claim":"","evidence":"","citationIndexes":[1]}],"questions":[""],"mindMap":{"root":"","rootDesc":"","rootCitationIndexes":[1],"children":[{"topic":"","desc":"","citationIndexes":[1],"items":[""],"itemCitationIndexes":[[1]]}]},"entityGraph":{"entities":[],"relations":[]}}。论文的 mindMap.children 优先使用“研究问题、方法/架构、数据与实验、结果、局限与启示”等 3-6 个语义主干；每个主干 desc 必须用一句话直接解释该主干在本文中的具体内容，不能只重复栏目名。每个主干的 items 必须回答父节点下不同的内容方向，不得只是重复父节点或罗列文档信息：“数据与实验”应在证据存在时分别说明“数据是什么”“与哪些基线比较”“实验如何进行”“使用什么指标”“消融验证了什么”，每项写成可独立理解的中文结论；“局限与启示”应分别说明“具体局限是什么”“在什么条件下发生”“影响什么”“如何改进”。如果原文没有某一方向的直接证据就省略该项，不得用“进行了大量实验”“证明有效”“存在一定局限”等空泛句占位。标题、URL、来源、作者、发布日期、关键词和英文摘要属于文档元数据，绝对不能成为导图节点或 items；超过 12 个英文单词的原文标题或摘要也不得原样进入导图。具体模型、指标、对比和证据放入 items，不得把大量细节平铺为一级节点，也不得因聚合而删减原文信息。所有标题、摘要、要点、论证、问题和导图节点必须使用简体中文；英文原文要准确翻译成中文，专业术语或缩写可在中文后用括号保留英文。输入由带页码/段落定位的 C 编号证据块组成。每个结论、数字、表格结论和导图分支必须引用直接支持它的 C 编号；只能引用给定编号；不得自行填写 quote 或页码；引用原文保持原始语言，不得伪造中文原文；证据不足就省略结论，不得补充原文没有的事实。${ENTITY_GRAPH_SCHEMA_PROMPT}${ARTICLE_CORE_ENTITY_GRAPH_PROMPT}`,
     },
-    { role: 'user', content: `以下内容只包含文章正文证据；来源 URL、文档标题和文件名属于元数据，未放入证据区，禁止把元数据当成结论：\n${evidencePrompt(citations)}` },
+    { role: 'user', content: `以下内容只包含文章正文证据；来源 URL、文档标题和文件名属于元数据，未放入证据区，禁止把元数据当成结论：\n${evidencePrompt(analysisCitations)}` },
   ], 'qwen-plus', 3600, 0.1);
   stage = 'MODEL_PARSE';
   let parsed;
@@ -4959,6 +5021,11 @@ async function handleArticleTool(body) {
       fileName,
       mimeType,
       sourceStatus: prepared.sourceStatus,
+      analysisInput: {
+        citationCount: analysisCitations.length,
+        promptCharacters: evidencePrompt(analysisCitations).length,
+        availableCitationCount: citations.length,
+      },
     },
   };
   } catch (error) {
@@ -7004,6 +7071,7 @@ module.exports = {
   anchorCoverage,
   retrieveEvidence,
   sourceCriticalFacts,
+  selectArticleAnalysisCitations,
   ensureMindMapSourceCoverage,
   sanitizeGroundedAnswer,
   compactGroundedEvidence,

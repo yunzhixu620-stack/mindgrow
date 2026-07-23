@@ -23,6 +23,11 @@ const proxy = require("../../../fc-proxy/index.js") as {
     };
   };
   sourceCriticalFacts: (value: string, limit: number) => string[];
+  selectArticleAnalysisCitations: (
+    citations: Array<{ index: number; locator: string; content: string }>,
+    maxItems?: number,
+    maxCharacters?: number,
+  ) => Array<{ index: number; locator: string; content: string }>;
   ensureMindMapSourceCoverage: (
     mindMap: Record<string, unknown>,
     sourceText: string,
@@ -227,6 +232,34 @@ describe("article core graph and semantic outline quality", () => {
       "评估指标：实验采用 F1 和 Recall@5 评估模型的验证能力。",
     ]);
     expect(JSON.stringify(result.mindMap)).not.toMatch(/要点|论文介绍了相关内容/);
+  });
+
+  it("samples long papers across sections while keeping the analysis prompt bounded", () => {
+    const citations = Array.from({ length: 160 }, (_, offset) => {
+      const index = offset + 1;
+      let content = `正文证据 ${index}：这是论文第 ${index} 个可定位证据块，包含用于覆盖测试的详细内容。`;
+      if (index === 21) content += " Research objective and central problem.";
+      if (index === 49) content += " The proposed method uses a hierarchical architecture.";
+      if (index === 88) content += " Experiments use the CUSUM benchmark and Recall metric.";
+      if (index === 121) content += " Results significantly outperform the baseline.";
+      if (index === 149) content += " Limitations and future work are discussed here.";
+      return { index, locator: `网页正文第 ${index} 句`, content: content.repeat(5) };
+    });
+
+    const selected = proxy.selectArticleAnalysisCitations(citations, 64, 24000);
+    const indexes = selected.map((item) => item.index);
+    const promptCharacters = selected.reduce(
+      (total, item) => total + item.content.length + item.locator.length + 24,
+      0,
+    );
+
+    expect(selected.length).toBeLessThanOrEqual(64);
+    expect(promptCharacters).toBeLessThanOrEqual(24000);
+    expect(indexes).toEqual([...indexes].sort((left, right) => left - right));
+    expect(indexes).toEqual(expect.arrayContaining([1, 21, 49, 88, 121, 149, 160]));
+    expect(indexes.some((index) => index >= 35 && index <= 45)).toBe(true);
+    expect(indexes.some((index) => index >= 75 && index <= 85)).toBe(true);
+    expect(indexes.some((index) => index >= 115 && index <= 125)).toBe(true);
   });
 
   it("keeps Chinese entity explanations grounded by dedicated English evidence", () => {
