@@ -57,6 +57,7 @@ export default function Home() {
     currentMode,
     setCurrentMode,
     nodes,
+    entityGraph,
     setSearchResults,
     setHighlightedNodeId,
   } = useMindGrowStore();
@@ -94,6 +95,7 @@ export default function Home() {
   const prefetchAbortRef = useRef<AbortController | null>(null);
   const prefetchedMapKeysRef = useRef(new Set<string>());
   const bootstrapFreshGraphKeyRef = useRef<string | null>(null);
+  const pendingCommandNavigationRef = useRef<CommandSearchResult | null>(null);
   const activeTenantScopeKeyRef = useRef<string | null>(activeTenantScopeKey);
   activeTenantScopeKeyRef.current = activeTenantScopeKey;
 
@@ -280,11 +282,26 @@ export default function Home() {
       const result = (event as CustomEvent<CommandSearchResult>).detail;
       if (!result) return;
 
-      if (result.kind === "map") {
-        const target = maps.find((map) => map.id === result.targetId);
+      if (result.kind === "map" || result.kind === "document") {
+        const target = maps.find((map) => map.id === (result.kind === "map" ? result.targetId : result.mapId));
         if (!target) return;
         const targetMode = getMapMode(target);
-        setMobileTab("chat");
+        setMobileTab(result.kind === "document" ? "map" : "chat");
+        if (targetMode !== currentMode) {
+          lastMapByModeRef.current[targetMode] = target.id;
+          setCurrentMode(targetMode);
+        } else {
+          handleSwitchMap(target.id);
+        }
+        return;
+      }
+
+      if (result.mapId && result.mapId !== currentMapId) {
+        const target = maps.find((map) => map.id === result.mapId);
+        if (!target) return;
+        pendingCommandNavigationRef.current = result;
+        setMobileTab("map");
+        const targetMode = getMapMode(target);
         if (targetMode !== currentMode) {
           lastMapByModeRef.current[targetMode] = target.id;
           setCurrentMode(targetMode);
@@ -318,7 +335,26 @@ export default function Home() {
     };
     window.addEventListener(COMMAND_NAVIGATE_EVENT, handleCommandNavigation);
     return () => window.removeEventListener(COMMAND_NAVIGATE_EVENT, handleCommandNavigation);
-  }, [currentMode, handleSwitchMap, maps, setCurrentMode, setHighlightedNodeId, setSearchResults]);
+  }, [currentMapId, currentMode, handleSwitchMap, maps, setCurrentMode, setHighlightedNodeId, setSearchResults]);
+
+  useEffect(() => {
+    const result = pendingCommandNavigationRef.current;
+    if (!result || result.mapId !== currentMapId) return;
+    if (result.kind === "node") {
+      if (!nodes.some((node) => node.id === result.targetId)) return;
+      pendingCommandNavigationRef.current = null;
+      setSearchResults([result.targetId]);
+      setHighlightedNodeId(result.targetId);
+      return;
+    }
+    if (result.kind === "entity") {
+      if (!entityGraph.entities.some((entity) => entity.id === result.targetId)) return;
+      pendingCommandNavigationRef.current = null;
+      window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+        window.dispatchEvent(new CustomEvent(COMMAND_ENTITY_FOCUS_EVENT, { detail: { entityId: result.targetId } }));
+      }));
+    }
+  }, [currentMapId, entityGraph.entities, nodes, setHighlightedNodeId, setSearchResults]);
 
   const handleCreatedMap = useCallback(async (mapId: string) => {
     // Keep catalog prefetch from racing the explicit navigation while the new

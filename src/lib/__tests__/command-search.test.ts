@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { flattenCommandGroups, searchLoadedKnowledge, type CommandSearchSource } from "@/lib/command-search";
+import {
+  flattenCommandGroups,
+  mergeCommandResults,
+  normalizeWorkspaceSearchResults,
+  searchLoadedKnowledge,
+  type CommandSearchSource,
+} from "@/lib/command-search";
 import type { ChatMessage, GraphEntity, KnowledgeNode } from "@/types";
 
 const node = (id: string, content: string, desc = ""): KnowledgeNode => ({
@@ -60,5 +66,38 @@ describe("U5 loaded knowledge search", () => {
 
     expect(groups.nodes[0]?.targetId).toBe("node-499");
     expect(elapsed).toBeLessThan(30);
+  });
+
+  it("normalizes workspace hits with an explicit reason and rejects malformed rows", () => {
+    const results = normalizeWorkspaceSearchResults({
+      results: [
+        {
+          kind: "document",
+          resultId: "doc-a",
+          mapId: "map-b",
+          mapName: "论文库",
+          title: "GraphRAG 论文",
+          snippet: "GraphRAG 使用社区摘要改善全局问题。",
+          matchField: "citation_text",
+          locator: "第 4 页",
+          score: 0.76,
+        },
+        { kind: "node", resultId: "", mapId: "map-b", title: "invalid" },
+      ],
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ kind: "document", targetId: "doc-a", mapId: "map-b", scope: "workspace" });
+    expect(results[0].matchReason).toBe("原文引用命中 · 第 4 页 · 论文库");
+  });
+
+  it("keeps instant local results first and removes duplicate workspace hits", () => {
+    const local = [{ id: "node:a", kind: "node" as const, title: "A", subtitle: "local", targetId: "a", mapId: "map-a", score: 1 }];
+    const remote = [
+      { id: "workspace:node:a", kind: "node" as const, title: "A", subtitle: "remote", targetId: "a", mapId: "map-a", score: 0.9, scope: "workspace" as const },
+      { id: "workspace:entity:b", kind: "entity" as const, title: "B", subtitle: "remote", targetId: "b", mapId: "map-b", score: 0.8, scope: "workspace" as const },
+    ];
+
+    expect(mergeCommandResults(local, remote).map((result) => result.id)).toEqual(["node:a", "workspace:entity:b"]);
   });
 });

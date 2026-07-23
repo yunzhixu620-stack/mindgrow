@@ -24,6 +24,7 @@ const allowedHealthTables = new Set([
 let backendProcess;
 let supabaseStub;
 let cleanupPromise;
+const workspaceSearchPayloads = [];
 
 function startSupabaseStub() {
   return new Promise((resolve, reject) => {
@@ -41,6 +42,29 @@ function startSupabaseStub() {
       if (request.method === "POST" && url.pathname === "/rest/v1/rpc/hybrid_search_document_chunks_v2") {
         response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
         response.end(JSON.stringify([]));
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/rest/v1/rpc/search_workspace_knowledge") {
+        let rawBody = "";
+        request.on("data", (chunk) => { rawBody += chunk; });
+        request.on("end", () => {
+          const payload = JSON.parse(rawBody || "{}");
+          workspaceSearchPayloads.push(payload);
+          const rows = payload.p_query_text ? [{
+            result_type: "node",
+            result_id: "node_bootstrap",
+            map_id: defaultMapId,
+            map_name: "默认知识库",
+            title: "Bootstrap ready",
+            snippet: "one-request graph",
+            match_field: "node_title",
+            locator: "",
+            score: 0.91,
+          }] : [];
+          response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+          response.end(JSON.stringify(rows));
+        });
         return;
       }
 
@@ -213,6 +237,23 @@ async function testArticleSourceAndAudioGate() {
   console.log("Article single-source, unreadable URL, and audio evidence gates passed");
 }
 
+async function testTenantScopedWorkspaceSearch() {
+  const headers = {
+    Authorization: "Bearer local-bootstrap-token",
+    "X-Workspace-Id": "ws_localbootstrapuser",
+  };
+  const response = await fetch(`${backendBase}/api/knowledge?action=search&q=Bootstrap&limit=12`, { headers });
+  const body = await response.json();
+  const payload = workspaceSearchPayloads.find((item) => item.p_query_text === "Bootstrap");
+  if (response.status !== 200 || body.scope !== "workspace" || body.results?.[0]?.matchField !== "node_title") {
+    throw new Error(`Workspace search contract failed (HTTP ${response.status})`);
+  }
+  if (payload?.p_workspace_id !== "ws_localbootstrapuser" || payload?.p_match_count !== 12) {
+    throw new Error("Workspace search did not bind the authenticated workspace to the RPC");
+  }
+  console.log("Tenant-scoped workspace search and hit explanation passed");
+}
+
 function runLocalSmoke() {
   return new Promise((resolve, reject) => {
     const smoke = spawn(process.execPath, [path.join(__dirname, "backend-smoke.js")], {
@@ -288,6 +329,7 @@ async function main() {
     console.log(`Local backend is healthy at ${backendBase}`);
     await testUnifiedUniverseAndMeetingGate();
     await testArticleSourceAndAudioGate();
+    await testTenantScopedWorkspaceSearch();
     exitCode = await runLocalSmoke();
   } catch (error) {
     console.error(`Local backend test failed: ${error.message}`);

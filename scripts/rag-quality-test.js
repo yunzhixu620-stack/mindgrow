@@ -559,6 +559,20 @@ check("GraphRAG ranking migration keeps RRF and exposes independent sparse and s
   assert(rollback.includes("DROP FUNCTION IF EXISTS hybrid_search_document_chunks_v2"));
 });
 
+check("workspace search migration indexes every knowledge surface and enforces tenant scope", () => {
+  const migration = fs.readFileSync(path.join(__dirname, "..", "supabase-v16-workspace-search-migration.sql"), "utf8");
+  const rollback = fs.readFileSync(path.join(__dirname, "..", "supabase-v16-workspace-search-rollback.sql"), "utf8");
+  assert(migration.includes("search_workspace_knowledge"));
+  ["idx_maps_name_trgm", "idx_graph_entities_name_trgm", "idx_source_documents_title_trgm", "idx_document_chunks_content_trgm"].forEach((indexName) => {
+    assert(migration.includes(indexName), `workspace search is missing ${indexName}`);
+  });
+  assert((migration.match(/workspace_id = p_workspace_id/g) || []).length >= 8, "workspace search branches are not fully tenant scoped");
+  assert(migration.includes("REVOKE ALL ON FUNCTION search_workspace_knowledge"));
+  assert(migration.includes("FROM PUBLIC, anon, authenticated"));
+  assert(migration.includes("TO service_role"));
+  assert(rollback.includes("DROP FUNCTION IF EXISTS search_workspace_knowledge"));
+});
+
 check("health readiness verifies required entity-grounding columns", () => {
   const healthSource = fs.readFileSync(path.join(__dirname, "..", "fc-proxy", "index.js"), "utf8");
   assert(healthSource.includes("graph_entities?select=id,description_citation_indexes&limit=1"));

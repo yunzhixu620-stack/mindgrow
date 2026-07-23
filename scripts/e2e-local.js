@@ -549,10 +549,24 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     }
   });
 
-  await check("Ctrl+K searches loaded content locally with keyboard navigation", async () => {
+  await check("Ctrl+K shows local results immediately and debounces workspace search", async () => {
     const commandStep = async (label, task) => {
       try { return await task(); } catch (error) { throw new Error(`${label}: ${error.message}`); }
     };
+    await page.waitForSelector('[data-testid="knowledge-workspace"]', { timeout: 30000 });
+    await page.waitForFunction(() => Boolean(localStorage.getItem("mindgrow.local.v2")), { timeout: 30000 });
+    await page.evaluate(() => {
+      const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+      const mapId = "map_e2e_workspace_search";
+      const source = state.maps[0];
+      state.maps.push({ ...source, id: mapId, name: "跨库检索夹具", description: "只由工作区接口读取", isDefault: false, nodeCount: 1 });
+      state.nodes[mapId] = [{ ...state.nodes[source.id][0], id: "node_e2e_workspace_search", content: "AI 工作区独有证据", desc: "验证后端补齐与命中解释" }];
+      state.edges[mapId] = [];
+      state.entityGraphs[mapId] = { entities: [], relations: [] };
+      localStorage.setItem("mindgrow.local.v2", JSON.stringify(state));
+    });
+    await page.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
+    await revealAllStoredNodes(page);
     await page.evaluate(() => {
       window.__mindgrowCommandSearchRequests = [];
       window.__mindgrowCommandSearchCapture = (event) => window.__mindgrowCommandSearchRequests.push(event.detail?.path || "");
@@ -574,12 +588,19 @@ const expandOneVisibleLevel = async (page, previousCount) => {
       await commandStep("Current-node result did not render", () => page.waitForSelector('[data-result-group="nodes"] [data-result-kind="node"]', { timeout: 5000 }));
       const resultText = await page.$eval('[data-result-group="nodes"] [data-result-kind="node"]', (element) => element.textContent);
       if (!resultText.includes("AI")) throw new Error("Current-node match is not visible in the command palette");
+      await commandStep("Workspace search did not complete", () => page.waitForSelector('[data-result-group="workspace"] [data-result-kind="node"]', { timeout: 5000 }));
       const remoteSearchRequests = await page.evaluate(() => window.__mindgrowCommandSearchRequests.filter((path) => path.includes("action=search")));
-      if (remoteSearchRequests.length > 0) throw new Error("Cmd/Ctrl+K search issued a backend request");
-      await page.keyboard.press("ArrowDown");
-      await page.keyboard.press("ArrowUp");
-      await page.keyboard.press("Enter");
-      await commandStep("Enter did not close the palette", () => page.waitForFunction(() => !document.querySelector('[data-testid="command-palette"]'), { timeout: 5000 }));
+      if (remoteSearchRequests.length !== 1) throw new Error(`Workspace search request was not debounced: ${remoteSearchRequests.length}`);
+      const remoteResult = await page.$eval('[data-result-group="workspace"] [data-result-kind="node"]', (element) => element.textContent);
+      if (!remoteResult.includes("AI 工作区独有证据") || !remoteResult.includes("知识节点内容命中") || !remoteResult.includes("跨库检索夹具")) {
+        throw new Error(`Workspace result has no hit explanation: ${remoteResult}`);
+      }
+      await page.$eval('[data-result-group="workspace"] [data-result-kind="node"]', (button) => button.click());
+      await commandStep("Cross-library result did not open its knowledge map", () => page.waitForFunction(
+        () => document.querySelector('[data-testid="knowledge-workspace"]')?.getAttribute("data-current-map-id") === "map_e2e_workspace_search",
+        { timeout: 10000 },
+      ));
+      await commandStep("Cross-library node did not render", () => page.waitForFunction(() => document.body.innerText.includes("AI 工作区独有证据"), { timeout: 10000 }));
       await page.keyboard.down("Control");
       await page.keyboard.press("k");
       await page.keyboard.up("Control");
@@ -589,7 +610,7 @@ const expandOneVisibleLevel = async (page, previousCount) => {
       await page.click('[data-testid="command-palette-open"]');
       await commandStep("Sidebar launcher did not open the palette", () => page.waitForSelector('[data-testid="command-palette"]', { timeout: 5000 }));
       const scopeText = await page.$eval('[data-testid="command-palette"] footer', (element) => element.textContent);
-      if (!scopeText.includes("仅搜索已加载知识库") || scopeText.includes("所有知识库")) throw new Error("Command search scope copy is misleading");
+      if (!scopeText.includes("本地结果即时显示") || !scopeText.includes("当前登录工作区")) throw new Error("Command search scope copy is misleading");
       await page.screenshot({ path: path.join(artifactDir, "desktop-command-palette.png") });
       await page.keyboard.press("Escape");
     } finally {
@@ -601,7 +622,15 @@ const expandOneVisibleLevel = async (page, previousCount) => {
         window.removeEventListener("mindgrow:local-api-request", window.__mindgrowCommandSearchCapture);
         delete window.__mindgrowCommandSearchCapture;
         delete window.__mindgrowCommandSearchRequests;
+        const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+        state.maps = state.maps.filter((map) => map.id !== "map_e2e_workspace_search");
+        delete state.nodes.map_e2e_workspace_search;
+        delete state.edges.map_e2e_workspace_search;
+        delete state.entityGraphs.map_e2e_workspace_search;
+        localStorage.setItem("mindgrow.local.v2", JSON.stringify(state));
       });
+      await page.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
+      await revealAllStoredNodes(page);
     }
   });
 
