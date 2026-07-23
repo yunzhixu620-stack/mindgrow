@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ARTICLE_SOURCE_STAGE_TIMEOUT_MS,
   articleStageForError,
   createArticleSourceRequest,
   initialArticleStages,
@@ -65,6 +66,11 @@ describe("article source mutual exclusion", () => {
 });
 
 describe("article recovery stages", () => {
+  it("allows the HTML to PDF fallback to finish before the client aborts", () => {
+    expect(ARTICLE_SOURCE_STAGE_TIMEOUT_MS).toBeGreaterThanOrEqual(50_000);
+    expect(ARTICLE_SOURCE_STAGE_TIMEOUT_MS).toBeLessThan(60_000);
+  });
+
   it("preserves completed stages and resets only the failed stage onward", () => {
     let stages = initialArticleStages();
     stages = updateArticleStage(stages, "read", "done");

@@ -2,6 +2,11 @@ export type ArticleSourceKind = "url" | "pdf" | "text";
 export type ArticleStageId = "read" | "extract" | "summary" | "citations" | "graph";
 export type ArticleStageStatus = "pending" | "active" | "done" | "failed";
 
+// The backend may spend up to 10s trying arXiv HTML and then up to 30s on
+// the official PDF fallback. Keep the client above that combined budget but
+// below the 60s function execution limit.
+export const ARTICLE_SOURCE_STAGE_TIMEOUT_MS = 55_000;
+
 export interface ArticleStage {
   id: ArticleStageId;
   label: string;

@@ -11,6 +11,7 @@ import { AnswerCard } from "@/components/answer/answer-card";
 import { PdfCitationViewer } from "@/components/article/pdf-citation-viewer";
 import {
   ARTICLE_STAGE_DEFINITIONS,
+  ARTICLE_SOURCE_STAGE_TIMEOUT_MS,
   articleStageForError,
   createArticleSourceRequest,
   initialArticleStages,
@@ -504,7 +505,7 @@ export function ArticleParser() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(sourceRequest),
-        }, controller, 35_000);
+        }, controller, ARTICLE_SOURCE_STAGE_TIMEOUT_MS);
         const sourceData = await sourceResponse.json() as Record<string, unknown>;
         if (!sourceResponse.ok) throw articlePipelineError(sourceData, "文章来源读取失败");
         markStage("read", "done");
