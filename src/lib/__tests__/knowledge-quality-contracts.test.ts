@@ -146,6 +146,7 @@ describe("knowledge quality contracts", () => {
         desc: "生产登录页不泄漏私有知识内容",
         items: [
           "未明确具体机制内容，需结合其他文档补充",
+          "核心机制：输入未提供具体机制细节",
           "Search Console 验证尚未完成",
         ],
       }],
@@ -156,6 +157,7 @@ describe("knowledge quality contracts", () => {
     });
     const items = result.mindMap.children.flatMap((child) => child.items);
     expect(items.some((item) => item.includes("未明确具体机制"))).toBe(false);
+    expect(items.some((item) => item.includes("输入未提供具体机制细节"))).toBe(false);
     expect(items.some((item) => item.includes("|"))).toBe(false);
     expect(result.audit.appendedFacts).toBeLessThanOrEqual(2);
   });
