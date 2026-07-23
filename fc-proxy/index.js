@@ -29,7 +29,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.21.7';
+const API_VERSION = '10.21.8';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -2463,6 +2463,53 @@ function htmlToReadableText(html) {
   return htmlFragmentToReadableText(cleaned);
 }
 
+function extractHtmlDocumentTitle(html) {
+  const source = String(html || '');
+  const metaTags = source.match(/<meta\b[^>]*>/gi) || [];
+  const preferredKeys = ['citation_title', 'og:title', 'twitter:title'];
+  for (const key of preferredKeys) {
+    const tag = metaTags.find((candidate) => {
+      const identity = candidate.match(/\b(?:name|property)\s*=\s*["']([^"']+)["']/i);
+      return identity && identity[1].trim().toLowerCase() === key;
+    });
+    if (!tag) continue;
+    const content = tag.match(/\bcontent\s*=\s*["']([^"']+)["']/i);
+    if (content && content[1]) {
+      return decodeHtmlEntities(content[1]).replace(/\s+/g, ' ').trim().slice(0, 300);
+    }
+  }
+  const title = source.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i);
+  return title
+    ? decodeHtmlEntities(title[1]).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+      .replace(/\s*(?:\||—|-)\s*(?:arXiv|ar5iv|HTML for arXiv).*$/i, '')
+      .slice(0, 300)
+    : '';
+}
+
+function articleTitleLooksLikeMetadata(value) {
+  const title = normalizeSpaces(value);
+  if (!title) return true;
+  if (/^(?:研究问题|研究背景|相关工作|方法(?:\/架构)?|数据与实验|实验|结果|讨论|局限与启示|结论|主要贡献)$/i.test(title)) {
+    return true;
+  }
+  if (/(?:institutetext|affiliation|department\s+of|university|université|institute|centre\s+for|orcid)/i.test(title)) {
+    return true;
+  }
+  if (isDocumentMetadataFact(title)) return true;
+  const latinWords = title.match(/[A-Za-z][A-Za-z0-9'’-]*/g) || [];
+  const chineseChars = title.match(/[\u3400-\u9fff]/g) || [];
+  return graphTextLength(title) > 140 || (latinWords.length >= 12 && chineseChars.length < 4);
+}
+
+function readableArticleFallbackTitle(documentTitle, summary) {
+  const sourceTitle = normalizeSpaces(documentTitle);
+  const acronym = sourceTitle.match(/^([A-Z][A-Z0-9-]{1,15})(?=\s*[:：-])/);
+  const summaryText = normalizeSpaces(summary);
+  const namedMethod = summaryText.match(/(?:名为|称为|提出(?:了)?)([A-Za-z][A-Za-z0-9-]{1,20})/i);
+  const prefix = (acronym && acronym[1]) || (namedMethod && namedMethod[1]) || '';
+  return prefix ? `${prefix}：核心方法、实验与结论` : '论文核心方法、实验与结论';
+}
+
 function decodePdfLiteral(value) {
   return String(value || '').replace(/\\([0-7]{1,3}|[nrtbf()\\])/g, (_, escaped) => {
     if (/^[0-7]+$/.test(escaped)) return String.fromCharCode(Number.parseInt(escaped, 8));
@@ -2548,6 +2595,7 @@ async function readArticleSource(targetUrl, options) {
   const settings = options || {};
   const arxivId = arxivArticleId(targetUrl);
   let primaryError = null;
+  let documentTitle = '';
 
   // An arXiv /abs page contains metadata and an abstract, not the full paper.
   // Always try the official HTML full-text endpoint first, then the PDF.
@@ -2555,10 +2603,12 @@ async function readArticleSource(targetUrl, options) {
     const htmlUrl = `https://arxiv.org/html/${arxivId}`;
     try {
       const fetchedHtml = await fetchArticleText(htmlUrl, 0, settings);
+      documentTitle = extractHtmlDocumentTitle(fetchedHtml.html);
       const content = htmlToReadableText(fetchedHtml.html);
       if (content.length >= 800) {
         return {
           content,
+          documentTitle,
           finalUrl: targetUrl,
           acquisition: 'arxiv_html_fulltext',
           fallback: { from: targetUrl, via: fetchedHtml.finalUrl },
@@ -2571,10 +2621,12 @@ async function readArticleSource(targetUrl, options) {
   } else {
     try {
       const fetched = await fetchArticleText(targetUrl, 0, settings);
+      documentTitle = extractHtmlDocumentTitle(fetched.html);
       const content = htmlToReadableText(fetched.html);
       if (content.length >= 80) {
         return {
           content,
+          documentTitle,
           finalUrl: fetched.finalUrl,
           acquisition: 'remote_fetch',
           fallback: null,
@@ -2600,6 +2652,7 @@ async function readArticleSource(targetUrl, options) {
     if (content.length >= 800) {
       return {
         content,
+        documentTitle,
         finalUrl: targetUrl,
         acquisition: 'arxiv_pdf_fallback',
         fallback: { from: targetUrl, via: fetchedPdf.finalUrl },
@@ -2685,12 +2738,14 @@ function normalizedMindMap(value, fallbackTitle, allowedIndexes) {
 function repairArticleMindMapRoot(mindMap, articleTitle, articleSummary, allowedIndexes) {
   const input = mindMap && typeof mindMap === 'object' ? mindMap : {};
   const root = normalizeSpaces(input.root);
-  if (!/^(?:研究问题|研究背景|相关工作|方法(?:\/架构)?|数据与实验|实验|结果|讨论|局限与启示|结论|主要贡献)$/i.test(root)) {
+  const structuralRoot = /^(?:研究问题|研究背景|相关工作|方法(?:\/架构)?|数据与实验|实验|结果|讨论|局限与启示|结论|主要贡献)$/i.test(root);
+  const metadataRoot = articleTitleLooksLikeMetadata(root);
+  if (!structuralRoot && !metadataRoot) {
     return input;
   }
   const title = normalizeSpaces(articleTitle) || '论文解析结果';
   const children = Array.isArray(input.children) ? [...input.children] : [];
-  if (!children.some((child) => normalizeSpaces(child && child.topic) === root)) {
+  if (structuralRoot && !children.some((child) => normalizeSpaces(child && child.topic) === root)) {
     children.unshift({
       topic: root,
       desc: normalizeSpaces(input.rootDesc),
@@ -4831,6 +4886,7 @@ async function prepareArticleSource(body) {
     const sourceUrl = sourceType === 'url' ? String(input.sourceUrl || input.url || '').trim().slice(0, 2000) : '';
     const fileName = String(input.fileName || '').trim().slice(0, 300);
     const mimeType = String(input.mimeType || '').trim().slice(0, 100);
+    const documentTitle = String(input.documentTitle || '').trim().slice(0, 300);
     if (!sourceType || content.length < 50) {
       throw requestError(400, 'ARTICLE_PREPARED_SOURCE_INVALID', '准备好的文章来源无效，请重新读取来源');
     }
@@ -4846,6 +4902,7 @@ async function prepareArticleSource(body) {
       sourceType,
       fileName,
       mimeType,
+      documentTitle,
       citations,
       documentChunks,
       sourceStatus: {
@@ -4855,6 +4912,7 @@ async function prepareArticleSource(body) {
         citationCount: citations.length,
         finalUrl: sourceUrl || undefined,
         fileName: fileName || undefined,
+        documentTitle: documentTitle || undefined,
       },
     };
   }
@@ -4866,9 +4924,11 @@ async function prepareArticleSource(body) {
   const fileName = sourceInput.fileName;
   const mimeType = sourceInput.mimeType;
   let acquisition = sourceType === 'pdf' ? 'local_pdf_extraction' : 'pasted_text';
+  let documentTitle = '';
   if (sourceInput.url) {
     const source = await readArticleSource(sourceInput.url);
     content = source.content;
+    documentTitle = String(source.documentTitle || '').trim().slice(0, 300);
     sourceUrl = source.finalUrl;
     sourceType = 'url';
     acquisition = source.acquisition;
@@ -4892,6 +4952,7 @@ async function prepareArticleSource(body) {
     sourceType,
     fileName,
     mimeType,
+    documentTitle,
     citations,
     documentChunks,
     sourceStatus: {
@@ -4901,6 +4962,7 @@ async function prepareArticleSource(body) {
       citationCount: citations.length,
       finalUrl: sourceUrl || undefined,
       fileName: fileName || undefined,
+      documentTitle: documentTitle || undefined,
     },
   };
 }
@@ -4916,6 +4978,7 @@ async function handleArticleSourceTool(body) {
       sourceType: prepared.sourceType,
       fileName: prepared.fileName,
       mimeType: prepared.mimeType,
+      documentTitle: prepared.documentTitle,
       acquisition: prepared.sourceStatus.acquisition,
       sourceStatus: prepared.sourceStatus,
     },
@@ -4930,6 +4993,7 @@ async function handleArticleTool(body) {
     sourceType: ['url', 'pdf', 'text'].includes(body.sourceType) ? body.sourceType : (body.url ? 'url' : 'text'),
     fileName: String(body.fileName || '').trim().slice(0, 300),
     mimeType: String(body.mimeType || '').trim().slice(0, 100),
+    documentTitle: String(body.documentTitle || '').trim().slice(0, 300),
     citations: [],
     documentChunks: [],
     sourceStatus: null,
@@ -4942,11 +5006,13 @@ async function handleArticleTool(body) {
   const sourceType = prepared.sourceType;
   const fileName = prepared.fileName;
   const mimeType = prepared.mimeType;
+  const documentTitle = prepared.documentTitle;
   recoveryContext.content = content;
   recoveryContext.sourceUrl = sourceUrl;
   recoveryContext.sourceType = sourceType;
   recoveryContext.fileName = fileName;
   recoveryContext.mimeType = mimeType;
+  recoveryContext.documentTitle = documentTitle;
   recoveryContext.sourceStatus = prepared.sourceStatus;
   stage = 'EVIDENCE_BUILD';
   const citations = prepared.citations;
@@ -4961,12 +5027,21 @@ async function handleArticleTool(body) {
       role: 'system',
       content: `你是忠于原文的论文与文章解析助手。只返回严格 JSON：{"title":"","summary":"","summaryCitationIndexes":[1],"keyPoints":[{"text":"","citationIndexes":[1]}],"arguments":[{"claim":"","evidence":"","citationIndexes":[1]}],"questions":[""],"mindMap":{"root":"","rootDesc":"","rootCitationIndexes":[1],"children":[{"topic":"","desc":"","citationIndexes":[1],"items":[""],"itemCitationIndexes":[[1]]}]},"entityGraph":{"entities":[],"relations":[]}}。论文的 mindMap.children 优先使用“研究问题、方法/架构、数据与实验、结果、局限与启示”等 3-6 个语义主干；每个主干 desc 必须用一句话直接解释该主干在本文中的具体内容，不能只重复栏目名。每个主干的 items 必须回答父节点下不同的内容方向，不得只是重复父节点或罗列文档信息：“数据与实验”应在证据存在时分别说明“数据是什么”“与哪些基线比较”“实验如何进行”“使用什么指标”“消融验证了什么”，每项写成可独立理解的中文结论；“局限与启示”应分别说明“具体局限是什么”“在什么条件下发生”“影响什么”“如何改进”。如果原文没有某一方向的直接证据就省略该项，不得用“进行了大量实验”“证明有效”“存在一定局限”等空泛句占位。标题、URL、来源、作者、发布日期、关键词和英文摘要属于文档元数据，绝对不能成为导图节点或 items；超过 12 个英文单词的原文标题或摘要也不得原样进入导图。具体模型、指标、对比和证据放入 items，不得把大量细节平铺为一级节点，也不得因聚合而删减原文信息。所有标题、摘要、要点、论证、问题和导图节点必须使用简体中文；英文原文要准确翻译成中文，专业术语或缩写可在中文后用括号保留英文。输入由带页码/段落定位的 C 编号证据块组成。每个结论、数字、表格结论和导图分支必须引用直接支持它的 C 编号；只能引用给定编号；不得自行填写 quote 或页码；引用原文保持原始语言，不得伪造中文原文；证据不足就省略结论，不得补充原文没有的事实。${ENTITY_GRAPH_SCHEMA_PROMPT}${ARTICLE_CORE_ENTITY_GRAPH_PROMPT}`,
     },
-    { role: 'user', content: `以下内容只包含文章正文证据；来源 URL、文档标题和文件名属于元数据，未放入证据区，禁止把元数据当成结论：\n${evidencePrompt(analysisCitations)}` },
+    {
+      role: 'user',
+      content: `${documentTitle ? `可信文档标题元数据（只用于生成简洁的中文 title 与 mindMap.root，绝对不能成为子节点或事实结论）：${documentTitle}\n` : ''}以下内容只包含文章正文证据；来源 URL、文档标题和文件名属于元数据，未放入证据区，禁止把元数据当成结论：\n${evidencePrompt(analysisCitations)}`,
+    },
   ], longArticleAnalysis ? 'qwen-turbo' : 'qwen-plus', longArticleAnalysis ? 2800 : 3400, 0.1);
   stage = 'MODEL_PARSE';
   let parsed;
   try { parsed = JSON.parse(stripJsonFence(raw)); } catch (_) { parsed = {}; }
   if (!parsed || typeof parsed !== 'object') parsed = {};
+  if (documentTitle && articleTitleLooksLikeMetadata(parsed.title)) {
+    parsed.title = documentTitle;
+  }
+  if (documentTitle && parsed.mindMap && articleTitleLooksLikeMetadata(parsed.mindMap.root)) {
+    parsed.mindMap.root = documentTitle;
+  }
   if (!parsed.mindMap || typeof parsed.mindMap !== 'object') {
     const fallbackTitle = String(parsed.title || content.split('\n')[0] || '文章解析').slice(0, 200);
     parsed = {
@@ -4995,7 +5070,12 @@ async function handleArticleTool(body) {
     }
   }
   stage = 'RESPONSE_NORMALIZATION';
-  const inferredTitle = String(parsed.title || content.split('\n')[0] || '文章解析').slice(0, 200);
+  const localizedTitle = normalizeSpaces(parsed.title || '');
+  const inferredTitle = (
+    articleTitleLooksLikeMetadata(localizedTitle)
+      ? readableArticleFallbackTitle(documentTitle, parsed.summary)
+      : localizedTitle
+  ).slice(0, 200);
   let mindMap = normalizedMindMap(parsed.mindMap, inferredTitle, allowedIndexes) || fallbackMindMap(inferredTitle, content);
   mindMap = repairArticleMindMapRoot(mindMap, inferredTitle, parsed.summary, allowedIndexes);
   mindMap.rootCitationIndexes = verifiedIndexes(mindMap.rootCitationIndexes, allowedIndexes, `${mindMap.root} ${mindMap.rootDesc}`, citations, citations);
@@ -7080,6 +7160,7 @@ module.exports = {
   sourcePages,
   standaloneHttpUrl,
   htmlToReadableText,
+  extractHtmlDocumentTitle,
   extractPdfTextLightweight,
   arxivArticleId,
   readArticleSource,

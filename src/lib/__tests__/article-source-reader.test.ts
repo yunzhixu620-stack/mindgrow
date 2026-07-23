@@ -4,11 +4,13 @@ import { describe, expect, it } from "vitest";
 
 const {
   arxivArticleId,
+  extractHtmlDocumentTitle,
   extractPdfTextLightweight,
   prepareArticleSource,
   readArticleSource,
 } = require("../../../fc-proxy/index.js") as {
   arxivArticleId: (url: string) => string;
+  extractHtmlDocumentTitle: (html: string) => string;
   extractPdfTextLightweight: (value: Buffer) => string;
   prepareArticleSource: (body: Record<string, unknown>) => Promise<{
     content: string;
@@ -20,6 +22,7 @@ const {
     content: string;
     finalUrl: string;
     acquisition: string;
+    documentTitle?: string;
   }>;
 };
 
@@ -84,6 +87,21 @@ describe("shared article source reader", () => {
 
     expect(result.acquisition).toBe("remote_fetch");
     expect(result.content).toContain("Verified public article sentence");
+  });
+
+  it("keeps the trusted HTML title separate from readable article content", async () => {
+    const paragraph = "Verified article body sentence. ".repeat(40);
+    const html = `<html><head><meta name="citation_title" content="CLARK: Closed-loop Learning for Adaptive Reasoning over Knowledge Graphs"></head><main><p>${paragraph}</p></main></html>`;
+    const transport = fakeTransport([{ chunks: [html] }]);
+
+    const result = await readArticleSource("https://example.com/article", {
+      resolve4: publicDns,
+      transports: { "https:": transport },
+    });
+
+    expect(result.documentTitle).toBe("CLARK: Closed-loop Learning for Adaptive Reasoning over Knowledge Graphs");
+    expect(result.content).not.toContain("citation_title");
+    expect(extractHtmlDocumentTitle("<title>Paper Name | arXiv</title>")).toBe("Paper Name");
   });
 
   it("tries arXiv HTML and then falls back to PDF full text", async () => {

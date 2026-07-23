@@ -361,6 +361,27 @@ describe("article core graph and semantic outline quality", () => {
     });
   });
 
+  it("replaces an affiliation-like root without preserving it as a child node", () => {
+    const repaired = proxy.repairArticleMindMapRoot({
+      root: "1 1 institutetext: Computational Intelligence Team, Department of Informatics Engineering, University",
+      rootDesc: "作者机构信息不应成为论文主题。",
+      rootCitationIndexes: [1],
+      children: [
+        {
+          topic: "数据与实验",
+          desc: "实验在三个公开数据集上进行。",
+          citationIndexes: [2],
+          items: ["数据：使用三个公开知识图谱数据集。"],
+          itemCitationIndexes: [[2]],
+        },
+      ],
+    }, "CLARK：知识图谱自适应推理框架", "CLARK 统一知识图谱、符号规则与概率推理。", new Set([1, 2]));
+
+    expect(repaired.root).toBe("CLARK：知识图谱自适应推理框架");
+    expect(repaired.children.map((child) => child.topic)).toEqual(["数据与实验"]);
+    expect(JSON.stringify(repaired)).not.toMatch(/institutetext|University/);
+  });
+
   it("keeps Chinese entity explanations grounded by dedicated English evidence", () => {
     const quote = "SoftReason uses the KVQA benchmark to evaluate multi-hop reasoning under the entity-linking protocol.";
     const evidence = [{

@@ -48,6 +48,7 @@ interface ArticleResult {
     citationCount: number;
     finalUrl?: string;
     fileName?: string;
+    documentTitle?: string;
   };
 }
 interface PdfExtraction {
@@ -66,6 +67,7 @@ interface PreparedArticleSource {
   sourceType: ArticleSourceKind;
   fileName?: string;
   mimeType?: string;
+  documentTitle?: string;
   acquisition: string;
   sourceStatus: NonNullable<ArticleResult["sourceStatus"]>;
 }
@@ -530,6 +532,7 @@ export function ArticleParser() {
           sourceType: prepared.sourceType,
           fileName: prepared.fileName,
           mimeType: prepared.mimeType,
+          documentTitle: prepared.documentTitle,
           acquisition: prepared.acquisition,
           extraction: pdf ? { pageCount: pdf.pageCount, truncated: pdf.truncated, tablePages: pdf.tablePages, imagePages: pdf.imagePages, scannedPages: pdf.scannedPages } : undefined,
         }),
