@@ -29,7 +29,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.21.22';
+const API_VERSION = '10.21.23';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -3049,7 +3049,10 @@ function repairArticleExperimentEvidence(mindMap, citations, allowedIndexes) {
     });
     if (facts.length === 0) return child;
     const existingText = [child && child.desc, ...((child && child.items) || [])].map(normalizeSpaces).join(' ');
-    const evidenceNumbers = facts.flatMap((fact) => fact.match(/\d+(?:\.\d+)?/g) || []);
+    const evidenceNumbers = facts.reduce(
+      (all, fact) => all.concat(fact.match(/\d+(?:\.\d+)?/g) || []),
+      [],
+    );
     const preservesEvidence = evidenceNumbers.length > 0 && evidenceNumbers.every((number) => existingText.includes(number));
     if (preservesEvidence) return child;
     return {
