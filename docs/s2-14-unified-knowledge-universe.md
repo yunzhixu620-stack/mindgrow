@@ -38,3 +38,11 @@
 2. 合并后发布阿里云 API `10.14.0`，再发布 GitHub Pages，并以实际合并提交更新部署身份。
 3. 用公网 health、backend smoke、前端 E2E 与 production fact 核对前后端身份。
 4. 回滚时恢复 API `10.13.0` 与上一版前端即可；本任务无数据库变更，也不会留下跨库合并数据。
+
+## 生产验证（2026-07-23）
+
+- PR #56 已压缩合并为 `main@f21be697bf01827e1f38463f47855cecebd94d52`，CI 与 Vercel Preview 通过。
+- 阿里云 API `10.14.0` 已发布；公网健康检查返回精确合并提交、`authRequired=true`、`deploymentIdentity=ready`，实体图与 GraphRAG 排序均为 ready。
+- 公网 backend smoke 7/7 通过。
+- GitHub Pages 已发布为 `gh-pages@a6ef3ff884f53af4df9d8d314b75c86fc6e73f1d`；Pages workflow `29968712888` 与公网前端 E2E 7/7 通过。
+- production fact workflow `29968776021` 精确核对前后端提交、API 版本与鉴权门禁并通过。
