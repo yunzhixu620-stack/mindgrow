@@ -51,3 +51,11 @@ npm run test:e2e:local
 2. 云模型端到端延迟、Gmail/Outlook/QQ 邮件投递和登录后生产写入需要受控测试账号；没有凭证时明确记为未验证。
 3. 旧的 `product-eval-2026-07-20.json` 保留为修复前真实生产基线，不能用新代码的自动化结果覆盖历史缺陷。
 4. 每次真实用户反馈命中新边界时，先增加 case，再修改实现，避免只针对截图做一次性修补。
+
+## 工程影响与发布
+
+- 改动文件包括固定集 `tests/evaluation/product-eval-v4.json`、执行器 `scripts/product-eval.js`、RAG/界面延迟报告脚本、API 命令分类逻辑及本说明；未新增依赖或数据库迁移。
+- 修复只调整中文/英文命令前缀分类，不改变鉴权、租户隔离、SSRF、Citation 逐字证据或 GraphRAG 排序权限边界。
+- 回滚可单独回退 PR #63；固定集与报告脚本也应随实现一起回退，避免用新断言错误评价旧行为。
+- PR #63 合并为 `main@f8a5ddfa5b4210ceb13726e6e5c7c40fc8eb9e2e`；API `10.19.0` 随统一版本 `main@9cffe83b0780ff50d8606c848edd5246f11d340a` 发布，公网 backend smoke 7/7。
+- 前端随 `gh-pages@817e60efa463c6c18405010685f81210f507426a` 发布；Pages workflow `29982390204`、公网 E2E 10/10、production fact workflow `29982477274` 均通过。

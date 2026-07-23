@@ -25,3 +25,18 @@
 
 - 单元测试覆盖托管头覆盖、401 单次刷新、二次 401 不循环、刷新失败、匿名请求和并发刷新合并。
 - 公开页面 E2E 验证登录页没有 token 输入框，并明确提示用户无需配置令牌。
+
+## 工程影响与回滚
+
+- 主要文件：`src/lib/managed-session.ts`、`src/lib/client-api.ts`、`src/lib/i18n.ts`、单元测试、公开 E2E 与本说明。
+- 未新增依赖、数据库迁移或后端接口，不改变 Citation、GraphRAG、URL 读取与租户成员校验。
+- 健康会话仍只发送一次业务请求；仅在 401 时增加一次刷新和一次重试，并发 401 共用刷新。38 项本地产品 E2E 全通过，三板块切换整项 710ms，无可测回归。
+- 回滚可单独回退 PR #64，恢复 SDK 自动刷新但移除 401 主动补偿；不会删除账号、工作区或本地知识数据。
+- 仍未进行人为篡改真实生产 access token 的破坏性测试；该边界由冻结单测与后端匿名/成员校验门禁覆盖。
+
+## 发布事实
+
+- PR #64 合并为 `main@9cffe83b0780ff50d8606c848edd5246f11d340a`；CI、Vercel Preview、unit 202/202、lint、production build 与本地产品 E2E 38/38 均通过。
+- 阿里云 API `10.19.0` 返回精确 `gitSha`、`authRequired=true`，公网 backend smoke 7/7。
+- `gh-pages@817e60efa463c6c18405010685f81210f507426a` 与 Pages workflow `29982390204` 通过；公网 E2E 10/10。
+- production fact workflow `29982477274` 精确核对前后端 SHA、API 版本与鉴权状态并通过。

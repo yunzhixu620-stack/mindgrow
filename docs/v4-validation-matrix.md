@@ -62,10 +62,10 @@
 | S2.15 多源文章 + Audio Overview | 已合并并发布 | PR #57 / `af00ec5`；URL/PDF/正文单来源协议、不可读链接拒答、来源读取状态、逐字 citation 与 claim-id 音频证据映射已上线；API `10.15.0` 与 GitHub Pages 已发布，公网 backend 7/7、前端 E2E 7/7 与 production fact 均通过 |
 | S2.16 跨库全局搜索 | 已合并并发布 | PR #58 / `2a5fa50`；后端索引、权限过滤、跨库定位与命中解释已发布；V16、API `10.16.0`、公网门禁与部署事实均通过 |
 | S2.17 国际化与反馈闭环 | 已合并并发布 | PR #59 / `e895ca8`；英文核心 UI、反馈标签/状态/版本回访与反馈群申请已发布；V17、API `10.17.0`、公网门禁与部署事实均通过 |
-| S2.18 邮件投递长期方案 | 开发中 | Resend Free 选型、成本/退信/回滚 runbook 与 60 秒持久冷却已实现；等待 Owner 提供自有域名并在 Resend 完成验证后激活 Supabase custom SMTP |
-| S2.19 SEO 与产品说明书 | 待开发 | 需可索引页面、结构化内容及功能/技术/隐私/定价文档 |
-| S2.20 三板块产品测评集 | 局部已有 | 现有 59 项 RAG 测试不替代碎片/文章/会议各 ≥20 个真实产品 case |
-| S2.21 普通用户凭证包装 | 待开发 | 需把 Supabase 登录和 workspace token 对普通用户透明化，并验证续期/最小权限 |
+| S2.18 邮件投递长期方案 | 产品侧已发布；外部激活待 Owner | Resend Free 选型、成本/退信/回滚 runbook、60 秒持久冷却和恢复提示已发布；等待 Owner 提供自有域名并在 Resend 完成验证后激活 Supabase custom SMTP |
+| S2.19 SEO 与产品说明书 | 已合并并发布 | PR #62；公开 `/product/`、产品/技术说明书、SEO 内容计划、sitemap 与公网门禁已发布 |
+| S2.20 三板块产品测评集 | 已合并并发布 | PR #63；碎片/文章/会议各 20 case 共 60/60，知识检索 Recall@5 100%，RAG 67/67，延迟与界面报告已固化 |
+| S2.21 普通用户凭证包装 | 已合并并发布 | PR #64；令牌对普通用户透明、401 单次续期与并发合并、最小权限覆盖和公网免 token 门禁已发布 |
 
 ## S2.1 发布检查点
 
@@ -195,3 +195,12 @@
 10. [x] production fact workflow `29980184041` 精确核对线上前端与后端均为上述 `main` 提交、API `10.18.0` 与 `authRequired=true` 并通过。
 11. [ ] 外部激活待 Owner：提供可修改 DNS 的自有域名，在 Resend 完成 SPF/DKIM 验证并创建 Supabase 专用 API key；密钥只输入 Supabase 控制台，不进入聊天或仓库。
 12. [ ] 激活后门禁：Gmail、Outlook、QQ 邮箱完成注册/重发/最新链接/垃圾箱/过期恢复验收；Resend 事件面板确认 delivered、bounced、complained、delayed/failed 可观测，再把 S2.18 状态改为已发布。
+
+## S2.19–S2.21 统一发布检查点
+
+1. [x] PR #62、#63、#64 分别完成 SEO/产品说明、三板块 60-case 测评集和普通用户凭证透明化；最终功能源码为 `main@9cffe83b0780ff50d8606c848edd5246f11d340a`。
+2. [x] 本地 lint、production build、unit 202/202、RAG 67/67、三板块固定集 60/60、产品 E2E 38/38 均通过；知识检索 8 个目标证据案例 Recall@5 = 100%。
+3. [x] 阿里云函数源码 SHA-256 与本地文件完全一致，API `10.19.0` 发布；公网 backend smoke 7/7，`/health` 精确返回目标 `gitSha` 与 `authRequired=true`。
+4. [x] `gh-pages@817e60efa463c6c18405010685f81210f507426a` 发布成功，Pages workflow `29982390204` 通过；公网前端 E2E 10/10。
+5. [x] production fact workflow `29982477274` 精确核对线上前后端均来自 `9cffe83b0780ff50d8606c848edd5246f11d340a`、API `10.19.0` 与鉴权开启并通过。
+6. [x] S2.19–S2.21 无数据库迁移和新依赖；回滚、权限影响、性能与未验证边界分别记录在 `docs/s2-19-seo-product-release.md`、`docs/s2-20-product-evaluation.md`、`docs/s2-21-transparent-credentials.md`。
