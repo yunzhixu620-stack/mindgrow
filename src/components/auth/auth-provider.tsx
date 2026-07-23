@@ -4,6 +4,7 @@ import type { Session, User } from "@supabase/supabase-js";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { resetTenantData, resolveAuthTransition } from "@/components/auth/auth-tenant-reset";
 import { getAuthRedirectUrl } from "@/lib/auth-urls";
+import { initialSessionWithTimeout } from "@/lib/auth-session-init";
 import { IS_LOCAL_MODE, apiFetch, setActiveUserId, setActiveWorkspaceId } from "@/lib/client-api";
 import { supabase } from "@/lib/supabase-browser";
 import type { Category, EntityGraph, KnowledgeEdge, KnowledgeNode, MindMap } from "@/types";
@@ -154,14 +155,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     let active = true;
-    supabase.auth.getSession().then(async ({ data }) => {
+    void initialSessionWithTimeout(() => supabase.auth.getSession()).then(async (initial) => {
       if (!active) return;
-      const transition = resolveAuthTransition("INITIAL_SESSION", lastUserIdRef.current, data.session);
+      if (initial.status !== "ready") {
+        setMessage(initial.status === "timeout"
+          ? "登录状态读取超时，请刷新或重新登录。"
+          : "登录状态读取失败，请重新登录。");
+        setLoading(false);
+        return;
+      }
+      const transition = resolveAuthTransition("INITIAL_SESSION", lastUserIdRef.current, initial.session);
       if (transition.shouldReset) resetTenant(lastUserIdRef.current);
       lastUserIdRef.current = transition.nextUserId;
       setActiveUserId(transition.nextUserId);
-      setSession(data.session);
-      if (data.session) {
+      setSession(initial.session);
+      if (initial.session) {
         try { await refreshWorkspaces(); } catch (error) { setMessage(error instanceof Error ? error.message : "工作区加载失败"); }
       }
       if (active) setLoading(false);
@@ -174,6 +182,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       lastUserIdRef.current = transition.nextUserId;
       setActiveUserId(transition.nextUserId);
       setSession(nextSession);
+      setLoading(false);
       if (nextSession) {
         window.setTimeout(() => void refreshWorkspaces().catch((error) => setMessage(error.message)), 0);
       }
