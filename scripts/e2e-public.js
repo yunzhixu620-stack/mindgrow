@@ -36,6 +36,13 @@ async function check(name, task) {
     if (!labels.includes("重新发送确认邮件")) throw new Error("Resend confirmation action is missing");
   });
 
+  await check("ordinary users never configure tokens", async () => {
+    const tokenInputs = await page.$$('input[name*="token" i], input[placeholder*="token" i], input[aria-label*="token" i]');
+    if (tokenInputs.length) throw new Error("A token input is exposed on the login screen");
+    const text = await page.$eval("main", (element) => element.textContent || "");
+    if (!text.includes("无需复制登录令牌或工作区令牌")) throw new Error("Managed-session guidance is missing");
+  });
+
   await check("confirmation resend cooldown survives a refresh", async () => {
     await page.evaluate(() => localStorage.setItem("mindgrow.auth-email-resend.v1", String(Date.now() + 60_000)));
     await page.reload({ waitUntil: "networkidle2", timeout: 60000 });

@@ -22,7 +22,7 @@ const messages = {
   "auth.resend": { "zh-CN": "重新发送确认邮件", en: "Resend confirmation email" },
   "auth.resendCooldown": { "zh-CN": "{seconds} 秒后可再次发送", en: "Resend in {seconds}s" },
   "auth.deliveryHint": { "zh-CN": "只使用最新邮件中的链接，并检查垃圾邮件箱。", en: "Use only the newest link and check your spam folder." },
-  "auth.privacy": { "zh-CN": "登录后，每个工作区的数据独立存储；浏览器不会接触数据库管理密钥。", en: "Workspace data stays isolated. Your browser never receives database admin credentials." },
+  "auth.privacy": { "zh-CN": "无需复制登录令牌或工作区令牌；系统自动续期并隔离每个工作区的数据。浏览器不会接触数据库管理密钥。", en: "No login or workspace token setup is required. Sessions renew automatically, workspace data stays isolated, and database admin credentials never reach your browser." },
   "auth.invalid": { "zh-CN": "邮箱或密码不正确", en: "Incorrect email or password" },
   "auth.unconfirmed": { "zh-CN": "邮箱尚未确认，请点击最新确认邮件，或在下方重新发送。", en: "Email not confirmed. Open the newest confirmation email or resend it below." },
   "auth.rateLimit": { "zh-CN": "发送过于频繁，请等待 60 秒后再试。", en: "Too many attempts. Wait 60 seconds before trying again." },
