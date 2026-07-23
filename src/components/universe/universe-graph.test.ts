@@ -88,6 +88,31 @@ describe("knowledge universe graph metadata", () => {
     expect(relation?.citations?.[0].quote).toBe("GraphRAG uses the knowledge graph.");
   });
 
+  it("renders one shared entity across article and meeting libraries while keeping both source relations", () => {
+    const article = library();
+    const meeting = structuredClone(article);
+    meeting.map = { ...meeting.map, id: "map-meeting", name: "会议库", mode: "meeting" };
+    meeting.nodes = meeting.nodes.map((node) => ({ ...node, id: `meeting-${node.id}`, source: "meeting" }));
+    meeting.entityGraph.entities = meeting.entityGraph.entities.map((entity) => ({ ...entity, id: `meeting-${entity.id}` }));
+    meeting.entityGraph.relations = meeting.entityGraph.relations.map((relation) => ({
+      ...relation,
+      id: "relation-meeting",
+      sourceId: `meeting-${relation.sourceId}`,
+      targetId: `meeting-${relation.targetId}`,
+    }));
+
+    const result = buildUniverseData([article, meeting]);
+    const sharedGraphRag = result.nodes.filter((node) => node.refKind === "entity" && node.label === "GraphRAG");
+    const articleRelation = result.links.find((link) => link.relationId === "relation-a");
+    const meetingRelation = result.links.find((link) => link.relationId === "relation-meeting");
+
+    expect(sharedGraphRag).toHaveLength(1);
+    expect(sharedGraphRag[0]).toMatchObject({ sourceMapCount: 2, sourceMapIds: ["map-article", "map-meeting"] });
+    expect(articleRelation?.source).toBe(meetingRelation?.source);
+    expect(articleRelation?.target).toBe(meetingRelation?.target);
+    expect(result.crossLibraryCount).toBeGreaterThanOrEqual(2);
+  });
+
   it("uses real point-to-segment distance for link hover hit testing", () => {
     expect(pointToSegmentDistance(5, 2, 0, 0, 10, 0)).toBeCloseTo(2);
     expect(pointToSegmentDistance(14, 0, 0, 0, 10, 0)).toBeCloseTo(4);

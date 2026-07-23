@@ -924,6 +924,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
   const editInputRef = useRef<HTMLInputElement>(null);
   const initializedLargeMapRef = useRef<string | null>(null);
   const selectedEntityIdRef = useRef<string | null>(null);
+  const commandEntityFocusGenerationRef = useRef(0);
   const whiteboardFocusKeyRef = useRef("");
   const whiteboardGroupDragRef = useRef<WhiteboardGroupDragSnapshot | null>(null);
   const refitTimerRef = useRef<number | null>(null);
@@ -988,9 +989,12 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
     const handleCommandEntityFocus = (event: Event) => {
       const entityId = (event as CustomEvent<{ entityId?: string }>).detail?.entityId;
       if (!entityId || !officialEntityGraph.entities.some((entity) => entity.id === entityId)) return;
+      const generation = commandEntityFocusGenerationRef.current + 1;
+      commandEntityFocusGenerationRef.current = generation;
       setGraphLayer("entity");
       setSelectedRelationId(null);
       window.requestAnimationFrame(() => {
+        if (generation !== commandEntityFocusGenerationRef.current) return;
         setEntityViewMode("local");
         setSelectedEntityId(entityViewNodeId(entityId));
       });
@@ -1521,6 +1525,8 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
   }, [activeNodes.length, currentMapId, isMobile, isWhiteboard, whiteboardGraph.nodes]);
 
   const closeEntityDetail = useCallback(() => {
+    commandEntityFocusGenerationRef.current += 1;
+    selectedEntityIdRef.current = null;
     setSelectedEntityId(null);
     setEntityViewMode("global");
     refitGraph();
