@@ -107,7 +107,7 @@ export function formalEntityGraph(graph: EntityGraph): EntityGraph {
       ].map((candidate) => String(candidate || "").trim()).find(Boolean) || RELATION_TYPE_LABELS.related_to;
       return { ...relation, shortLabel, label: shortLabel };
     });
-  return { entities, relations };
+  return { entities, relations, diagnostics: graph.diagnostics, status: graph.status };
 }
 
 export function aiEntityGraphToEntityGraph(
@@ -151,7 +151,7 @@ export function aiEntityGraphToEntityGraph(
       citations: citationsFor(relation.citationIndexes, citations),
     };
   });
-  return formalEntityGraph({ entities, relations });
+  return formalEntityGraph({ entities, relations, diagnostics: graph?.diagnostics });
 }
 
 export function entityGraphToKnowledgeGraph(graph: EntityGraph): {

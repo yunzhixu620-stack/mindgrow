@@ -61,9 +61,27 @@ export interface GraphRelation {
   citations: Citation[];
 }
 
+export interface EntityGraphDiagnostics {
+  profile?: "article_core" | "meeting" | "generic" | "stored" | string;
+  candidateEntities: number;
+  deduplicatedEntities?: number;
+  nameFilteredEntities: number;
+  descriptionFilteredEntities: number;
+  otherFilteredEntities?: number;
+  budgetFilteredEntities?: number;
+  acceptedEntities: number;
+  candidateRelations: number;
+  relationFiltered: number;
+  acceptedRelations: number;
+  extractionPath?: string;
+  status: "ready" | "sparse_relations" | "insufficient_relation_evidence";
+}
+
 export interface EntityGraph {
   entities: GraphEntity[];
   relations: GraphRelation[];
+  diagnostics?: EntityGraphDiagnostics;
+  status?: string;
 }
 
 export interface AIEntityGraphEntity {
@@ -97,6 +115,7 @@ export interface AIEntityGraphRelation {
 export interface AIEntityGraph {
   entities: AIEntityGraphEntity[];
   relations: AIEntityGraphRelation[];
+  diagnostics?: EntityGraphDiagnostics;
 }
 
 export interface NodeLayout {

@@ -5,6 +5,7 @@ export const WHITEBOARD_CARD_HEIGHT = 168;
 export const WHITEBOARD_GROUP_COLLAPSED_HEIGHT = 76;
 export const WHITEBOARD_GROUP_NODE_PREFIX = "__mindgrow_whiteboard_group__";
 export const WHITEBOARD_LARGE_MAP_THRESHOLD = 80;
+export const WHITEBOARD_OVERVIEW_FIT_LIMIT = 200;
 
 export type WhiteboardDetailLevel = "title" | "summary" | "full";
 
@@ -114,6 +115,26 @@ export function previewWhiteboardPosition(index: number, columns = 3) {
     x: 80 + (index % safeColumns) * (WHITEBOARD_CARD_WIDTH + 64),
     y: 96 + Math.floor(index / safeColumns) * (WHITEBOARD_CARD_HEIGHT + 64),
   };
+}
+
+/**
+ * Keeps an untouched whiteboard close to the shape of its viewport instead of
+ * growing forever in a fixed one/two-column strip. This changes preview
+ * positions only; cards that the user has moved keep their persisted geometry.
+ */
+export function whiteboardPreviewColumns(cardCount: number, isMobile = false) {
+  const safeCount = Math.max(0, Math.trunc(cardCount));
+  if (safeCount <= 1) return 1;
+
+  const horizontalPitch = WHITEBOARD_CARD_WIDTH + 64;
+  const verticalPitch = WHITEBOARD_CARD_HEIGHT + 64;
+  const targetAspectRatio = isMobile ? 0.82 : 1.55;
+  const calculated = Math.ceil(Math.sqrt(
+    safeCount * targetAspectRatio * (verticalPitch / horizontalPitch),
+  ));
+  const minimum = isMobile ? 1 : Math.min(3, safeCount);
+  const maximum = isMobile ? 6 : 24;
+  return Math.min(safeCount, maximum, Math.max(minimum, calculated));
 }
 
 /**

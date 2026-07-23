@@ -43,9 +43,11 @@ import {
   whiteboardGroupHeight,
   whiteboardGroupIdFromNodeId,
   whiteboardGroupNodeId,
+  whiteboardPreviewColumns,
   WHITEBOARD_CARD_HEIGHT,
   WHITEBOARD_CARD_WIDTH,
   WHITEBOARD_LARGE_MAP_THRESHOLD,
+  WHITEBOARD_OVERVIEW_FIT_LIMIT,
 } from "@/components/mindmap/whiteboard-layout";
 import { WhiteboardGroupNode, type WhiteboardGroupNodeData } from "@/components/mindmap/whiteboard-group-node";
 import {
@@ -116,6 +118,7 @@ function MindGrowNode({ data, selected }: NodeProps) {
   const horizontal = data.direction === "horizontal";
   const branchIndex = data.branchIndex as number || 0;
   const citations = (data.citations || []) as KnowledgeNode["citations"];
+  const semanticChildren = (data.semanticChildren || []) as Array<{ title: string; description: string }>;
   const whiteboard = data.whiteboard as boolean;
   const whiteboardGroupId = String(data.whiteboardGroupId || "");
   const whiteboardDetail = selected
@@ -190,6 +193,36 @@ function MindGrowNode({ data, selected }: NodeProps) {
             <span key={`${citation.documentId || "source"}-${citation.index}`} title={`${citation.locator || "原文"}：${citation.quote}`} className="rounded bg-[#22d3a720] px-1.5 py-0.5 text-[9px] font-semibold text-[#7de8c9]">[{citation.index}]</span>
           ))}
           {citations.length > 4 && <span className="text-[9px] opacity-50">+{citations.length - 4}</span>}
+        </div>
+      )}
+      {!whiteboard && !isOverview && (desc || semanticChildren.length > 0 || (citations && citations.length > 0)) && (
+        <div
+          className="pointer-events-none absolute bottom-[calc(100%+10px)] left-1/2 z-[140] hidden w-80 -translate-x-1/2 rounded-2xl border border-[#38bdf855] bg-[var(--tooltip-bg)] p-4 text-left shadow-2xl backdrop-blur-xl group-hover:block"
+          data-testid="concept-semantic-hover-card"
+        >
+          <div className="text-sm font-semibold text-[var(--text-primary)]">{data.label as string}</div>
+          {desc && <p className="mt-2 text-[11px] leading-5 text-[var(--text-secondary)]">{desc}</p>}
+          {semanticChildren.length > 0 && (
+            <div className="mt-3 space-y-1.5 border-t border-[var(--border-default)] pt-2">
+              <div className="text-[9px] font-semibold uppercase tracking-wider text-sky-400">具体内容</div>
+              {semanticChildren.slice(0, 4).map((child, index) => (
+                <div key={`${child.title}-${index}`} className="text-[10px] leading-4 text-[var(--text-secondary)]">
+                  <span className="font-semibold text-[var(--text-primary)]">· {child.title}</span>
+                  {child.description ? `：${child.description}` : ""}
+                </div>
+              ))}
+            </div>
+          )}
+          {!desc && semanticChildren.length === 0 && citations?.[0] && (
+            <p className="mt-2 line-clamp-4 text-[10px] leading-5 text-[var(--text-secondary)]">
+              当前节点只保留了分类标题；可核验原文为：{citations[0].quote}
+            </p>
+          )}
+          {citations && citations.length > 0 && (
+            <div className="mt-3 border-t border-[var(--border-default)] pt-2 text-[9px] text-[var(--text-tertiary)]">
+              {citations.length} 条可核验引用 · {citations[0].locator || "原文定位"}
+            </div>
+          )}
         </div>
       )}
       {(childCount > 0 || source === "ai_generated") && (
@@ -581,6 +614,7 @@ function buildGraph(
   const visibleIds = visibleHierarchyNodeIds(scopedNodes, scopedEdges, collapsed);
 
   const descendantCount = new Map<string, number>();
+  const scopedNodeById = new Map(scopedNodes.map((node) => [node.id, node]));
   const countDescendants = (nodeId: string): number => {
     if (descendantCount.has(nodeId)) return descendantCount.get(nodeId) || 0;
     const count = (childrenOfAll.get(nodeId) || []).reduce((sum, child) => sum + 1 + countDescendants(child), 0);
@@ -612,6 +646,10 @@ function buildGraph(
         onToggleCollapse,
         onFocusBranch,
         citations: dbNode.citations || [],
+        semanticChildren: (childrenOfAll.get(dbNode.id) || []).map((childId) => {
+          const child = scopedNodeById.get(childId);
+          return child ? { title: child.content, description: child.desc || "" } : null;
+        }).filter(Boolean).slice(0, 6),
       },
     };
   });
@@ -796,6 +834,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
   const initializedLargeMapRef = useRef<string | null>(null);
   const selectedEntityIdRef = useRef<string | null>(null);
   const commandEntityFocusGenerationRef = useRef(0);
+  const articleEntityDefaultMapRef = useRef("");
   const whiteboardFocusKeyRef = useRef("");
   const whiteboardGroupDragRef = useRef<WhiteboardGroupDragSnapshot | null>(null);
   const refitTimerRef = useRef<number | null>(null);
@@ -838,12 +877,14 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
 
   const officialEntityGraph = useMemo(() => formalEntityGraph(entityGraph), [entityGraph]);
   const entityDisplayGraph = useMemo(() => entityGraphToKnowledgeGraph(officialEntityGraph), [officialEntityGraph]);
+  const entityDiagnostics = officialEntityGraph.diagnostics;
+  const hasEntityRelations = officialEntityGraph.relations.length > 0;
   const availableEntityTypes = useMemo(() => Array.from(new Set(officialEntityGraph.entities.map((entity) => entity.entityType)))
     .sort((left, right) => (ENTITY_TYPE_LABELS[left] || left).localeCompare(ENTITY_TYPE_LABELS[right] || right, "zh-CN")), [officialEntityGraph.entities]);
   const entitySearchResults = useMemo(() => searchEntityNetwork(officialEntityGraph.entities, entitySearch), [officialEntityGraph.entities, entitySearch]);
   const currentMap = maps.find((map) => map.id === currentMapId);
   const canvasView = currentMap?.canvasView || "mindmap";
-  const showingEntityGraph = graphLayer === "entity" && entityDisplayGraph.nodes.length > 0;
+  const showingEntityGraph = graphLayer === "entity" && entityDisplayGraph.nodes.length > 0 && hasEntityRelations;
   const isWhiteboard = !showingEntityGraph && canvasView === "whiteboard";
   const activeWhiteboardGroups = useMemo(
     () => whiteboardGroups
@@ -859,7 +900,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
   useEffect(() => {
     const handleCommandEntityFocus = (event: Event) => {
       const entityId = (event as CustomEvent<{ entityId?: string }>).detail?.entityId;
-      if (!entityId || !officialEntityGraph.entities.some((entity) => entity.id === entityId)) return;
+      if (!hasEntityRelations || !entityId || !officialEntityGraph.entities.some((entity) => entity.id === entityId)) return;
       const generation = commandEntityFocusGenerationRef.current + 1;
       commandEntityFocusGenerationRef.current = generation;
       setGraphLayer("entity");
@@ -872,11 +913,20 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
     };
     window.addEventListener(COMMAND_ENTITY_FOCUS_EVENT, handleCommandEntityFocus);
     return () => window.removeEventListener(COMMAND_ENTITY_FOCUS_EVENT, handleCommandEntityFocus);
-  }, [officialEntityGraph.entities]);
+  }, [hasEntityRelations, officialEntityGraph.entities]);
 
   useEffect(() => {
-    if (graphLayer === "entity" && entityDisplayGraph.nodes.length === 0) setGraphLayer("concept");
-    if (graphLayer === "concept" && storeNodes.length === 0 && entityDisplayGraph.nodes.length > 0) setGraphLayer("entity");
+    if (graphLayer === "entity" && (entityDisplayGraph.nodes.length === 0 || !hasEntityRelations)) {
+      setGraphLayer("concept");
+    }
+    const articleMapKey = currentMode === "article" && currentMapId ? currentMapId : "";
+    if (articleMapKey && hasEntityRelations && articleEntityDefaultMapRef.current !== articleMapKey) {
+      articleEntityDefaultMapRef.current = articleMapKey;
+      setGraphLayer("entity");
+      setEntityViewMode("global");
+    } else if (graphLayer === "concept" && storeNodes.length === 0 && entityDisplayGraph.nodes.length > 0 && hasEntityRelations) {
+      setGraphLayer("entity");
+    }
     setSelectedRelationId(null);
     setSelectedEntityId(null);
     setHoveredEntityId(null);
@@ -884,7 +934,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
     setEntitySearch("");
     setEntityTypeFilters([]);
     setShowIsolatedEntities(false);
-  }, [currentMapId, entityDisplayGraph.nodes.length, graphLayer, storeNodes.length]);
+  }, [currentMapId, currentMode, entityDisplayGraph.nodes.length, graphLayer, hasEntityRelations, storeNodes.length]);
 
   // Search handler
   const handleSearch = useCallback((query: string) => {
@@ -1235,7 +1285,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
       conceptGraph.nodes.map((node) => node.id),
       layouts,
       currentMapId,
-      isMobile ? 1 : 2,
+      whiteboardPreviewColumns(conceptGraph.nodes.length, isMobile),
       activeWhiteboardGroups,
     );
     const collapsedGroupIds = new Set(activeWhiteboardGroups.filter((group) => group.collapsed).map((group) => group.id));
@@ -1381,16 +1431,29 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
     const focusKey = `${currentMapId}:${activeNodes.length}:${isMobile ? "mobile" : "desktop"}`;
     if (whiteboardFocusKeyRef.current === focusKey) return;
     whiteboardFocusKeyRef.current = focusKey;
-    const firstCard = whiteboardGraph.nodes[0];
-    if (!firstCard) return;
+    if (whiteboardGraph.nodes.length === 0) return;
     const timeout = window.setTimeout(() => {
-      const zoom = isMobile ? 0.72 : 0.88;
-      setCanvasZoom(zoom);
-      reactFlowInstance.current?.setViewport({
-        x: (isMobile ? 24 : 40) - firstCard.position.x * zoom,
-        y: (isMobile ? 118 : 150) - firstCard.position.y * zoom,
-        zoom,
-      }, { duration: 320 });
+      const isLarge = activeNodes.length >= WHITEBOARD_LARGE_MAP_THRESHOLD;
+      const shouldFitOverview = activeNodes.length <= WHITEBOARD_OVERVIEW_FIT_LIMIT;
+      if (shouldFitOverview) {
+        if (isLarge) setCanvasZoom(0.5);
+        reactFlowInstance.current?.fitView({
+          padding: isMobile ? 0.1 : 0.12,
+          minZoom: isLarge ? (isMobile ? 0.06 : 0.08) : (isMobile ? 0.15 : 0.2),
+          maxZoom: isLarge ? 0.72 : 1.05,
+          duration: 360,
+        });
+        return;
+      }
+      const firstCard = whiteboardGraph.nodes.find((node) => !isWhiteboardGroupNode(node.id));
+      if (!firstCard) return;
+      const readableZoom = isMobile ? 0.82 : 0.9;
+      setCanvasZoom(readableZoom);
+      reactFlowInstance.current?.setCenter(
+        firstCard.position.x + WHITEBOARD_CARD_WIDTH / 2,
+        firstCard.position.y + WHITEBOARD_CARD_HEIGHT / 2,
+        { zoom: readableZoom, duration: 360 },
+      );
     }, 140);
     return () => window.clearTimeout(timeout);
   }, [activeNodes.length, currentMapId, isMobile, isWhiteboard, whiteboardGraph.nodes]);
@@ -1920,12 +1983,33 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
               >概念图 {storeNodes.length}</button>
               <button
                 type="button"
-                disabled={officialEntityGraph.entities.length === 0}
+                disabled={!hasEntityRelations}
                 onClick={() => { setGraphLayer("entity"); setEntityViewMode("global"); setSelectedEntityId(null); setSelectedRelationId(null); setCollapsedNodes(new Set<string>()); setViewMode("all"); refitGraph(); }}
                 className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-all disabled:cursor-not-allowed disabled:opacity-35 ${graphLayer === "entity" ? "bg-violet-400 text-black" : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"}`}
-                title={officialEntityGraph.entities.length ? "按实体与有向关系查看，可点击关系核对原文" : "当前知识库还没有可溯源实体；重新解析并保存文章或会议后生成"}
-              >实体图 {officialEntityGraph.entities.length}</button>
+                title={hasEntityRelations ? "查看论文核心概念及其有证据的有向关系" : "关系证据不足，已保留概念导图"}
+              >核心实体图 {officialEntityGraph.entities.length}</button>
             </div>
+            {currentMode === "article" && !hasEntityRelations
+              && (officialEntityGraph.entities.length > 0 || (entityDiagnostics?.candidateEntities || 0) > 0) && (
+              <div
+                className="rounded-xl border border-amber-400/35 bg-amber-400/10 px-3 py-2 text-[10px] font-semibold text-amber-600 dark:text-amber-300"
+                data-testid="entity-relation-fallback"
+              >
+                关系证据不足 · 已显示概念导图
+              </div>
+            )}
+            {entityDiagnostics && (
+              <div
+                className="rounded-xl border border-violet-400/20 bg-violet-400/5 px-3 py-2 text-[10px] text-violet-600 dark:text-violet-200"
+                data-testid="entity-extraction-diagnostics"
+                title={`抽取路径：${entityDiagnostics.extractionPath || "unknown"}`}
+              >
+                候选 {entityDiagnostics.candidateEntities} · 名称过滤 {entityDiagnostics.nameFilteredEntities}
+                {" · "}描述过滤 {entityDiagnostics.descriptionFilteredEntities}
+                {" · "}关系过滤 {entityDiagnostics.relationFiltered}
+                {" · "}保留 {entityDiagnostics.acceptedEntities} 实体/{entityDiagnostics.acceptedRelations} 关系
+              </div>
+            )}
             {!showingEntityGraph && (
               <div className="flex gap-0 rounded-xl border border-[var(--border)] bg-[var(--card)] p-1" data-testid="canvas-view-switch">
                 <button
@@ -1969,7 +2053,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
             </div>}
             {showingEntityGraph && (
               <div className="rounded-xl border border-violet-400/15 bg-violet-400/5 px-3 py-2 text-[10px] text-violet-200" data-testid="entity-network-summary">
-                {entityViewMode === "global" ? "强关系" : entityViewMode === "local" ? "一跳关系" : "证据关系"} {graph.edges.length} 条 · 显示 {graph.nodes.length}/{officialEntityGraph.entities.length} 个实体
+                {entityViewMode === "global" ? "核心强关系" : entityViewMode === "local" ? "一跳关系" : "证据关系"} {graph.edges.length} 条 · 显示 {graph.nodes.length}/{officialEntityGraph.entities.length} 个实体
                 {!showIsolatedEntities && entityViewMode !== "local" ? " · 无强关系实体已隐藏" : ""}
                 {entityTypeFilters.length ? ` · 已筛选 ${entityTypeFilters.length} 种类型` : ""}
               </div>
@@ -2477,7 +2561,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
         onlyRenderVisibleElements={largeWhiteboard}
         fitView={!isWhiteboard}
         fitViewOptions={{ padding: isMobile ? 0.14 : 0.24, minZoom: isMobile ? 0.45 : 0.55, maxZoom: 1.05 }}
-        minZoom={isMobile ? 0.15 : 0.2}
+        minZoom={largeWhiteboard ? (isMobile ? 0.06 : 0.08) : (isMobile ? 0.15 : 0.2)}
         maxZoom={2}
         onMoveEnd={(_, viewport) => {
           setAutoShowNodeDetails(viewport.zoom >= 0.72);

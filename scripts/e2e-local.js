@@ -156,7 +156,22 @@ const expandOneVisibleLevel = async (page, previousCount) => {
       const cards = document.querySelectorAll('[data-whiteboard-card="true"]');
       return cards.length === 13 && !document.querySelector('[data-display-overview="true"]');
     });
-    await page.waitForFunction(() => document.querySelector(".react-flow__viewport")?.style.transform.includes("scale(0.88)"));
+    await page.waitForFunction(() => {
+      const viewport = document.querySelector(".react-flow__viewport");
+      const canvas = document.querySelector(".react-flow");
+      const cards = [...document.querySelectorAll('.react-flow__node:has([data-whiteboard-card="true"])')];
+      const scale = Number(viewport?.style.transform.match(/scale\(([\d.]+)\)/)?.[1]);
+      const canvasBox = canvas?.getBoundingClientRect();
+      if (!Number.isFinite(scale) || !canvasBox || cards.length === 0) return false;
+      const allCardsInView = cards.every((card) => {
+        const box = card.getBoundingClientRect();
+        return box.left >= canvasBox.left - 2
+          && box.top >= canvasBox.top - 2
+          && box.right <= canvasBox.right + 2
+          && box.bottom <= canvasBox.bottom + 2;
+      });
+      return scale >= 0.08 && scale <= 0.88 && allCardsInView;
+    });
 
     const firstNode = await page.$('.react-flow__node:has([data-whiteboard-card="true"])');
     if (!firstNode) throw new Error("Whiteboard reading card is missing");
@@ -290,11 +305,21 @@ const expandOneVisibleLevel = async (page, previousCount) => {
     await page.mouse.down();
     await page.mouse.move(dragHandleBox.x + 144, dragHandleBox.y + dragHandleBox.height / 2 + 72, { steps: 12 });
     await page.mouse.up();
-    await page.waitForFunction((mapId, expectedGroupId, x, y) => {
-      const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
-      const group = (state.whiteboardGroups?.[mapId] || []).find((item) => item.id === expectedGroupId);
-      return group && (Math.abs(group.positionX - x) > 40 || Math.abs(group.positionY - y) > 40);
-    }, {}, activeMapId, groupId, groupBeforeMove.positionX, groupBeforeMove.positionY);
+    try {
+      await page.waitForFunction((mapId, expectedGroupId, x, y) => {
+        const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+        const group = (state.whiteboardGroups?.[mapId] || []).find((item) => item.id === expectedGroupId);
+        return group && (Math.abs(group.positionX - x) > 40 || Math.abs(group.positionY - y) > 40);
+      }, { timeout: 10000 }, activeMapId, groupId, groupBeforeMove.positionX, groupBeforeMove.positionY);
+    } catch {
+      const groupDragDiagnostic = await page.evaluate((mapId, expectedGroupId) => {
+        const state = JSON.parse(localStorage.getItem("mindgrow.local.v2"));
+        const group = (state.whiteboardGroups?.[mapId] || []).find((item) => item.id === expectedGroupId);
+        const node = document.querySelector(`.react-flow__node[data-id="__mindgrow_whiteboard_group__${expectedGroupId}"]`);
+        return { group, nodeTransform: node?.style.transform || "", nodeClass: node?.className || "" };
+      }, activeMapId, groupId);
+      throw new Error(`Whiteboard group drag did not persist: ${JSON.stringify(groupDragDiagnostic)}`);
+    }
     await page.waitForSelector(`button[aria-label="折叠分组 检索与 RAG"]:not([disabled])`);
     const layoutAfterGroupMove = await page.evaluate((id) => JSON.parse(localStorage.getItem("mindgrow.local.v2")).layouts[id], groupedCardId);
     if (layoutAfterGroupMove.positionX !== relativeLayout.positionX || layoutAfterGroupMove.positionY !== relativeLayout.positionY) {

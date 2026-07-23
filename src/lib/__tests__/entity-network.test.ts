@@ -84,6 +84,26 @@ describe("S2.7 entity network selection", () => {
     expect(selected.entities.map((item) => item.id)).toEqual(["rag", "bm25", "recall"]);
   });
 
+  it("falls back to cited relations when no relation reaches the strong threshold", () => {
+    const sparse = [relation("evidence-only", "rag", "bm25", 0.6)];
+
+    expect(selectStrongEntityRelations(sparse).map((item) => item.id)).toEqual(["evidence-only"]);
+  });
+
+  it("caps the default core view at twenty entities and fifteen relations", () => {
+    const manyRelations = Array.from({ length: 30 }, (_, index) => relation(
+      `relation-${index}`,
+      `source-${index}`,
+      `target-${index}`,
+      0.9,
+    ));
+    const selected = selectStrongEntityRelations(manyRelations);
+    const visibleEntities = new Set(selected.flatMap((item) => [item.sourceId, item.targetId]));
+
+    expect(selected.length).toBeLessThanOrEqual(15);
+    expect(visibleEntities.size).toBeLessThanOrEqual(20);
+  });
+
   it("lets the user reveal isolated grounded entities without adding weak edges", () => {
     const selected = selectEntityNetwork(graph, { mode: "global", showIsolated: true });
 

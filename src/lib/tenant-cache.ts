@@ -96,6 +96,10 @@ function cloneGraphSnapshot(snapshot: GraphSnapshot): GraphSnapshot {
       citations: edge.citations?.map((citation) => ({ ...citation })),
     })),
     entityGraph: {
+      diagnostics: snapshot.entityGraph.diagnostics
+        ? { ...snapshot.entityGraph.diagnostics }
+        : undefined,
+      status: snapshot.entityGraph.status,
       entities: snapshot.entityGraph.entities.map((entity) => ({
         ...entity,
         aliases: [...entity.aliases],

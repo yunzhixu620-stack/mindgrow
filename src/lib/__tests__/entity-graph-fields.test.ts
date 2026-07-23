@@ -66,6 +66,27 @@ describe("entity graph field propagation", () => {
     });
   });
 
+  it("preserves extraction diagnostics through the preview and formal graph", () => {
+    const input = graphWithRelation();
+    input.diagnostics = {
+      profile: "article_core",
+      candidateEntities: 12,
+      nameFilteredEntities: 2,
+      descriptionFilteredEntities: 1,
+      acceptedEntities: 9,
+      candidateRelations: 8,
+      relationFiltered: 3,
+      acceptedRelations: 5,
+      extractionPath: "targeted_retry",
+      status: "ready",
+    };
+
+    const graph = aiEntityGraphToEntityGraph(input, citations, "article:diagnostics");
+
+    expect(graph.diagnostics).toEqual(input.diagnostics);
+    expect(formalEntityGraph(graph).diagnostics).toEqual(input.diagnostics);
+  });
+
   it("falls back from legacy label to the relation type mapping", () => {
     const legacy = aiEntityGraphToEntityGraph(
       graphWithRelation({ shortLabel: undefined, label: "旧标签" }), citations, "article:legacy",

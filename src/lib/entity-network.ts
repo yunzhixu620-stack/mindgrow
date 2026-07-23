@@ -12,6 +12,8 @@ export interface EntityNetworkSelectionOptions {
 export const STRONG_RELATION_CONFIDENCE = 0.68;
 export const EVIDENCE_RELATION_CONFIDENCE = 0.55;
 export const DEFAULT_ENTITY_DEGREE_LIMIT = 3;
+export const DEFAULT_CORE_ENTITY_LIMIT = 20;
+export const DEFAULT_CORE_RELATION_LIMIT = 15;
 
 const normalize = (value: string) => String(value || "").trim().toLocaleLowerCase();
 
@@ -20,17 +22,28 @@ export function selectStrongEntityRelations(
   limit = DEFAULT_ENTITY_DEGREE_LIMIT,
 ): GraphRelation[] {
   const degree = new Map<string, number>();
-  return [...relations]
-    .filter((relation) => relation.confidence >= STRONG_RELATION_CONFIDENCE && relation.citations.length > 0)
-    .sort((left, right) => right.confidence - left.confidence)
+  const visibleEntities = new Set<string>();
+  const evidenceBacked = [...relations]
+    .filter((relation) => relation.confidence >= EVIDENCE_RELATION_CONFIDENCE && relation.citations.length > 0)
+    .sort((left, right) => right.confidence - left.confidence);
+  const strong = evidenceBacked.filter((relation) => relation.confidence >= STRONG_RELATION_CONFIDENCE);
+  const visiblePool = strong.length > 0 ? strong : evidenceBacked;
+  return visiblePool
     .filter((relation) => {
+      const nextEntityCount = visibleEntities.size
+        + (visibleEntities.has(relation.sourceId) ? 0 : 1)
+        + (visibleEntities.has(relation.targetId) ? 0 : 1);
+      if (nextEntityCount > DEFAULT_CORE_ENTITY_LIMIT) return false;
       const sourceDegree = degree.get(relation.sourceId) || 0;
       const targetDegree = degree.get(relation.targetId) || 0;
       if (sourceDegree >= limit || targetDegree >= limit) return false;
       degree.set(relation.sourceId, sourceDegree + 1);
       degree.set(relation.targetId, targetDegree + 1);
+      visibleEntities.add(relation.sourceId);
+      visibleEntities.add(relation.targetId);
       return true;
-    });
+    })
+    .slice(0, DEFAULT_CORE_RELATION_LIMIT);
 }
 
 function entityMatchesTypes(entity: GraphEntity, entityTypes: Set<string>) {

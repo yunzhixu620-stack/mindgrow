@@ -10,6 +10,7 @@ import {
   whiteboardGroupIdFromNodeId,
   whiteboardGroupNodeId,
   whiteboardDetailLevel,
+  whiteboardPreviewColumns,
   WHITEBOARD_CARD_HEIGHT,
   WHITEBOARD_CARD_WIDTH,
   WHITEBOARD_LARGE_MAP_THRESHOLD,
@@ -59,6 +60,25 @@ describe("whiteboard card geometry", () => {
       groupId: null,
       persisted: false,
     });
+  });
+
+  it("uses a compact viewport-shaped grid instead of a long fixed-column strip", () => {
+    expect(whiteboardPreviewColumns(1)).toBe(1);
+    expect(whiteboardPreviewColumns(6)).toBe(3);
+    expect(whiteboardPreviewColumns(135)).toBe(12);
+
+    const columns = whiteboardPreviewColumns(135);
+    const rows = Math.ceil(135 / columns);
+    const width = columns * WHITEBOARD_CARD_WIDTH + (columns - 1) * 64;
+    const height = rows * WHITEBOARD_CARD_HEIGHT + (rows - 1) * 64;
+    expect(rows).toBe(12);
+    expect(width / height).toBeGreaterThan(1.4);
+    expect(width / height).toBeLessThan(1.7);
+  });
+
+  it("uses a bounded portrait grid for large mobile whiteboards", () => {
+    expect(whiteboardPreviewColumns(135, true)).toBe(6);
+    expect(Math.ceil(135 / whiteboardPreviewColumns(135, true))).toBe(23);
   });
 
   it("prefers persisted position, size, and group for the active map", () => {
