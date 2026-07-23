@@ -29,7 +29,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.21.10';
+const API_VERSION = '10.21.11';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true';
@@ -2130,7 +2130,11 @@ async function handleChat(body, context) {
   } catch (_) {
     return { status: 502, data: { error: 'The model returned an invalid structure', code: 'MODEL_OUTPUT_INVALID' } };
   }
-  const structureCoverage = ensureMindMapSourceCoverage(mindMap, structureInput, [], null);
+  const structureCoverage = ensureMindMapSourceCoverage(mindMap, structureInput, [], null, {
+    maxAppendedFacts: nodeBudget.kind === 'long_text' ? 4 : 2,
+    maximumFactLength: nodeBudget.kind === 'long_text' ? 180 : 140,
+    rejectMarkdownFacts: true,
+  });
   mindMap = structureCoverage.mindMap;
   mindMap = ensureShortTermFiveDirections(mindMap, structureInput);
   let supplementPlan = null;
@@ -3007,6 +3011,8 @@ function structureItemGrounded(item, sourceText) {
   const value = normalizeSpaces(item);
   if (!value) return false;
   const source = normalizeSpaces(sourceText).toLowerCase();
+  const genericPlaceholder = /(未明确.{0,24}(?:需|需要).{0,16}(?:补充|确认)|需结合(?:其他)?(?:文档|材料)补充|not specified.{0,30}(?:needs?|requires?).{0,20}(?:clarification|details)|details? (?:need|needs) to be provided)/i;
+  if (genericPlaceholder.test(value) && !source.includes(value.toLowerCase())) return false;
   const numbers = value.match(/\d+(?:\.\d+)?(?:%|％)?/g) || [];
   if (numbers.some((number) => !source.includes(number.toLowerCase()))) return false;
   const anchors = queryAnchors(value);
@@ -3082,7 +3088,20 @@ function ensureMindMapSourceCoverage(mindMap, sourceText, citations, allowedInde
   const criticalFacts = sourceCriticalFacts(sourceText, 24);
   const missingFacts = criticalFacts.filter((fact) => !structureFactCovered(fact, rendered));
   const appendFacts = !options || options.appendFacts !== false;
-  if (missingFacts.length && appendFacts) {
+  const maxAppendedFacts = Number.isInteger(options && options.maxAppendedFacts)
+    ? Math.max(0, Math.min(20, options.maxAppendedFacts))
+    : 20;
+  const maximumFactLength = Number.isInteger(options && options.maximumFactLength)
+    ? Math.max(40, Math.min(1000, options.maximumFactLength))
+    : 1000;
+  const rejectMarkdownFacts = Boolean(options && options.rejectMarkdownFacts);
+  const appendableFacts = missingFacts.filter((fact) => {
+    const text = normalizeSpaces(fact);
+    if (!text || text.length > maximumFactLength) return false;
+    if (rejectMarkdownFacts && (/[|`]/.test(text) || /^#{1,6}\s/.test(text))) return false;
+    return true;
+  }).slice(0, maxAppendedFacts);
+  if (appendableFacts.length && appendFacts) {
     let targetIndex = children.findIndex((child) => /(关键|事实|数据|指标|结果|行动|风险|用户|访谈|复盘|证据)/i.test(child.topic));
     if (targetIndex < 0 && children.length < 6) {
       children.push({
@@ -3099,7 +3118,7 @@ function ensureMindMapSourceCoverage(mindMap, sourceText, citations, allowedInde
         .sort((left, right) => left.size - right.size)[0].index;
     }
     const target = children[targetIndex];
-    missingFacts.forEach((fact) => {
+    appendableFacts.forEach((fact) => {
       if (target.items.length >= 20) return;
       target.items.push(fact);
       // These facts are copied directly from source text, so provenance can be
@@ -3123,9 +3142,9 @@ function ensureMindMapSourceCoverage(mindMap, sourceText, citations, allowedInde
     mindMap: output,
     audit: {
       criticalFacts: criticalFacts.length,
-      appendedFacts: appendFacts ? missingFacts.length : 0,
-      coveredFacts: criticalFacts.length - missingFacts.length,
-      uncoveredFacts: appendFacts ? 0 : missingFacts.length,
+      appendedFacts: appendFacts ? appendableFacts.length : 0,
+      coveredFacts: criticalFacts.length - missingFacts.length + (appendFacts ? appendableFacts.length : 0),
+      uncoveredFacts: missingFacts.length - (appendFacts ? appendableFacts.length : 0),
     },
   };
 }

@@ -36,6 +36,20 @@ const proxy = require("../../../fc-proxy/index.js") as {
     root: string;
     children: Array<{ topic: string; desc?: string; items?: string[] }>;
   };
+  ensureMindMapSourceCoverage: (
+    mindMap: unknown,
+    sourceText: string,
+    citations: unknown[],
+    allowedIndexes: null,
+    options?: {
+      maxAppendedFacts?: number;
+      maximumFactLength?: number;
+      rejectMarkdownFacts?: boolean;
+    },
+  ) => {
+    mindMap: { children: Array<{ topic: string; items: string[] }> };
+    audit: { appendedFacts: number; uncoveredFacts: number };
+  };
   applyKnowledgeNodeBudget: (mindMap: unknown, budget: { kind: string; minimum: number; maximum: number }) => {
     mindMap: unknown;
     audit: { actual: number; proposed: number; overflowCompressed: number };
@@ -96,6 +110,37 @@ describe("knowledge quality contracts", () => {
       "检索排序算法",
     ]);
     expect(proxy.mindMapNodeCount(result)).toBe(6);
+  });
+
+  it("keeps long-fragment coverage concise and removes unsupported placeholder items", () => {
+    const source = [
+      "# SEO 计划",
+      "| 页面 | 目标 | 状态 |",
+      "|---|---|---|",
+      "| 支柱页 | AI 知识助手 | 已上线 |",
+      "生产登录页不泄漏私有知识内容。",
+      "Search Console 验证尚未完成。",
+      "Core Web Vitals 的 LCP p75 目标小于 2.5 秒。",
+    ].join("\n");
+    const result = proxy.ensureMindMapSourceCoverage({
+      root: "SEO 计划",
+      children: [{
+        topic: "技术基础",
+        desc: "生产登录页不泄漏私有知识内容",
+        items: [
+          "未明确具体机制内容，需结合其他文档补充",
+          "Search Console 验证尚未完成",
+        ],
+      }],
+    }, source, [], null, {
+      maxAppendedFacts: 2,
+      maximumFactLength: 120,
+      rejectMarkdownFacts: true,
+    });
+    const items = result.mindMap.children.flatMap((child) => child.items);
+    expect(items.some((item) => item.includes("未明确具体机制"))).toBe(false);
+    expect(items.some((item) => item.includes("|"))).toBe(false);
+    expect(result.audit.appendedFacts).toBeLessThanOrEqual(2);
   });
 
   it("enforces the 4–8, 10–20 and 12–20 node budgets", () => {
