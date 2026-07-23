@@ -1952,7 +1952,7 @@ export function MindMapPanel({ showSkeleton = false }: { showSkeleton?: boolean 
                 data-testid="create-whiteboard-group"
               >＋ 空间分组{activeWhiteboardGroups.length ? ` ${activeWhiteboardGroups.length}` : ""}</button>
             )}
-            <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/5 px-3 py-2 text-[10px] font-medium text-emerald-200" title="新增内容会成为节点；层级、关联与冲突关系会持续连接旧知识">
+            <div className="rounded-xl border border-[var(--status-growth-border)] bg-[var(--status-growth-bg)] px-3 py-2 text-[10px] font-semibold text-[var(--status-growth-text)]" title="新增内容会成为节点；层级、关联与冲突关系会持续连接旧知识">
               🌱 生长中 · {activeNodes.length} 节点 · {activeEdges.length} 条连接{relationCount > 0 ? ` · ${relationCount} 条${showingEntityGraph ? "有向" : "语义"}关系` : ""}{citedNodeCount > 0 ? ` · ${citedNodeCount} 个可追溯节点` : ""}
             </div>
             {showingEntityGraph && <div className="flex gap-0 rounded-xl border border-violet-400/20 bg-[var(--card)] p-1" data-testid="entity-view-modes">

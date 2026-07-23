@@ -62,5 +62,16 @@ describe("U8 theme foundation", () => {
       }
       expect(contrastRatio(color(scope, "primary-foreground"), color(scope, "primary")), "primary action text").toBeGreaterThanOrEqual(4.5);
     }
+
+    expect(contrastRatio(color(light, "status-growth-text"), color(light, "status-growth-bg")), "light growth status").toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(color(light, "status-attention-text"), color(light, "status-attention-bg")), "light organizer reminder").toBeGreaterThanOrEqual(4.5);
+  });
+
+  it("uses theme-aware semantic colors for status pills", () => {
+    const sidebar = fs.readFileSync(path.join(process.cwd(), "src/components/layout/sidebar.tsx"), "utf8");
+    const mindMap = fs.readFileSync(path.join(process.cwd(), "src/components/mindmap/mind-map-panel.tsx"), "utf8");
+
+    expect(sidebar).toContain("var(--status-attention-text)");
+    expect(mindMap).toContain("var(--status-growth-text)");
   });
 });

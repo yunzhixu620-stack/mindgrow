@@ -645,7 +645,7 @@ export function Sidebar({ onSwitchMap, onMapCreated }: SidebarProps) {
           <span>{english ? "🌱 Explore connections across libraries" : `🌱 查看${MODE_LIBRARY_CONFIG[currentMode].shortLabel}库之间的生长关系`}</span>
           <span aria-hidden="true">→</span>
         </Link>
-        {needsOrganizing && <button type="button" onClick={() => setShowOrganizer(true)} className="mt-2 w-full rounded-lg border border-amber-300/20 bg-amber-300/5 px-3 py-2 text-left text-[10px] leading-4 text-amber-200 hover:border-amber-300/35" data-testid="organize-reminder">
+        {needsOrganizing && <button type="button" onClick={() => setShowOrganizer(true)} className="mt-2 w-full rounded-lg border border-[var(--status-attention-border)] bg-[var(--status-attention-bg)] px-3 py-2 text-left text-[10px] font-medium leading-4 text-[var(--status-attention-text)] transition-colors hover:brightness-95" data-testid="organize-reminder">
           {english ? `✨ ${uncategorizedMaps.length} libraries are uncategorized; organize when ready` : `✨ ${uncategorizedMaps.length} 个知识库尚未归类，可按需一键整理`}
         </button>}
       </div>
