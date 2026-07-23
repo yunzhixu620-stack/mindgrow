@@ -1,0 +1,4 @@
+User-Agent: *
+Allow: /mindgrow/
+
+Sitemap: https://yunzhixu620-stack.github.io/mindgrow/sitemap.xml
