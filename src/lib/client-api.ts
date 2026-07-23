@@ -2,6 +2,7 @@ import { API_BASE_URL } from "@/lib/config";
 import { supabase } from "@/lib/supabase-browser";
 import { aiEntityGraphToEntityGraph } from "@/lib/entity-graph";
 import { migrateLegacyMapMode, normalizeMapMode } from "@/lib/mode-libraries";
+import { sendWithManagedSession } from "@/lib/managed-session";
 import { buildLocalArticleCitations } from "@/lib/pdf-citation";
 import type { TenantScope } from "@/lib/tenant-cache";
 import { useMindGrowStore, type WriteRequestToken } from "@/store/mindgrow-store";
@@ -1026,11 +1027,12 @@ export async function apiFetch(path: string, options?: ApiFetchOptions): Promise
     // already being sent by this request.
     const writeToken = beginTrackedWrite(trackedMapId, writeScope);
     try {
-      const { data } = await supabase.auth.getSession();
-      const headers = new Headers(init?.headers);
-      if (data.session?.access_token) headers.set("Authorization", `Bearer ${data.session.access_token}`);
-      if (storedWorkspaceId) headers.set("X-Workspace-Id", storedWorkspaceId);
-      const response = await fetch(`${API_BASE_URL}${path}`, { ...init, cache: "no-store", headers });
+      const response = await sendWithManagedSession({
+        auth: supabase.auth,
+        headers: init?.headers,
+        workspaceId: storedWorkspaceId,
+        send: (headers) => fetch(`${API_BASE_URL}${path}`, { ...init, cache: "no-store", headers }),
+      });
       finishTrackedWrite(writeToken, response);
       return response;
     } catch (error) {
