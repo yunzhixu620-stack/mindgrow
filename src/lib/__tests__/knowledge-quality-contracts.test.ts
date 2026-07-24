@@ -119,7 +119,7 @@ function oversizedMap() {
 }
 
 describe("knowledge quality contracts", () => {
-  it("expands a single knowledge term into exactly five first-level directions", () => {
+  it("never manufactures unexplained first-level directions for a single term", () => {
     expect(proxy.isSingleKnowledgeTerm("GraphRAG")).toBe(true);
     expect(proxy.isSingleKnowledgeTerm("知识图谱")).toBe(true);
     expect(proxy.isSingleKnowledgeTerm("GraphRAG improves retrieval.")).toBe(false);
@@ -127,20 +127,36 @@ describe("knowledge quality contracts", () => {
     const result = proxy.ensureShortTermFiveDirections({
       root: "GraphRAG",
       children: [
-        { topic: "技术优势", items: [] },
-        { topic: "应用场景", items: [] },
+        { topic: "技术优势", desc: "通过图结构补充跨段关系检索，减少只依赖向量相似度造成的错配。", items: [] },
+        { topic: "应用场景", desc: "", items: [] },
       ],
       relatedTopics: ["知识图谱构建", "大模型微调方法", "检索排序算法"],
     }, "GraphRAG");
 
-    expect(result.children.map((child) => child.topic)).toEqual([
-      "技术优势",
-      "应用场景",
-      "知识图谱构建",
-      "大模型微调方法",
-      "检索排序算法",
-    ]);
-    expect(proxy.mindMapNodeCount(result)).toBe(6);
+    expect(result.children.map((child) => child.topic)).toEqual(["技术优势"]);
+    expect(result.children.every((child) => Boolean(child.desc?.trim()))).toBe(true);
+    expect(proxy.mindMapNodeCount(result)).toBe(2);
+  });
+
+  it("promotes an explanatory item to the branch description and drops title-only branches", () => {
+    const result = proxy.normalizeKnowledgeMindMapDisplay({
+      root: "LLM Wiki",
+      rootDesc: "把大语言模型领域的概念、方法和证据组织为可检索、可学习的结构化知识页面。",
+      children: [
+        {
+          topic: "定义与原理",
+          desc: "",
+          items: ["LLM Wiki 通过主题页面和语义链接组织模型概念，使知识能够按关系持续扩展。"],
+          itemCitationIndexes: [[1]],
+        },
+        { topic: "只有标题", desc: "", items: [] },
+      ],
+    });
+
+    expect(result.children).toHaveLength(1);
+    expect(result.children[0].topic).toBe("定义与原理");
+    expect(result.children[0].desc).toContain("主题页面和语义链接");
+    expect(result.children[0].items).toEqual([]);
   });
 
   it("keeps long-fragment coverage concise and removes unsupported placeholder items", () => {
@@ -234,7 +250,7 @@ describe("knowledge quality contracts", () => {
     expect(fact.length).toBeLessThanOrEqual(180);
   });
 
-  it("uses flattened table evidence to reach the long-text minimum without raw rows", () => {
+  it("uses flattened table evidence without padding the graph with unexplained rows", () => {
     const source = [
       "MindGrow On-call 服务目标",
       "| 服务 | SLO | 延迟/质量目标 | |---|---:|---|",
@@ -259,7 +275,7 @@ describe("knowledge quality contracts", () => {
     }, source, { kind: "long_text", minimum: 10, maximum: 20 }) as {
       children: Array<{ items: string[] }>;
     };
-    expect(proxy.mindMapNodeCount(output)).toBeGreaterThanOrEqual(10);
+    expect(proxy.mindMapNodeCount(output)).toBeGreaterThanOrEqual(9);
     expect(proxy.mindMapNodeCount(output)).toBeLessThanOrEqual(20);
     expect(output.children.flatMap((child) => child.items).join(" ")).not.toContain("|");
   });

@@ -37,7 +37,7 @@ const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCas
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.21.29';
+const API_VERSION = '10.21.30';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true'
@@ -1971,30 +1971,41 @@ function isSingleKnowledgeTerm(input) {
   return normalized.split(' ').filter(Boolean).length <= 4;
 }
 
+function knowledgeDescriptionIsConcrete(topic, value) {
+  const text = compactKnowledgeDisplayText(value, 96);
+  if (!text) return false;
+  const normalizeKey = (input) => normalizeSpaces(input)
+    .toLocaleLowerCase()
+    .replace(/[\s，。；：、,.!?;:'"“”‘’()（）[\]【】_-]/g, '');
+  const textKey = normalizeKey(text);
+  const topicKey = normalizeKey(topic);
+  if (!textKey || textKey === topicKey) return false;
+  if (/^(?:定义与原理|关键方法|应用场景|优势与局限|评估指标|相关内容|具体内容|其他内容|definitionandprinciples|keymethods|applications|strengthsandlimitations|evaluationmetrics)$/i.test(textKey)) return false;
+  if (topicKey && [
+    `${topicKey}的相关内容`,
+    `${topicKey}的具体内容`,
+    `介绍${topicKey}`,
+    `关于${topicKey}`,
+  ].includes(textKey)) return false;
+  const compactLength = Array.from(text.replace(/\s/g, '')).length;
+  const wordCount = text.split(/\s+/).filter(Boolean).length;
+  return /[\u3400-\u9fff]/.test(text) ? compactLength >= 8 : text.length >= 20 && wordCount >= 4;
+}
+
 function ensureShortTermFiveDirections(mindMap, input) {
   if (!isSingleKnowledgeTerm(input)) return mindMap;
   const source = mindMap && typeof mindMap === 'object' ? mindMap : {};
   const children = (Array.isArray(source.children) ? source.children : [])
-    .filter((child) => child && String(child.topic || '').trim())
+    .filter((child) => (
+      child
+      && String(child.topic || '').trim()
+      && knowledgeDescriptionIsConcrete(child.topic, child.desc)
+    ))
     .map((child) => ({
       ...child,
       topic: String(child.topic).trim(),
       items: Array.isArray(child.items) ? child.items : [],
     }));
-  const seen = new Set(children.map((child) => child.topic.toLocaleLowerCase()));
-  const related = Array.isArray(source.relatedTopics) ? source.relatedTopics : [];
-  const chinese = /[\u3400-\u9fff]/.test(String(input || ''));
-  const fallbacks = chinese
-    ? ['定义与原理', '关键方法', '应用场景', '优势与局限', '评估指标']
-    : ['Definition and principles', 'Key methods', 'Applications', 'Strengths and limitations', 'Evaluation metrics'];
-  for (const candidate of [...related, ...fallbacks]) {
-    const topic = String(candidate || '').trim();
-    const key = topic.toLocaleLowerCase();
-    if (!topic || seen.has(key)) continue;
-    children.push({ topic, desc: '', items: [], itemCitationIndexes: [] });
-    seen.add(key);
-    if (children.length === 5) break;
-  }
   return { ...source, children: children.slice(0, 5) };
 }
 
@@ -2037,7 +2048,6 @@ function normalizeKnowledgeMindMapDisplay(mindMap) {
   const input = mindMap && typeof mindMap === 'object' ? mindMap : {};
   const children = (Array.isArray(input.children) ? input.children : []).map((child) => {
     const topic = compactKnowledgeDisplayText(child && child.topic, 24);
-    const desc = compactKnowledgeDisplayText(child && child.desc, 90);
     const sourceItems = Array.isArray(child && child.items) ? child.items : [];
     const sourceIndexes = Array.isArray(child && child.itemCitationIndexes) ? child.itemCitationIndexes : [];
     const items = [];
@@ -2051,6 +2061,17 @@ function normalizeKnowledgeMindMapDisplay(mindMap) {
       items.push(cleaned);
       itemCitationIndexes.push(sourceIndexes[index] || []);
     });
+    let desc = compactKnowledgeDisplayText(child && child.desc, 90);
+    if (!knowledgeDescriptionIsConcrete(topic, desc)) {
+      const explanatoryIndex = items.findIndex((item) => knowledgeDescriptionIsConcrete(topic, item));
+      if (explanatoryIndex >= 0) {
+        desc = items[explanatoryIndex];
+        items.splice(explanatoryIndex, 1);
+        itemCitationIndexes.splice(explanatoryIndex, 1);
+      } else {
+        desc = '';
+      }
+    }
     return {
       ...child,
       topic,
@@ -2058,11 +2079,19 @@ function normalizeKnowledgeMindMapDisplay(mindMap) {
       items,
       itemCitationIndexes,
     };
-  }).filter((child) => child.topic && !incompleteKnowledgeDisplayText(child.topic));
+  }).filter((child) => (
+    child.topic
+    && !incompleteKnowledgeDisplayText(child.topic)
+    && knowledgeDescriptionIsConcrete(child.topic, child.desc)
+  ));
+  let rootDesc = compactKnowledgeDisplayText(input.rootDesc, 96);
+  if (!knowledgeDescriptionIsConcrete(input.root, rootDesc)) {
+    rootDesc = children[0] ? children[0].desc : '';
+  }
   return {
     ...input,
     root: compactKnowledgeDisplayText(input.root, 48),
-    rootDesc: compactKnowledgeDisplayText(input.rootDesc, 96),
+    rootDesc,
     children,
   };
 }
@@ -2077,17 +2106,6 @@ function ensureKnowledgeNodeMinimum(mindMap, sourceText, budget) {
       itemCitationIndexes: Array.isArray(child && child.itemCitationIndexes) ? [...child.itemCitationIndexes] : [],
     })),
   };
-  let target = output.children.find((child) => /(?:关键事实|数据|指标|结果|行动|风险)/i.test(child.topic));
-  if (!target && output.children.length < 6) {
-    target = {
-      topic: '原文关键事实',
-      desc: '保留输入中的关键数字、责任、否定条件与因果链',
-      items: [],
-      itemCitationIndexes: [],
-    };
-    output.children.push(target);
-  }
-  if (!target) target = output.children.slice().sort((left, right) => left.items.length - right.items.length)[0];
   const rendered = () => [
     output.root,
     output.rootDesc,
@@ -2096,6 +2114,21 @@ function ensureKnowledgeNodeMinimum(mindMap, sourceText, budget) {
   const facts = sourceCriticalFacts(sourceText, 30)
     .map((fact) => compactKnowledgeDisplayText(fact, 96))
     .filter((fact) => fact && !incompleteKnowledgeDisplayText(fact));
+  let target = output.children.find((child) => /(?:关键事实|数据|指标|结果|行动|风险)/i.test(child.topic));
+  if (!target && output.children.length < 6 && facts.length > 0) {
+    const firstUncovered = facts.find((fact) => !structureFactCovered(fact, rendered()));
+    if (firstUncovered) {
+      target = {
+        topic: '原文关键事实',
+        desc: firstUncovered,
+        items: [],
+        itemCitationIndexes: [],
+      };
+      output.children.push(target);
+    }
+  }
+  if (!target) target = output.children.slice().sort((left, right) => left.items.length - right.items.length)[0];
+  if (!target) return output;
   for (const fact of facts) {
     if (mindMapNodeCount(output) >= budget.minimum || mindMapNodeCount(output) >= budget.maximum) break;
     if (structureFactCovered(fact, rendered())) continue;
@@ -2306,11 +2339,16 @@ async function handleChat(body, context) {
     console.warn('Existing node catalog unavailable', { code: error.publicCode || 'NODE_CATALOG_FAILED' });
   }
   const nodeBudget = requestedKnowledgeNodeBudget(structureInput, Boolean(resolvedSourceUrl));
+  const shortTermExpansion = !resolvedSourceUrl && isSingleKnowledgeTerm(structureInput);
+  const semanticCompletenessContract = '每个 child 都必须包含 20-90 字、可独立理解的 desc，直接回答“这个分支具体讲什么”；禁止只输出栏目名、同义改写、空字符串或“相关内容”等占位说明。items 中的每一项也必须写成可独立理解的事实或解释句，不能只放术语标题。无法解释的分支必须省略，绝不能生成空节点。';
+  const groundingContract = shortTermExpansion
+    ? '这是单一概念的知识扩展任务，可以使用可靠、稳定的通用知识解释该概念；不要编造具体人物、日期、版本号、实验数字或产品能力。'
+    : 'root、rootDesc、children 只能包含输入明确支持的事实，不得补写产品能力、时间、人物、数字或结论。';
 
   const generated = await dashscopeChat([
     {
       role: 'system',
-      content: `你是严格忠实于输入证据的知识结构提取器。只返回严格 JSON：{"root":"核心主题","rootDesc":"简短描述","children":[{"topic":"子主题","desc":"描述","items":["要点"]}],"relatedTopics":["可继续探索的相关主题"]}。children 必须按语义聚合为 3-6 个一级分支，具体事实、方法、案例与指标放入各分支的 items，不得把大量细节平铺为一级分支；不得因聚合而删减输入中的重要信息。此次结构总节点数（root + children + items）必须控制在 ${nodeBudget.minimum}-${nodeBudget.maximum} 个，超出部分压缩进描述或留在原始材料检索层，不得继续增加节点。root、rootDesc、children 只能包含输入明确支持的事实，不得补写产品能力、时间、人物、数字或结论。必须保留否定、未批准、风险、负责人、日期、版本号和精确指标。relatedTopics 只能作为探索建议，不得写成既成事实。不得输出 Markdown。`,
+      content: `你是知识结构提取器。只返回严格 JSON：{"root":"核心主题","rootDesc":"一句话解释","children":[{"topic":"子主题","desc":"具体解释","items":["可独立理解的事实或解释句"]}],"relatedTopics":["可继续探索的相关主题"]}。children 必须按语义聚合为 3-6 个一级分支，具体事实、方法、案例与指标放入各分支的 items，不得把大量细节平铺为一级分支；不得因聚合而删减输入中的重要信息。${semanticCompletenessContract}此次结构总节点数（root + children + items）必须控制在 ${nodeBudget.minimum}-${nodeBudget.maximum} 个，超出部分压缩进描述或留在原始材料检索层，不得继续增加节点。${groundingContract}必须保留否定、未批准、风险、负责人、日期、版本号和精确指标。relatedTopics 只能作为探索建议，不得写成既成事实。不得输出 Markdown。`,
     },
     {
       role: 'user',
@@ -2332,13 +2370,18 @@ async function handleChat(body, context) {
     mindMap = deterministicKnowledgeMindMap(structureInput);
     generationFallback = 'MODEL_OUTPUT_INVALID';
   }
-  const structureCoverage = ensureMindMapSourceCoverage(mindMap, structureInput, [], null, {
-    maxAppendedFacts: nodeBudget.kind === 'long_text' ? 4 : 2,
-    maximumFactLength: nodeBudget.kind === 'long_text' ? 180 : 140,
-    rejectMarkdownFacts: true,
-  });
+  const structureCoverage = shortTermExpansion
+    ? { mindMap, audit: { criticalFacts: 0, appendedFacts: 0, coveredFacts: 0, uncoveredFacts: 0 } }
+    : ensureMindMapSourceCoverage(mindMap, structureInput, [], null, {
+      maxAppendedFacts: nodeBudget.kind === 'long_text' ? 4 : 2,
+      maximumFactLength: nodeBudget.kind === 'long_text' ? 180 : 140,
+      rejectMarkdownFacts: true,
+    });
   mindMap = normalizeKnowledgeMindMapDisplay(structureCoverage.mindMap);
-  mindMap = ensureKnowledgeNodeMinimum(mindMap, structureInput, nodeBudget);
+  if (!shortTermExpansion) {
+    mindMap = ensureKnowledgeNodeMinimum(mindMap, structureInput, nodeBudget);
+    mindMap = normalizeKnowledgeMindMapDisplay(mindMap);
+  }
   mindMap = ensureShortTermFiveDirections(mindMap, structureInput);
   let supplementPlan = null;
   if (supplementMode) {
@@ -6557,6 +6600,7 @@ async function createGraph(workspaceId, mapId, mindMap, source, document, source
   };
   const supplementMode = Boolean(placement && placement.supplement);
   const attemptedNodes = mindMapNodeCount(mindMap);
+  const nodeDescriptionRepairs = [];
 
   const topics = allNodes.filter((node) => node.type === 'topic');
   const requestedTopic = placement && Number(placement.confidence) >= 0.45 ? String(placement.targetTopic || '') : '';
@@ -6587,6 +6631,16 @@ async function createGraph(workspaceId, mapId, mindMap, source, document, source
     let childNode = similarChild ? similarChild.node : null;
     if (childNode) {
       reusedNodes.add(childNode.id);
+      if (!childNode.desc && child.desc) {
+        const repairedDescription = String(child.desc).slice(0, 2000);
+        nodeDescriptionRepairs.push(supabaseRequest(
+          'PATCH',
+          `nodes?workspace_id=eq.${workspace}&id=eq.${encodeURIComponent(childNode.id)}`,
+          { desc: repairedDescription, updated_at: now },
+          'return=minimal',
+        ));
+        childNode.desc = repairedDescription;
+      }
       if (!rootChildren.has(childNode.id)) addContains(`edge_${seed}_c${childIndex}`, root.id, childNode.id, 1);
     } else {
       childNode = makeNode(`node_${seed}_c${childIndex}`, child.topic, child.desc, 'concept', 0.9);
@@ -6626,6 +6680,7 @@ async function createGraph(workspaceId, mapId, mindMap, source, document, source
       citationPlan.set(detail.id, normalizeCitationIndexes(itemIndexes && itemIndexes.length ? itemIndexes : child.citationIndexes));
     });
   });
+  if (nodeDescriptionRepairs.length) await Promise.all(nodeDescriptionRepairs);
   if (nodes.length) await supabaseRequest('POST', 'nodes', nodes);
   if (nodes.length) {
     try {

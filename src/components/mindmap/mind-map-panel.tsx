@@ -36,6 +36,10 @@ import { COMMAND_ENTITY_FOCUS_EVENT } from "@/lib/command-search";
 import { buildLocalNodeContext } from "@/lib/node-context";
 import { searchEntityNetwork, selectEntityNetwork, type EntityNetworkMode } from "@/lib/entity-network";
 import {
+  deriveKnowledgeNodeDescription,
+  shouldHideUnexplainedGeneratedConcept,
+} from "@/lib/mindmap-semantics";
+import {
   buildWhiteboardCardGeometry,
   isWhiteboardGroupNode,
   whiteboardDetailLevel,
@@ -567,8 +571,41 @@ function buildGraph(
   };
   if (focusRootId && dbNodes.some((node) => node.id === focusRootId)) collectSubtree(focusRootId);
   else dbNodes.forEach((node) => scopedIds.add(node.id));
-  const scopedNodes = dbNodes.filter((node) => scopedIds.has(node.id));
-  const scopedEdges = dbEdges.filter((edge) => scopedIds.has(edge.sourceId) && scopedIds.has(edge.targetId));
+  const rawScopedNodes = dbNodes.filter((node) => scopedIds.has(node.id));
+  const rawScopedEdges = dbEdges.filter((edge) => scopedIds.has(edge.sourceId) && scopedIds.has(edge.targetId));
+  const rawNodeById = new Map(rawScopedNodes.map((node) => [node.id, node]));
+  const rawChildrenById = new Map<string, KnowledgeNode[]>();
+  const rawParentById = new Map<string, KnowledgeNode>();
+  for (const edge of rawScopedEdges) {
+    if (edge.relation !== "contains") continue;
+    const child = rawNodeById.get(edge.targetId);
+    const parent = rawNodeById.get(edge.sourceId);
+    if (child) {
+      const children = rawChildrenById.get(edge.sourceId) || [];
+      children.push(child);
+      rawChildrenById.set(edge.sourceId, children);
+    }
+    if (child && parent) rawParentById.set(child.id, parent);
+  }
+  const nodeDescriptionById = new Map(rawScopedNodes.map((node) => [
+    node.id,
+    deriveKnowledgeNodeDescription(
+      node,
+      rawChildrenById.get(node.id) || [],
+      rawParentById.get(node.id),
+    ),
+  ]));
+  const hiddenUnexplainedIds = new Set(rawScopedNodes
+    .filter((node) => shouldHideUnexplainedGeneratedConcept(
+      node,
+      nodeDescriptionById.get(node.id) || "",
+      rawChildrenById.get(node.id) || [],
+    ))
+    .map((node) => node.id));
+  const scopedNodes = rawScopedNodes.filter((node) => !hiddenUnexplainedIds.has(node.id));
+  const scopedEdges = rawScopedEdges.filter((edge) => (
+    !hiddenUnexplainedIds.has(edge.sourceId) && !hiddenUnexplainedIds.has(edge.targetId)
+  ));
 
   const childCountMap = new Map<string, number>();
   const childrenOf = new Map<string, string[]>();
@@ -630,7 +667,7 @@ function buildGraph(
       position: pos,
       data: {
         label: dbNode.content,
-        nodeDesc: dbNode.desc || "",
+        nodeDesc: nodeDescriptionById.get(dbNode.id) || "",
         nodeType: dbNode.type,
         source: dbNode.source,
         confidence: dbNode.confidence,
@@ -648,7 +685,7 @@ function buildGraph(
         citations: dbNode.citations || [],
         semanticChildren: (childrenOfAll.get(dbNode.id) || []).map((childId) => {
           const child = scopedNodeById.get(childId);
-          return child ? { title: child.content, description: child.desc || "" } : null;
+          return child ? { title: child.content, description: nodeDescriptionById.get(child.id) || "" } : null;
         }).filter(Boolean).slice(0, 6),
       },
     };
