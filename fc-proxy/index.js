@@ -24,12 +24,20 @@ const CHAT_TOTAL_TIMEOUT_MS = Math.max(
   5000,
   Math.min(Number.parseInt(process.env.CHAT_TOTAL_TIMEOUT_MS || '45000', 10), UPSTREAM_TIMEOUT_MS, 50000),
 );
+const HEALTH_CACHE_TTL_MS = Math.max(
+  30_000,
+  Math.min(Number.parseInt(process.env.HEALTH_CACHE_TTL_MS || '120000', 10), 300_000),
+);
+const HEALTH_DEPENDENCY_TIMEOUT_MS = Math.max(
+  2_000,
+  Math.min(Number.parseInt(process.env.HEALTH_DEPENDENCY_TIMEOUT_MS || '5000', 10), 10_000),
+);
 const AUTH_REQUIRED = process.env.AUTH_REQUIRED !== 'false';
 const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCase() || 'development';
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.21.27';
+const API_VERSION = '10.21.28';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true'
@@ -41,8 +49,9 @@ const ALLOWED_ORIGINS = new Set(
     .map((value) => value.trim())
     .filter(Boolean),
 );
+let healthResponseCache = null;
 
-function fetchJSON(method, targetUrl, headers, body) {
+function fetchJSON(method, targetUrl, headers, body, timeoutMs = UPSTREAM_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(targetUrl);
     const isHttps = parsed.protocol === 'https:';
@@ -67,7 +76,7 @@ function fetchJSON(method, targetUrl, headers, body) {
         resolve({ status: response.statusCode || 502, body: parsedBody, headers: response.headers });
       });
     });
-    request.setTimeout(UPSTREAM_TIMEOUT_MS, () => {
+    request.setTimeout(timeoutMs, () => {
       const error = new Error('Upstream request timed out');
       error.code = 'UPSTREAM_TIMEOUT';
       request.destroy(error);
@@ -186,10 +195,16 @@ function supabaseHeaders(prefer, key = SUPABASE_KEY) {
   };
 }
 
-async function supabaseRequest(method, path, body, prefer) {
+async function supabaseRequest(method, path, body, prefer, timeoutMs) {
   if (!SUPABASE_URL || !SUPABASE_KEY) throw dependencyError('knowledge_store');
   try {
-    const response = await fetchJSON(method, `${SUPABASE_URL}/rest/v1/${path}`, supabaseHeaders(prefer), body);
+    const response = await fetchJSON(
+      method,
+      `${SUPABASE_URL}/rest/v1/${path}`,
+      supabaseHeaders(prefer),
+      body,
+      timeoutMs,
+    );
     if (response.status < 200 || response.status >= 300) {
       console.error('Supabase request failed', { method, status: response.status, path: path.split('?')[0] });
       throw dependencyError('knowledge_store', response.status);
@@ -7487,6 +7502,10 @@ const server = http.createServer(async (req, res) => {
   const pathname = new URL(req.url, 'http://localhost').pathname;
   try {
     if (pathname === '/health' || pathname === '/api/health') {
+      if (healthResponseCache && healthResponseCache.expiresAt > Date.now()) {
+        res.writeHead(healthResponseCache.statusCode, { 'Content-Type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify(healthResponseCache.payload));
+      }
       const checks = {
         function: 'ok',
         authConfiguration: AUTH_REQUIRED || ANON_LOCAL_ENABLED ? 'ok' : 'invalid',
@@ -7504,20 +7523,20 @@ const server = http.createServer(async (req, res) => {
       };
       if (checks.knowledgeStoreConfigured) {
         try {
-          await supabaseRequest('GET', 'maps?select=id&limit=1');
+          await supabaseRequest('GET', 'maps?select=id&limit=1', undefined, undefined, HEALTH_DEPENDENCY_TIMEOUT_MS);
           checks.knowledgeStore = 'ok';
-          await supabaseRequest('GET', 'document_chunks?select=id&limit=1');
+          await supabaseRequest('GET', 'document_chunks?select=id&limit=1', undefined, undefined, HEALTH_DEPENDENCY_TIMEOUT_MS);
           checks.hybridRetrieval = 'ready';
           // Read the P2.1 grounding fields as part of readiness. Checking only
           // table IDs hides a partially applied v11 migration: graph writes then
           // degrade to zero entities while /health incorrectly reports ready.
-          await supabaseRequest('GET', 'graph_entities?select=id,description_citation_indexes&limit=1');
-          await supabaseRequest('GET', 'graph_relations?select=id,explanation&limit=1');
-          await supabaseRequest('GET', 'graph_evidence?select=id&limit=1');
+          await supabaseRequest('GET', 'graph_entities?select=id,description_citation_indexes&limit=1', undefined, undefined, HEALTH_DEPENDENCY_TIMEOUT_MS);
+          await supabaseRequest('GET', 'graph_relations?select=id,explanation&limit=1', undefined, undefined, HEALTH_DEPENDENCY_TIMEOUT_MS);
+          await supabaseRequest('GET', 'graph_evidence?select=id&limit=1', undefined, undefined, HEALTH_DEPENDENCY_TIMEOUT_MS);
           checks.entityGraph = 'ready';
-          await supabaseRequest('GET', 'node_revisions?select=id&limit=1');
+          await supabaseRequest('GET', 'node_revisions?select=id&limit=1', undefined, undefined, HEALTH_DEPENDENCY_TIMEOUT_MS);
           checks.nodeTimeline = 'ready';
-          await supabaseRequest('GET', 'product_feedback?select=id,status,resolved_version&limit=1');
+          await supabaseRequest('GET', 'product_feedback?select=id,status,resolved_version&limit=1', undefined, undefined, HEALTH_DEPENDENCY_TIMEOUT_MS);
           checks.feedbackLoop = 'ready';
         } catch (_) {
           if (checks.knowledgeStore !== 'ok') checks.knowledgeStore = 'unreachable';
@@ -7536,7 +7555,7 @@ const server = http.createServer(async (req, res) => {
               p_query_text: '',
               p_query_embedding: null,
               p_match_count: 1,
-            });
+            }, undefined, HEALTH_DEPENDENCY_TIMEOUT_MS);
             checks.graphRagRanking = 'ready';
           } catch (_) {
             checks.graphRagRanking = 'unavailable';
@@ -7546,15 +7565,15 @@ const server = http.createServer(async (req, res) => {
               p_workspace_id: '00000000-0000-0000-0000-000000000000',
               p_query_text: '',
               p_match_count: 1,
-            });
+            }, undefined, HEALTH_DEPENDENCY_TIMEOUT_MS);
             checks.workspaceSearch = 'ready';
           } catch (_) {
             checks.workspaceSearch = 'unavailable';
           }
           try {
-            await supabaseRequest('GET', 'maps?select=id,canvas_view&limit=1');
-            await supabaseRequest('GET', 'node_layouts?select=node_id,group_id,card_width,card_height&limit=1');
-            await supabaseRequest('GET', 'whiteboard_groups?select=id,map_id&limit=1');
+            await supabaseRequest('GET', 'maps?select=id,canvas_view&limit=1', undefined, undefined, HEALTH_DEPENDENCY_TIMEOUT_MS);
+            await supabaseRequest('GET', 'node_layouts?select=node_id,group_id,card_width,card_height&limit=1', undefined, undefined, HEALTH_DEPENDENCY_TIMEOUT_MS);
+            await supabaseRequest('GET', 'whiteboard_groups?select=id,map_id&limit=1', undefined, undefined, HEALTH_DEPENDENCY_TIMEOUT_MS);
             checks.whiteboardLayout = 'ready';
           } catch (_) {
             checks.whiteboardLayout = 'unavailable';
@@ -7578,8 +7597,8 @@ const server = http.createServer(async (req, res) => {
         && checks.feedbackLoop === 'ready'
         && checks.entityGraph === 'ready' && checks.nodeTimeline === 'ready'
         && checks.whiteboardLayout === 'ready' && checks.deploymentIdentity !== 'missing';
-      res.writeHead(healthy ? 200 : 503, { 'Content-Type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({
+      const statusCode = healthy ? 200 : 503;
+      const payload = {
         status: healthy ? 'ok' : 'degraded',
         version: API_VERSION,
         gitSha: API_GIT_SHA_VALID ? API_GIT_SHA : null,
@@ -7588,7 +7607,14 @@ const server = http.createServer(async (req, res) => {
         allowAnonLocal: ANON_LOCAL_ENABLED,
         checks,
         timestamp: new Date().toISOString(),
-      }));
+      };
+      healthResponseCache = {
+        statusCode,
+        payload,
+        expiresAt: Date.now() + (healthy ? HEALTH_CACHE_TTL_MS : Math.min(HEALTH_CACHE_TTL_MS, 30_000)),
+      };
+      res.writeHead(statusCode, { 'Content-Type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify(payload));
     }
 
     let result;

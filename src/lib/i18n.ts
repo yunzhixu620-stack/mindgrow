@@ -28,6 +28,7 @@ const messages = {
   "auth.rateLimit": { "zh-CN": "发送过于频繁，请等待 60 秒后再试。", en: "Too many attempts. Wait 60 seconds before trying again." },
   "auth.passwordLength": { "zh-CN": "密码至少需要 8 位", en: "Password must be at least 8 characters" },
   "auth.failure": { "zh-CN": "登录失败，请重试", en: "Sign-in failed. Please try again." },
+  "auth.timeout": { "zh-CN": "认证服务响应超时，请稍后重试。", en: "The authentication service timed out. Please try again." },
   "auth.emailRequired": { "zh-CN": "请先输入创建账号时使用的邮箱。", en: "Enter the email used to create the account first." },
   "auth.sendFailure": { "zh-CN": "发送失败，请稍后重试", en: "Could not send the email. Please try again later." },
   "header.meeting": { "zh-CN": "会议助手", en: "Meeting" },

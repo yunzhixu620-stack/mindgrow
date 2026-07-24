@@ -4,7 +4,7 @@ import type { Session, User } from "@supabase/supabase-js";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { resetTenantData, resolveAuthTransition } from "@/components/auth/auth-tenant-reset";
 import { getAuthRedirectUrl } from "@/lib/auth-urls";
-import { initialSessionWithTimeout } from "@/lib/auth-session-init";
+import { authOperationWithTimeout, initialSessionWithTimeout } from "@/lib/auth-session-init";
 import { IS_LOCAL_MODE, apiFetch, setActiveUserId, setActiveWorkspaceId } from "@/lib/client-api";
 import { supabase } from "@/lib/supabase-browser";
 import type { Category, EntityGraph, KnowledgeEdge, KnowledgeNode, MindMap } from "@/types";
@@ -195,28 +195,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signIn = useCallback(async (email: string, password: string) => {
     setMessage("");
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    const { error } = await authOperationWithTimeout(
+      () => supabase.auth.signInWithPassword({ email, password }),
+    );
     if (error) throw error;
   }, []);
 
   const signUp = useCallback(async (email: string, password: string) => {
     setMessage("");
-    const { data, error } = await supabase.auth.signUp({
+    const { data, error } = await authOperationWithTimeout(() => supabase.auth.signUp({
       email,
       password,
       options: { emailRedirectTo: getAuthRedirectUrl() },
-    });
+    }));
     if (error) throw error;
     if (!data.session) setMessage("注册成功。确认邮件已发送，请使用最新邮件中的链接完成验证。");
   }, []);
 
   const resendConfirmation = useCallback(async (email: string) => {
     setMessage("");
-    const { error } = await supabase.auth.resend({
+    const { error } = await authOperationWithTimeout(() => supabase.auth.resend({
       type: "signup",
       email,
       options: { emailRedirectTo: getAuthRedirectUrl() },
-    });
+    }));
     if (error) throw error;
     setMessage("新的确认邮件已发送。请使用最新邮件中的链接，旧链接会失效。");
   }, []);

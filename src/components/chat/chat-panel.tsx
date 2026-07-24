@@ -391,7 +391,7 @@ export function ChatPanel() {
   const [confirming, setConfirming] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [cloudStatus, setCloudStatus] = useState<"checking" | "connected" | "offline">(
-    IS_LOCAL_MODE ? "connected" : "checking"
+    "connected"
   );
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const activeChatRequestRef = useRef<AbortController | null>(null);
@@ -408,6 +408,7 @@ export function ChatPanel() {
 
     let active = true;
     const checkCloud = async () => {
+      if (document.visibilityState !== "visible") return;
       try {
         const response = await apiFetch("/health", { cache: "no-store" });
         if (!response.ok) throw new Error(`Health check failed: ${response.status}`);
@@ -418,11 +419,17 @@ export function ChatPanel() {
       }
     };
 
-    void checkCloud();
-    const timer = window.setInterval(checkCloud, 30_000);
+    // MainLayout already performs one bounded warm-up. Avoid turning every
+    // open or background tab into a database load generator.
+    const timer = window.setInterval(checkCloud, 300_000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") void checkCloud();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       active = false;
       window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, []);
 

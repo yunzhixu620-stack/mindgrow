@@ -56,6 +56,7 @@ export function AuthScreen() {
     : message;
 
   function describeAuthError(raw: string) {
+    if (raw.includes("AUTH_OPERATION_TIMEOUT")) return t("auth.timeout");
     if (raw.includes("Invalid login")) return t("auth.invalid");
     if (raw.includes("Email not confirmed")) return t("auth.unconfirmed");
     if (isAuthEmailRateLimitError(raw)) return t("auth.rateLimit");

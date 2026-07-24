@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { initialSessionWithTimeout } from "@/lib/auth-session-init";
+import {
+  AUTH_OPERATION_TIMEOUT,
+  authOperationWithTimeout,
+  initialSessionWithTimeout,
+} from "@/lib/auth-session-init";
 
 describe("initial Supabase session timeout", () => {
   it("returns the existing session when initialization completes", async () => {
@@ -26,5 +30,23 @@ describe("initial Supabase session timeout", () => {
       async () => { throw new Error("auth unavailable"); },
       20,
     )).resolves.toEqual({ status: "error", session: null });
+  });
+});
+
+describe("Supabase authentication operation timeout", () => {
+  it("returns a completed authentication result", async () => {
+    await expect(authOperationWithTimeout(async () => "ok", 50)).resolves.toBe("ok");
+  });
+
+  it("rejects a stalled request with a stable error code", async () => {
+    vi.useFakeTimers();
+    const pending = authOperationWithTimeout(
+      () => new Promise<never>(() => undefined),
+      15_000,
+    );
+    const assertion = expect(pending).rejects.toThrow(AUTH_OPERATION_TIMEOUT);
+    await vi.advanceTimersByTimeAsync(15_000);
+    await assertion;
+    vi.useRealTimers();
   });
 });
