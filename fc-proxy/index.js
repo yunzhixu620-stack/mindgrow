@@ -25,19 +25,19 @@ const CHAT_TOTAL_TIMEOUT_MS = Math.max(
   Math.min(Number.parseInt(process.env.CHAT_TOTAL_TIMEOUT_MS || '45000', 10), UPSTREAM_TIMEOUT_MS, 50000),
 );
 const HEALTH_CACHE_TTL_MS = Math.max(
-  30_000,
-  Math.min(Number.parseInt(process.env.HEALTH_CACHE_TTL_MS || '120000', 10), 300_000),
+  30000,
+  Math.min(Number.parseInt(process.env.HEALTH_CACHE_TTL_MS || '120000', 10), 300000),
 );
 const HEALTH_DEPENDENCY_TIMEOUT_MS = Math.max(
-  2_000,
-  Math.min(Number.parseInt(process.env.HEALTH_DEPENDENCY_TIMEOUT_MS || '5000', 10), 10_000),
+  2000,
+  Math.min(Number.parseInt(process.env.HEALTH_DEPENDENCY_TIMEOUT_MS || '5000', 10), 10000),
 );
 const AUTH_REQUIRED = process.env.AUTH_REQUIRED !== 'false';
 const NODE_ENV = String(process.env.NODE_ENV || 'development').trim().toLowerCase() || 'development';
 const ALLOW_ANON_LOCAL = process.env.ALLOW_ANON_LOCAL === 'true';
 const ANON_LOCAL_ENABLED = !AUTH_REQUIRED && NODE_ENV !== 'production' && ALLOW_ANON_LOCAL;
 // Runtime source of truth. Bump this first, then sync docs/api-version.txt.
-const API_VERSION = '10.21.28';
+const API_VERSION = '10.21.29';
 const API_GIT_SHA = String(process.env.MINDGROW_GIT_SHA || '').trim().toLowerCase();
 const API_GIT_SHA_VALID = /^[0-9a-f]{40}$/.test(API_GIT_SHA);
 const MEETING_AI_ENHANCEMENT = process.env.MEETING_AI_ENHANCEMENT === 'true'
@@ -7611,7 +7611,7 @@ const server = http.createServer(async (req, res) => {
       healthResponseCache = {
         statusCode,
         payload,
-        expiresAt: Date.now() + (healthy ? HEALTH_CACHE_TTL_MS : Math.min(HEALTH_CACHE_TTL_MS, 30_000)),
+        expiresAt: Date.now() + (healthy ? HEALTH_CACHE_TTL_MS : Math.min(HEALTH_CACHE_TTL_MS, 30000)),
       };
       res.writeHead(statusCode, { 'Content-Type': 'application/json; charset=utf-8' });
       return res.end(JSON.stringify(payload));
